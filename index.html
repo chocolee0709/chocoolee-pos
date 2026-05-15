@@ -4446,8 +4446,46 @@ function POSSystem() {
                     <div style={{fontSize:10,color:"#9a968e"}}>下載 JSON 本地備份</div>
                   </div>
                 </button>
+
+                {/* 匯入資料備份 */}
+                <label style={{width:"100%",padding:"9px 14px",border:"none",background:"transparent",
+                    cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
+                    borderBottom:"1px solid #f0ede8",transition:"background 0.1s"}}
+                  onMouseEnter={function(e){e.currentTarget.style.background="#fff0f0";}}
+                  onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
+                  <span style={{fontSize:16,width:24,textAlign:"center"}}>⬆️</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:600,color:"#802a2a"}}>匯入資料備份</div>
+                    <div style={{fontSize:10,color:"#9a968e"}}>從 JSON 檔還原資料</div>
+                  </div>
+                  <input type="file" accept=".json" style={{display:"none"}}
+                    onChange={function(e){
+                      var file = e.target.files[0];
+                      if (!file) return;
+                      var reader = new FileReader();
+                      reader.onload = function(ev){
+                        try {
+                          var data = JSON.parse(ev.target.result);
+                          var KEYS = ["members","orders","stocks","stocklog","shiftlog","products","staffrates","schedule"];
+                          var count = 0;
+                          KEYS.forEach(function(key){
+                            if (data[key] !== undefined) {
+                              var val = typeof data[key]==="string" ? data[key] : JSON.stringify(data[key]);
+                              try { localStorage.setItem("chocoolee-"+key, val); } catch(er){}
+                              try { if(window.storage) window.storage.set("chocoolee-"+key, val); } catch(er){}
+                              count++;
+                            }
+                          });
+                          alert("✓ 成功匯入 " + count + " 筆資料！\n請重新整理頁面讓資料生效。");
+                          setShowMenu(false);
+                        } catch(err){ alert("JSON 格式錯誤："+err.message); }
+                      };
+                      reader.readAsText(file);
+                    }}/>
+                </label>
+
                 <div style={{fontSize:10,color:"#c8c4bc",textAlign:"center",paddingTop:8}}>
-                  CHOCOOLEE POS · v3.4
+                  CHOCOOLEE POS · v3.5
                 </div>
               </div>
             </div>
