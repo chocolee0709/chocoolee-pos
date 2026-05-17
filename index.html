@@ -4178,8 +4178,9 @@ function POSSystem() {
             var s = savedSkus[p.sku];
             merged.push(s ? Object.assign({},p,{
               name:s.name||p.name, price:s.price!==undefined?s.price:p.price,
-              cost:s.cost!==undefined?s.cost:p.cost, main:s.main||p.main,
-              sub:s.sub||p.sub, barcode:s.barcode||p.barcode,
+              cost:s.cost!==undefined?s.cost:p.cost,
+              main:p.main, sub:p.sub,  // RAW 為準
+              barcode:s.barcode||p.barcode,
               image:s.image!==undefined?s.image:(p.image||""),
             }) : p);
           });
@@ -4224,8 +4225,10 @@ function POSSystem() {
           var s = savedSkus[p.sku];
           merged.push(s ? Object.assign({},p,{
             name:s.name||p.name, price:s.price!==undefined?s.price:p.price,
-            cost:s.cost!==undefined?s.cost:p.cost, main:s.main||p.main,
-            sub:s.sub||p.sub, barcode:s.barcode||p.barcode,
+            cost:s.cost!==undefined?s.cost:p.cost,
+            // main/sub 以 RAW 為準，避免 Firebase 舊資料覆蓋分類調整
+            main:p.main, sub:p.sub,
+            barcode:s.barcode||p.barcode,
             image:s.image!==undefined?s.image:(p.image||""),
           }) : p);
         });
