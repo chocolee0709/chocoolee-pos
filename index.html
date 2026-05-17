@@ -4173,13 +4173,15 @@ function POSSystem() {
           PRODUCTS.forEach(function(p){ rawSkus[p.sku]=p; });
           var savedSkus = {};
           saved.forEach(function(p){ savedSkus[p.sku]=p; });
+          var hasSavedData = saved.length > 0;
           var merged = [];
           PRODUCTS.forEach(function(p){
             var s = savedSkus[p.sku];
+            if (hasSavedData && !s) return;
             merged.push(s ? Object.assign({},p,{
               name:s.name||p.name, price:s.price!==undefined?s.price:p.price,
               cost:s.cost!==undefined?s.cost:p.cost,
-              main:p.main, sub:p.sub,  // RAW 為準
+              main:p.main, sub:p.sub,
               barcode:s.barcode||p.barcode,
               image:s.image!==undefined?s.image:(p.image||""),
             }) : p);
@@ -4220,11 +4222,17 @@ function POSSystem() {
         PRODUCTS.forEach(function(p){ rawSkus[p.sku]=p; });
         var savedSkus = {};
         saved.forEach(function(p){ savedSkus[p.sku]=p; });
+        // 建立已刪除商品的 id 清單（存在 RAW 但不在 saved 裡的，代表被刪除）
+        // 但只有當 saved 有資料時才判斷（避免第一次載入時清空所有商品）
+        var hasSavedData = saved.length > 0;
         var merged = [];
         PRODUCTS.forEach(function(p){
           var s = savedSkus[p.sku];
+          // 如果 Firebase 有資料但這個 SKU 不在裡面，代表被刪除，跳過
+          if (hasSavedData && !s) return;
           merged.push(s ? Object.assign({},p,{
-            name:s.name||p.name, price:s.price!==undefined?s.price:p.price,
+            name:s.name||p.name,
+            price:s.price!==undefined?s.price:p.price,
             cost:s.cost!==undefined?s.cost:p.cost,
             // main/sub 以 RAW 為準，避免 Firebase 舊資料覆蓋分類調整
             main:p.main, sub:p.sub,
@@ -4232,6 +4240,7 @@ function POSSystem() {
             image:s.image!==undefined?s.image:(p.image||""),
           }) : p);
         });
+        // Firebase 裡有但 RAW 沒有的（新增的商品），也要保留
         saved.forEach(function(s){ if(!rawSkus[s.sku]) merged.push(s); });
         setSharedProducts(merged);
       } catch(e) {}
