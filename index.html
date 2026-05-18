@@ -4186,27 +4186,24 @@ function POSSystem() {
       staffrates: setStaffRates,
       schedule:   setSchedule,
       products:   function(val) {
-        // products 需要合併策略
         try {
+          var deletedSkusR = [];
+          try { var _dsr=localStorage.getItem("chocoolee-deletedskus"); if(_dsr) deletedSkusR=JSON.parse(_dsr); }catch(er){}
           var saved = typeof val === "string" ? JSON.parse(val) : val;
+          if (!saved || saved.length === 0) return;
           var rawSkus = {};
           PRODUCTS.forEach(function(p){ rawSkus[p.sku]=p; });
-          var savedSkus = {};
-          saved.forEach(function(p){ savedSkus[p.sku]=p; });
-          var hasSavedData = saved.length > 0;
-          var merged = [];
+          var merged = saved
+            .filter(function(s){ return deletedSkusR.indexOf(s.sku)===-1; })
+            .map(function(s){
+              var raw = rawSkus[s.sku];
+              return raw ? Object.assign({},s,{main:raw.main,sub:raw.sub}) : s;
+            });
           PRODUCTS.forEach(function(p){
-            var s = savedSkus[p.sku];
-            if (hasSavedData && !s && p.main !== "業外收入") return;
-            merged.push(s ? Object.assign({},p,{
-              name:s.name||p.name, price:s.price!==undefined?s.price:p.price,
-              cost:s.cost!==undefined?s.cost:p.cost,
-              main:p.main, sub:p.sub,
-              barcode:s.barcode||p.barcode,
-              image:s.image!==undefined?s.image:(p.image||""),
-            }) : p);
+            if (p.main !== "業外收入") return;
+            var already = merged.find(function(m){ return m.sku===p.sku; });
+            if (!already) merged.push(p);
           });
-          saved.forEach(function(s){ if(!rawSkus[s.sku]) merged.push(s); });
           setSharedProducts(merged);
         } catch(e) {}
       }
@@ -4225,6 +4222,9 @@ function POSSystem() {
       } catch(e) { apply(localStorage.getItem("chocoolee-"+key)); }
     }
 
+    loadOne("deletedskus", function(v){
+      try { if(v) localStorage.setItem("chocoolee-deletedskus", typeof v==="string"?v:JSON.stringify(v)); }catch(e){}
+    });
     loadOne("members",    setMembers);
     loadOne("orders",     setOrders);
     loadOne("stocks",     setSharedStocks);
@@ -4237,31 +4237,37 @@ function POSSystem() {
     function mergeProducts(v) {
       if (!v) return;
       try {
+        // 讀取已刪除 SKU 清單
+        var deletedSkus2 = [];
+        try { var _ds2=localStorage.getItem("chocoolee-deletedskus"); if(_ds2) deletedSkus2=JSON.parse(_ds2); }catch(e2){}
+
         var saved = JSON.parse(v);
+        if (!saved || saved.length === 0) return;
+
+        // saved 已是完整商品列表（含新增的），以它為基礎
+        // 只用 RAW 覆蓋 main/sub（分類調整），不重新 merge 整份 RAW
         var rawSkus = {};
         PRODUCTS.forEach(function(p){ rawSkus[p.sku]=p; });
-        var savedSkus = {};
-        saved.forEach(function(p){ savedSkus[p.sku]=p; });
-        // 建立已刪除商品的 id 清單（存在 RAW 但不在 saved 裡的，代表被刪除）
-        // 但只有當 saved 有資料時才判斷（避免第一次載入時清空所有商品）
-        var hasSavedData = saved.length > 0;
-        var merged = [];
+
+        var merged = saved
+          .filter(function(s){ return deletedSkus2.indexOf(s.sku) === -1; })
+          .map(function(s){
+            var raw = rawSkus[s.sku];
+            if (raw) {
+              // RAW 存在的商品：main/sub 以 RAW 為準（防止分類調整被覆蓋）
+              return Object.assign({},s,{main:raw.main, sub:raw.sub});
+            }
+            // RAW 沒有的商品（新增的 / 業外收入）：完整保留
+            return s;
+          });
+
+        // 業外收入商品若不在 saved 裡，永遠補上
         PRODUCTS.forEach(function(p){
-          var s = savedSkus[p.sku];
-          // 業外收入商品永遠保留（不受 Firebase 刪除邏輯影響）
-          if (hasSavedData && !s && p.main !== "業外收入") return;
-          merged.push(s ? Object.assign({},p,{
-            name:s.name||p.name,
-            price:s.price!==undefined?s.price:p.price,
-            cost:s.cost!==undefined?s.cost:p.cost,
-            // main/sub 以 RAW 為準，避免 Firebase 舊資料覆蓋分類調整
-            main:p.main, sub:p.sub,
-            barcode:s.barcode||p.barcode,
-            image:s.image!==undefined?s.image:(p.image||""),
-          }) : p);
+          if (p.main !== "業外收入") return;
+          var already = merged.find(function(m){ return m.sku===p.sku; });
+          if (!already) merged.push(p);
         });
-        // Firebase 裡有但 RAW 沒有的（新增的商品），也要保留
-        saved.forEach(function(s){ if(!rawSkus[s.sku]) merged.push(s); });
+
         setSharedProducts(merged);
       } catch(e) {}
     }
