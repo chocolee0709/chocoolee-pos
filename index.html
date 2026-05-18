@@ -634,8 +634,21 @@ function CatalogPanel(props) {
         operator:currentStaff ? currentStaff.name : "—"
       }]);
     }
-    setProducts(function(prev){ return prev.filter(function(p){ return p.id!==editId; }); });
-    setStocks(function(prev){ var n=Object.assign({},prev); delete n[editId]; return n; });
+    var delSku = editForm.sku;
+    var delId  = editId;
+    // 1. 存入 deletedSkus（用 SKU 永久記錄刪除）
+    var existingDel = [];
+    try { var _ds=localStorage.getItem("chocoolee-deletedskus"); if(_ds) existingDel=JSON.parse(_ds); }catch(e){}
+    if (existingDel.indexOf(delSku) === -1) existingDel = existingDel.concat([delSku]);
+    localStorage.setItem("chocoolee-deletedskus", JSON.stringify(existingDel));
+    saveData("deletedskus", JSON.stringify(existingDel));
+    // 2. 從 products 移除（id 和 sku 雙重過濾）
+    setProducts(function(prev){
+      var next = prev.filter(function(p){ return p.id!==delId && p.sku!==delSku; });
+      saveData("products", JSON.stringify(next));
+      return next;
+    });
+    setStocks(function(prev){ var n=Object.assign({},prev); delete n[delId]; return n; });
     setEditId(null); setEditForm(null); setShowDeleteConfirm(false);
   }
 
@@ -909,15 +922,24 @@ function CatalogPanel(props) {
 
   // ── 單一商品新增 ──
   var addSubOpts = CAT_STRUCT[newForm.main]||[];
+  var skuDuplicate = newForm.sku ? products.some(function(p){ return p.sku === newForm.sku.trim(); }) : false;
   function setNF(k,v){ setNewForm(function(f){ var n=Object.assign({},f); n[k]=v; return n; }); }
   function addProduct(){
-    if (!newForm.name||!newForm.sku) return;
+    if (!newForm.name||!newForm.sku||skuDuplicate) return;
     var newP = Object.assign({},newForm,{
       id:Date.now(), price:Number(newForm.price)||0, cost:Number(newForm.cost)||0,
       stock:Number(newForm.stock)||0,
       barcode:newForm.barcode||String(products.length+1001).padStart(9,"0")
     });
-    setProducts(function(prev){return prev.concat([newP]);});
+    setProducts(function(prev){
+      var next = prev.concat([newP]);
+      // 依貨號排序（字母+數字自然排序）
+      next.sort(function(a,b){
+        var sa=String(a.sku||""), sb=String(b.sku||"");
+        return sa.localeCompare(sb, "zh-TW", {numeric:true, sensitivity:"base"});
+      });
+      return next;
+    });
     setStocks(function(prev){var n=Object.assign({},prev);n[newP.id]=newP.stock;return n;});
     if(newP.stock>0){
       var now=new Date();
@@ -983,7 +1005,13 @@ function CatalogPanel(props) {
       {/* ── 工具列 ── */}
       <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0,flexWrap:"wrap"}}>
         {/* 1. 單一商品新增 */}
-        <button onClick={function(){setShowAdd(function(v){return !v;});setEditId(null);setAdjustId(null);}}
+        <button onClick={function(){
+            var initMain = filterMain || EMPTY_PRODUCT.main;
+            var initSub  = filterSub  || "";
+            setNewForm(Object.assign({},EMPTY_PRODUCT,{main:initMain,sub:initSub}));
+            setShowAdd(function(v){return !v;});
+            setEditId(null);setAdjustId(null);
+          }}
           style={{background:showAdd?"#2a2520":"#b8910a",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:11,fontWeight:700,cursor:"pointer"}}>
           ＋ 新增商品
         </button>
@@ -1096,24 +1124,21 @@ function CatalogPanel(props) {
             {/* 圖片上傳區 */}
             <div style={{flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
               <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-                {newForm.image ? (
-                  <img src={newForm.image} alt="預覽" style={{width:90,height:90,objectFit:"cover",borderRadius:8,border:"2px solid #b8910a"}}/>
-                ) : (
-                  <div style={{width:90,height:90,borderRadius:8,border:"2px dashed #d8d4cc",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:2,background:"#ffffff"}}>
-                    <span style={{fontSize:22}}>📷</span>
-                    <span style={{fontSize:9,color:"#9a968e"}}>選擇或拍照</span>
-                  </div>
-                )}
-                <div style={{display:"flex",gap:4}}>
-                  <label style={{cursor:"pointer"}}>
-                    <span style={{fontSize:9,color:"#4a8ec0",padding:"2px 7px",border:"1px solid #4a8ec0",borderRadius:4,whiteSpace:"nowrap"}}>🖼 選圖</span>
-                    <input type="file" accept="image/*" onChange={function(e){handleImageUpload(e,setNF);}} style={{display:"none"}}/>
-                  </label>
-                  <label style={{cursor:"pointer"}}>
-                    <span style={{fontSize:9,color:"#3d9e32",padding:"2px 7px",border:"1px solid #3d9e32",borderRadius:4,whiteSpace:"nowrap"}}>📷 拍照</span>
-                    <input type="file" accept="image/*" capture="environment" onChange={function(e){handleImageUpload(e,setNF);}} style={{display:"none"}}/>
-                  </label>
-                </div>
+                <label style={{cursor:"pointer"}}>
+                  {newForm.image ? (
+                    <img src={newForm.image} alt="預覽" style={{width:90,height:90,objectFit:"cover",borderRadius:8,border:"2px solid #b8910a"}}/>
+                  ) : (
+                    <div style={{width:90,height:90,borderRadius:8,border:"2px dashed #d8d4cc",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:2,background:"#ffffff"}}>
+                      <span style={{fontSize:22}}>📷</span>
+                      <span style={{fontSize:9,color:"#9a968e"}}>點此選圖</span>
+                    </div>
+                  )}
+                  <input type="file" accept="image/*" onChange={function(e){handleImageUpload(e,setNF);}} style={{display:"none"}}/>
+                </label>
+                <label style={{cursor:"pointer"}}>
+                  <span style={{fontSize:9,color:"#3d9e32",padding:"2px 7px",border:"1px solid #3d9e32",borderRadius:4,whiteSpace:"nowrap"}}>📷 拍照</span>
+                  <input type="file" accept="image/*" capture="environment" onChange={function(e){handleImageUpload(e,setNF);}} style={{display:"none"}}/>
+                </label>
                 {newForm.image && (
                   <button onClick={function(){setNF("image","");}}
                     style={{background:"none",border:"none",color:"#d0552f",fontSize:9,cursor:"pointer"}}>移除圖片</button>
@@ -1156,16 +1181,19 @@ function CatalogPanel(props) {
             </div>
           </div>
           <div style={{display:"flex",gap:8,justifyContent:"flex-end",alignItems:"center"}}>
-            {(!newForm.name||!newForm.sku) && (
+            {skuDuplicate && (
+              <span style={{fontSize:11,color:"#d0552f",fontWeight:600}}>⚠️ 貨號「{newForm.sku}」已存在，請重新輸入</span>
+            )}
+            {(!newForm.name||!newForm.sku) && !skuDuplicate && (
               <span style={{fontSize:10,color:"#9a968e"}}>* 商品名稱與貨號為必填</span>
             )}
             <button onClick={function(){setShowAdd(false);setNewForm(Object.assign({},EMPTY_PRODUCT));}}
               style={{background:"none",border:"1px solid #d8d4cc",borderRadius:6,padding:"6px 14px",color:"#7a7068",fontSize:12,cursor:"pointer"}}>取消</button>
-            <button onClick={addProduct} disabled={!newForm.name||!newForm.sku}
-              style={{background:(newForm.name&&newForm.sku)?"#b8910a":"#e0dcd6",border:"none",borderRadius:6,padding:"6px 20px",
-                color:(newForm.name&&newForm.sku)?"#ffffff":"#b8b0a4",fontSize:12,fontWeight:700,
-                cursor:(newForm.name&&newForm.sku)?"pointer":"default",
-                boxShadow:(newForm.name&&newForm.sku)?"0 2px 6px rgba(184,145,10,0.2)":"none"}}>
+            <button onClick={addProduct} disabled={!newForm.name||!newForm.sku||skuDuplicate}
+              style={{background:(newForm.name&&newForm.sku&&!skuDuplicate)?"#b8910a":"#e0dcd6",border:"none",borderRadius:6,padding:"6px 20px",
+                color:(newForm.name&&newForm.sku&&!skuDuplicate)?"#ffffff":"#b8b0a4",fontSize:12,fontWeight:700,
+                cursor:(newForm.name&&newForm.sku&&!skuDuplicate)?"pointer":"default",
+                boxShadow:(newForm.name&&newForm.sku&&!skuDuplicate)?"0 2px 6px rgba(184,145,10,0.2)":"none"}}>
               新增
             </button>
           </div>
@@ -1186,16 +1214,21 @@ function CatalogPanel(props) {
                 {editForm.image ? (
                   <img src={editForm.image} alt="預覽" style={{width:110,height:110,objectFit:"cover",borderRadius:8,border:"2px solid #4a8ec0"}}/>
                 ) : (
-                  <div style={{width:110,height:110,borderRadius:8,border:"2px dashed #d8d4cc",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:4,background:"#ffffff"}}>
-                    <span style={{fontSize:28}}>📷</span>
-                    <span style={{fontSize:10,color:"#9a968e"}}>選擇或拍照</span>
-                  </div>
-                )}
-                <div style={{display:"flex",gap:6}}>
                   <label style={{cursor:"pointer"}}>
-                    <span style={{fontSize:11,color:"#4a8ec0",padding:"4px 10px",border:"1px solid #4a8ec0",borderRadius:6,whiteSpace:"nowrap",display:"block"}}>🖼 選圖</span>
+                    <div style={{width:110,height:110,borderRadius:8,border:"2px dashed #d8d4cc",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:4,background:"#ffffff"}}>
+                      <span style={{fontSize:28}}>📷</span>
+                      <span style={{fontSize:10,color:"#9a968e"}}>點此選圖</span>
+                    </div>
                     <input type="file" accept="image/*" onChange={function(e){handleImageUpload(e,setEF);}} style={{display:"none"}}/>
                   </label>
+                )}
+                <div style={{display:"flex",gap:6}}>
+                  {editForm.image && (
+                    <label style={{cursor:"pointer"}}>
+                      <span style={{fontSize:11,color:"#4a8ec0",padding:"4px 10px",border:"1px solid #4a8ec0",borderRadius:6,whiteSpace:"nowrap",display:"block"}}>🖼 換圖</span>
+                      <input type="file" accept="image/*" onChange={function(e){handleImageUpload(e,setEF);}} style={{display:"none"}}/>
+                    </label>
+                  )}
                   <label style={{cursor:"pointer"}}>
                     <span style={{fontSize:11,color:"#3d9e32",padding:"4px 10px",border:"1px solid #3d9e32",borderRadius:6,whiteSpace:"nowrap",display:"block"}}>📷 拍照</span>
                     <input type="file" accept="image/*" capture="environment" onChange={function(e){handleImageUpload(e,setEF);}} style={{display:"none"}}/>
@@ -4144,6 +4177,7 @@ function POSSystem() {
   var sps=useState(initSplit); var splitPay=sps[0],setSplitPay=sps[1];
   var mcs=useState("");     var memberPhone=mcs[0],setMemberPhone=mcs[1];
   var dcs=useState(0);      var discount=dcs[0],setDiscount=dcs[1];
+  var fds=useState(0);      var fixedDisc=fds[0],setFixedDisc=fds[1];
   var bfs=useState(0);      var bagFee=bfs[0],setBagFee=bfs[1];
   var cps=useState(null);   var customPriceItem=cps[0],setCustomPriceItem=cps[1];
   var cpvs=useState("");    var customPriceVal=cpvs[0],setCustomPriceVal=cpvs[1];
@@ -4427,7 +4461,7 @@ function POSSystem() {
   var consignTotal     = cart.filter(function(i){return i.main==="寄售";}).reduce(function(s,i){return s+i.price*i.qty;},0);
   var discountableTotal= cart.filter(function(i){return i.main!=="寄售";}).reduce(function(s,i){return s+i.price*i.qty;},0);
   var subtotal         = cart.reduce(function(s,i){return s+i.price*i.qty;},0);
-  var discAmt          = Math.round(discountableTotal * (discount/100));
+  var discAmt          = Math.round(discountableTotal * (discount/100)) + (fixedDisc||0);
   var total            = subtotal - discAmt + bagFee;
   var cartCount        = cart.reduce(function(s,i){return s+i.qty;},0);
   var hasConsign       = cart.some(function(i){return i.main==="寄售";});
@@ -4455,7 +4489,7 @@ function POSSystem() {
     if (trainingMode) {
       setOrderPlaced(true);
       setTimeout(function(){
-        setOrderPlaced(false); setCart([]); setMemberPhone(""); setDiscount(0); setBagFee(0); setCustomPriceItem(null); resetSplit();
+        setOrderPlaced(false); setCart([]); setMemberPhone(""); setDiscount(0); setFixedDisc(0); setBagFee(0); setCustomPriceItem(null); resetSplit();
       }, 2200);
       return;
     }
@@ -4507,7 +4541,7 @@ function POSSystem() {
     }
     setOrderPlaced(true);
     setTimeout(function(){
-      setOrderPlaced(false); setCart([]); setMemberPhone(""); setDiscount(0); setBagFee(0); setCustomPriceItem(null); resetSplit();
+      setOrderPlaced(false); setCart([]); setMemberPhone(""); setDiscount(0); setFixedDisc(0); setBagFee(0); setCustomPriceItem(null); resetSplit();
     }, 2200);
   }
 
@@ -5004,8 +5038,8 @@ function POSSystem() {
 
             {/* 折扣 */}
             <div style={{padding:"8px 13px",borderBottom:"1px solid #e8e4de"}}>
-              <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <span style={{fontSize:11,color:"#7a7068",flexShrink:0}}>折扣</span>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+                <span style={{fontSize:11,color:"#7a7068",flexShrink:0}}>折扣%</span>
                 {[0,5].map(function(d) {
                   return (
                     <button key={d} onClick={function(){setDiscount(d);}}
@@ -5016,6 +5050,25 @@ function POSSystem() {
                     </button>
                   );
                 })}
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{fontSize:11,color:"#7a7068",flexShrink:0}}>折抵$</span>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                  {[0,10,20,50,100].map(function(amt){
+                    return (
+                      <button key={amt} onClick={function(){setFixedDisc(amt);}}
+                        style={{padding:"3px 10px",borderRadius:20,border:fixedDisc===amt?"none":"1px solid #d8d4cc",
+                          background:fixedDisc===amt?"#d0552f":"transparent",color:fixedDisc===amt?"#ffffff":"#7a7068",
+                          cursor:"pointer",fontSize:11,fontWeight:600}}>
+                        {amt===0?"無":"-$"+amt}
+                      </button>
+                    );
+                  })}
+                  <input type="number" min="0" value={fixedDisc||""} placeholder="自訂"
+                    onChange={function(e){ setFixedDisc(Number(e.target.value)||0); }}
+                    style={{width:60,padding:"2px 6px",borderRadius:20,border:"1px solid #d8d4cc",
+                      fontSize:11,textAlign:"center",outline:"none",color:"#2a2520"}}/>
+                </div>
               </div>
             </div>
 
@@ -5064,7 +5117,13 @@ function POSSystem() {
               {discount>0 && (
                 <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#d0552f",marginBottom:2}}>
                   <span>折扣 -{discount}%{hasConsign?" (一般)":""}</span>
-                  <span>-${discAmt.toLocaleString()}</span>
+                  <span>-${Math.round(discountableTotal*(discount/100)).toLocaleString()}</span>
+                </div>
+              )}
+              {fixedDisc>0 && (
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#d0552f",marginBottom:2}}>
+                  <span>折抵金額</span>
+                  <span>-${fixedDisc.toLocaleString()}</span>
                 </div>
               )}
               {bagFee>0 && (
