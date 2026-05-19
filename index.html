@@ -361,7 +361,7 @@ const PAYMENTS = ["現金","信用卡","Line Pay","轉帳"];
 
 // ── 工作人員設定 ──
 var STAFF_LIST = [
-  {id:1, name:"Choco",  pin:"7777", role:"店長", hourlyRate:250},
+  {id:1, name:"Choco",  pin:"1951", role:"店長", hourlyRate:250},
   {id:2, name:"Alice",  pin:"3333", role:"店員", hourlyRate:190},
 ];
 
@@ -585,7 +585,14 @@ function CatalogPanel(props) {
   function openEdit(p){ setEditId(p.id); setEditForm(Object.assign({},p)); setAdjustId(null); setShowAdd(false); }
   function saveEdit(){
     setProducts(function(prev){ return prev.map(function(p){
-      return p.id===editId ? Object.assign({},editForm,{price:Number(editForm.price)||0,cost:Number(editForm.cost)||0}) : p;
+      if (p.id !== editId) return p;
+      var updated = Object.assign({},editForm,{price:Number(editForm.price)||0,cost:Number(editForm.cost)||0});
+      // 如果分類有變動，標記 mainEdited，防止 mergeProducts 覆蓋
+      var rawP = PRODUCTS.find(function(r){ return r.sku===editForm.sku; });
+      if (rawP && (editForm.main !== rawP.main || editForm.sub !== rawP.sub)) {
+        updated.mainEdited = true;
+      }
+      return updated;
     }); });
     setEditId(null); setEditForm(null);
   }
@@ -4231,7 +4238,9 @@ function POSSystem() {
             .filter(function(s){ return deletedSkusR.indexOf(s.sku)===-1; })
             .map(function(s){
               var raw = rawSkus[s.sku];
-              return raw ? Object.assign({},s,{main:raw.main,sub:raw.sub}) : s;
+              // mainEdited=true 代表手動改過分類，保留 Firebase 的值
+              if (raw && !s.mainEdited) return Object.assign({},s,{main:raw.main,sub:raw.sub});
+              return s;
             });
           PRODUCTS.forEach(function(p){
             if (p.main !== "業外收入") return;
@@ -4287,8 +4296,8 @@ function POSSystem() {
           .filter(function(s){ return deletedSkus2.indexOf(s.sku) === -1; })
           .map(function(s){
             var raw = rawSkus[s.sku];
-            if (raw) {
-              // RAW 存在的商品：main/sub 以 RAW 為準（防止分類調整被覆蓋）
+            if (raw && !s.mainEdited) {
+              // RAW 存在且未手動改過分類：main/sub 以 RAW 為準
               return Object.assign({},s,{main:raw.main, sub:raw.sub});
             }
             // RAW 沒有的商品（新增的 / 業外收入）：完整保留
