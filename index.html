@@ -4484,7 +4484,7 @@ function POSSystem() {
     if (trainingMode) {
       setOrderPlaced(true);
       setTimeout(function(){
-        setOrderPlaced(false); setCart([]); setMemberPhone(""); setDiscount(0); setFixedDisc(0); setBagFee(0); setCustomPriceItem(null); resetSplit();
+        nextOrder();
       }, 2200);
       return;
     }
@@ -4535,9 +4535,11 @@ function POSSystem() {
       });
     }
     setOrderPlaced(true);
-    setTimeout(function(){
-      setOrderPlaced(false); setCart([]); setMemberPhone(""); setDiscount(0); setFixedDisc(0); setBagFee(0); setCustomPriceItem(null); resetSplit();
-    }, 2200);
+    // orderPlaced 狀態保留，讓使用者可以列印收據，按「下一筆」才清空
+  }
+
+  function nextOrder() {
+    setOrderPlaced(false); setCart([]); setMemberPhone(""); setDiscount(0); setFixedDisc(0); setBagFee(0); setCustomPriceItem(null); resetSplit();
   }
 
   var mainColor = activeMain ? (CAT_COLORS[activeMain] || "#b8910a") : "#b8910a";
@@ -5290,11 +5292,18 @@ function POSSystem() {
                   : "確認結帳"}
               </button>
               {orderPlaced && (
-                <button onClick={function(){ printReceipt(orders[orders.length-1]); }}
-                  style={{width:"100%",padding:"10px 0",borderRadius:10,border:"1px solid #4a8ec0",
-                    background:"#ffffff",color:"#4a8ec0",fontSize:13,fontWeight:700,cursor:"pointer",marginTop:6}}>
-                  🖨 列印收據
-                </button>
+                <div style={{display:"flex",gap:6,marginTop:6}}>
+                  <button onClick={function(){ printReceipt(orders[0]); }}
+                    style={{flex:1,padding:"10px 0",borderRadius:9,border:"1px solid #4a8ec0",
+                      background:"#ffffff",color:"#4a8ec0",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                    🖨 列印收據
+                  </button>
+                  <button onClick={nextOrder}
+                    style={{flex:1,padding:"10px 0",borderRadius:9,border:"none",
+                      background:"#2a2520",color:"#ffffff",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                    下一筆 →
+                  </button>
+                </div>
               )}
             </div>
 
