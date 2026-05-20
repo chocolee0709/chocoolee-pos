@@ -28,8 +28,6 @@
 <body>
   <div id="root"></div>
   <div id="sync-toast">☁️ 已同步</div>
-
-  <!-- 匯入備份浮動按鈕 -->
   <div id="import-btn" style="position:fixed;bottom:20px;right:20px;z-index:8888;display:none;">
     <button onclick="document.getElementById('import-panel').style.display='flex'"
       style="background:#b8910a;color:#fff;border:none;border-radius:24px;padding:10px 18px;
@@ -38,8 +36,6 @@
       ⬇️ 匯入資料
     </button>
   </div>
-
-  <!-- 匯入備份 Modal -->
   <div id="import-panel" style="position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.5);
     display:none;align-items:center;justify-content:center;">
     <div style="background:#fff;border-radius:16px;padding:24px;width:340px;max-width:92vw;
@@ -91,7 +87,6 @@
     t._hide = setTimeout(function(){ t.classList.remove("show","error"); }, 2800);
   }
 
-  // 取得 idToken（有效期 1 小時，快到期自動重新登入）
   function getToken(cb) {
     var now = Date.now();
     if (fbToken && fbTokenExpiry - now > 60000) { cb(fbToken); return; }
@@ -105,7 +100,6 @@
         fbTokenExpiry = now + (parseInt(d.expiresIn||3600)*1000);
         cb(fbToken);
       } else {
-        console.error("Firebase 登入失敗", d.error);
         showToast("⚠️ 雲端登入失敗", true);
         cb(null);
       }
@@ -115,7 +109,6 @@
     });
   }
 
-  // 從 Firebase 載入所有資料 → 寫入 localStorage → 通知 React 更新
   function fetchAllFromFirebase(callback) {
     getToken(function(token){
       if (!token) { if(callback) callback(false); return; }
@@ -138,7 +131,6 @@
               } catch(e){}
             });
             if (changed.length > 0 && window.__reactSetters) {
-              // 通知 React 更新有變動的 key
               changed.forEach(function(key) {
                 var setter = window.__reactSetters[key];
                 if (setter) {
@@ -163,17 +155,17 @@
     showToast("⏳ 正在從雲端載入資料...");
     fetchAllFromFirebase(function(ok){
       if (ok) showToast("☁️ 雲端資料載入完成");
-      else { showToast("⚠️ 雲端載入失敗，使用本地資料", true); }
+      else showToast("⚠️ 雲端載入失敗，使用本地資料", true);
       if(callback) callback(ok);
     });
   };
 
-  // 推送單一 key → Firebase（防抖 2 秒）
   window.pushToFirebase = function(key, value) {
     clearTimeout(syncTimers[key]);
     syncTimers[key] = setTimeout(function(){
       getToken(function(token){
         if (!token) return;
+        lastLoadTime = Date.now();
         fetch(FB + "/chocoolee/" + key + ".json?auth=" + token, {
           method:"PUT",
           headers:{"Content-Type":"application/json"},
@@ -186,100 +178,52 @@
     }, 2000);
   };
 
-  // ── Firebase 即時監聽（SSE）──
-  // Firebase Realtime Database 支援 SSE，有變動時自動通知
   function startSSE() {
     if (sseSource) { sseSource.close(); sseSource = null; }
     clearTimeout(sseReconnectTimer);
-
     getToken(function(token){
-      if (!token) {
-        // token 取不到，60 秒後重試
-        sseReconnectTimer = setTimeout(startSSE, 60000);
-        return;
-      }
+      if (!token) { sseReconnectTimer = setTimeout(startSSE, 60000); return; }
       var url = FB + "/chocoolee.json?auth=" + token + "&timeout=55s";
       try {
         sseSource = new EventSource(url);
-
         sseSource.addEventListener("put", function(e) {
-          // Firebase 資料有變動
           var now = Date.now();
-          if (now - lastLoadTime < 3000) return; // 自己剛推送的，忽略
+          if (now - lastLoadTime < 3000) return;
           lastLoadTime = now;
           showToast("🔄 偵測到資料更新，同步中...");
-          fetchAllFromFirebase(function(ok){
-            if (ok) showToast("✅ 資料已同步最新");
-          });
+          fetchAllFromFirebase(function(ok){ if (ok) showToast("✅ 資料已同步最新"); });
         });
-
         sseSource.addEventListener("patch", function(e) {
           var now = Date.now();
           if (now - lastLoadTime < 3000) return;
           lastLoadTime = now;
           fetchAllFromFirebase(null);
         });
-
         sseSource.onerror = function() {
-          sseSource.close();
-          sseSource = null;
-          // 30 秒後重新連線
+          sseSource.close(); sseSource = null;
           sseReconnectTimer = setTimeout(startSSE, 30000);
         };
-
-      } catch(e) {
-        console.warn("SSE 不支援，改用輪詢", e);
-        startPolling();
-      }
+      } catch(e) { startPolling(); }
     });
   }
 
-  // 備用：每 30 秒輪詢一次（SSE 不支援時）
   var pollingTimer = null;
   function startPolling() {
     clearInterval(pollingTimer);
     pollingTimer = setInterval(function(){
-      var now = Date.now();
-      if (now - lastLoadTime < 5000) return; // 剛推送過，跳過
+      if (Date.now() - lastLoadTime < 5000) return;
       fetchAllFromFirebase(null);
     }, 30000);
   }
 
-  // 覆蓋 pushToFirebase，記錄推送時間避免自己觸發 SSE
-  var origPush = window.pushToFirebase;
-  window.pushToFirebase = function(key, value) {
-    clearTimeout(syncTimers[key]);
-    syncTimers[key] = setTimeout(function(){
-      getToken(function(token){
-        if (!token) return;
-        lastLoadTime = Date.now(); // 標記自己推送，避免 SSE 誤觸發
-        fetch(FB + "/chocoolee/" + key + ".json?auth=" + token, {
-          method:"PUT",
-          headers:{"Content-Type":"application/json"},
-          body: typeof value === "string" ? value : JSON.stringify(value)
-        }).then(function(r){
-          if (r.ok) showToast("☁️ 已同步");
-          else showToast("⚠️ 同步失敗", true);
-        }).catch(function(){ showToast("⚠️ 推送失敗", true); });
-      });
-    }, 2000);
-  };
-
-  // 啟動：先載入資料，再開始即時監聽
   window.firebaseReady = false;
   loadFromFirebase(function(ok){
     window.firebaseReady = true;
     window.__firebaseLoaded = ok;
-    if (ok) {
-      // 載入成功後啟動即時監聽
-      startSSE();
-    } else {
-      document.getElementById("import-btn").style.display = "block";
-      startPolling(); // 降級為輪詢
-    }
+    if (ok) startSSE();
+    else { document.getElementById("import-btn").style.display = "block"; startPolling(); }
   });
 
-  // 手動匯入 JSON 備份
   function doImport() {
     var file = document.getElementById("import-file").files[0];
     if (!file) { alert("請先選擇 JSON 檔案"); return; }
@@ -289,8 +233,8 @@
         var data = JSON.parse(e.target.result);
         var count = 0;
         Object.keys(data).forEach(function(key) {
-          var val = typeof data[key] === 'string' ? data[key] : JSON.stringify(data[key]);
-          localStorage.setItem('chocoolee-' + key, val);
+          var val = typeof data[key] === "string" ? data[key] : JSON.stringify(data[key]);
+          localStorage.setItem("chocoolee-" + key, val);
           if (window.pushToFirebase) window.pushToFirebase(key, val);
           count++;
         });
@@ -298,17 +242,14 @@
         msg.textContent = "✓ 成功匯入 " + count + " 筆資料，重新整理頁面後生效";
         msg.style.display = "block";
         setTimeout(function(){ location.reload(); }, 1800);
-      } catch(err) {
-        alert("JSON 格式錯誤：" + err.message);
-      }
+      } catch(err) { alert("JSON 格式錯誤：" + err.message); }
     };
     reader.readAsText(file);
   }
 
-  // SSE token 每 50 分鐘自動更新（token 1小時過期）
   setInterval(function(){
-    fbToken = null; // 清掉舊 token，下次 getToken 自動取新的
-    if (sseSource) startSSE(); // 重啟 SSE 連線用新 token
+    fbToken = null;
+    if (sseSource) startSSE();
   }, 50 * 60 * 1000);
   </script>
 
@@ -1019,11 +960,11 @@ function CatalogPanel(props) {
             setShowAdd(function(v){return !v;});
             setEditId(null);setAdjustId(null);
           }}
-          style={{background:showAdd?"#2a2520":"#b8910a",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+          style={{background:showAdd?"#2a2520":"#b8910a",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
           ＋ 新增商品
         </button>
         {/* 2. 批次新增 */}
-        <label style={{background:"#7055c0",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+        <label style={{background:"#7055c0",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
           ＋ 批次新增
           <input type="file" accept=".xlsx,.xls" onChange={handleBatchImport} style={{display:"none"}}/>
         </label>
@@ -1033,16 +974,16 @@ function CatalogPanel(props) {
         </button>
         {/* 3. 庫存異動明細 */}
         <button onClick={function(){setShowLedger(true);}}
-          style={{background:"#5a5048",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+          style={{background:"#5a5048",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
           📋 庫存異動明細
         </button>
         {/* 4. 匯出盤點表 */}
         <button onClick={exportInventory}
-          style={{background:"#3d9e32",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+          style={{background:"#3d9e32",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
           ↓ 匯出盤點表
         </button>
         {/* 5. 匯入盤點 */}
-        <label style={{background:"#4a8ec0",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+        <label style={{background:"#4a8ec0",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
           ↑ 匯入盤點
           <input type="file" accept=".xlsx,.xls" onChange={handleImportFile} style={{display:"none"}}/>
         </label>
@@ -1282,7 +1223,7 @@ function CatalogPanel(props) {
 
       {/* ── 商品庫存表格 ── */}
       <div style={{flex:1,overflowY:"auto",overflowX:"auto",minHeight:0}}>
-        <table style={{width:"100%",minWidth:680,borderCollapse:"collapse",fontSize:12}}>
+        <table style={{width:"100%",minWidth:680,borderCollapse:"collapse",fontSize:15}}>
           <thead style={{position:"sticky",top:0,background:"#f5f4f0",zIndex:1}}>
             <tr style={{fontSize:10,color:"#9a968e"}}>
               <th style={{padding:"7px 8px 7px 4px",borderBottom:"2px solid #d8d4cc",textAlign:"center",width:32}}>
@@ -1812,7 +1753,6 @@ function OrdersDrawer(props) {
     }
   });
 
-  // ── 列印當日對帳單 ──
   function printDailyReport() {
     var win = window.open("", "_blank", "width=620,height=800");
     if (!win) { alert("無法開啟列印視窗，請允許瀏覽器彈出視窗"); return; }
@@ -4492,6 +4432,52 @@ function POSSystem() {
     var z = {}; PAYMENTS.forEach(function(m){ z[m]=0; }); z[method]=total; setSplitPay(z);
   }
 
+  // ── 列印收據 ──
+  function printReceipt(order) {
+    if (!order) return;
+    var win = window.open("","_blank","width=400,height=600");
+    if (!win) { alert("請允許瀏覽器彈出視窗"); return; }
+    var itemRows = (order.items||[]).map(function(i){
+      return '<tr><td style="padding:2px 0">'+i.name+'</td>'
+           + '<td style="text-align:center;padding:2px 4px">x'+i.qty+'</td>'
+           + '<td style="text-align:right;padding:2px 0">$'+(i.price*i.qty).toLocaleString()+'</td></tr>';
+    }).join("");
+    var html = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+      + '<title>收據</title>'
+      + '<style>'
+      + 'body{font-family:"Noto Sans TC",Arial,sans-serif;font-size:13px;width:72mm;margin:0 auto;padding:8px;}'
+      + 'h2{text-align:center;font-size:15px;margin:4px 0;}'
+      + '.sub{text-align:center;font-size:11px;color:#666;margin-bottom:8px;}'
+      + 'table{width:100%;border-collapse:collapse;}'
+      + '.divider{border-top:1px dashed #999;margin:6px 0;}'
+      + '.total{font-size:15px;font-weight:bold;text-align:right;margin-top:4px;}'
+      + '.footer{text-align:center;font-size:11px;color:#666;margin-top:10px;}'
+      + '@media print{button{display:none;}}'
+      + '</style></head><body>'
+      + '<h2>巧克莉莉選物店</h2>'
+      + '<div class="sub">員林店｜'+order.date+' '+order.time+'</div>'
+      + '<div class="divider"></div>'
+      + '<table>'+itemRows+'</table>'
+      + '<div class="divider"></div>'
+      + '<table>'
+      + '<tr><td>小計</td><td style="text-align:right">$'+(order.subtotal||order.total).toLocaleString()+'</td></tr>'
+      + (order.discAmt>0?'<tr><td>折扣</td><td style="text-align:right;color:#c00">-$'+order.discAmt.toLocaleString()+'</td></tr>':'')
+      + (order.bagFee>0?'<tr><td>'+(order.bagFee===80?'運費':'紙袋')+'</td><td style="text-align:right">+$'+order.bagFee+'</td></tr>':'')
+      + '</table>'
+      + '<div class="total">合計 $'+order.total.toLocaleString()+'</div>'
+      + '<div class="divider"></div>'
+      + '<div class="sub">付款方式：'+(order.payMethod||"—")+'</div>'
+      + (order.memberPhone?'<div class="sub">會員：'+order.memberPhone+'</div>':'')
+      + '<div class="footer">感謝您的光臨 ♡<br>歡迎再次蒞臨</div>'
+      + '<br><button onclick="window.print();window.close();" '
+      + 'style="width:100%;padding:8px;background:#b8910a;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;">🖨 列印</button>'
+      + '</body></html>';
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    setTimeout(function(){ win.print(); }, 500);
+  }
+
   function handleCheckout() {
     if (!cart.length || !splitOk) return;
     // 教育訓練模式：模擬結帳，不記錄真實資料
@@ -4878,7 +4864,7 @@ function POSSystem() {
                       borderRadius:9,padding:"10px 4px",cursor:"pointer",display:"flex",flexDirection:"column",
                       alignItems:"center",gap:4,color:isA?"#ffffff":"#9a968e",flexShrink:0}}>
                     <span style={{fontSize:19}}>{CAT_ICONS[mc]||"◆"}</span>
-                    <span style={{fontSize:12,fontWeight:600,textAlign:"center",lineHeight:1.2}}>
+                    <span style={{fontSize:17,fontWeight:600,textAlign:"center",lineHeight:1.2}}>
                       {mc.length>5 ? mc.substring(0,5)+"…" : mc}
                     </span>
                   </button>
@@ -4905,7 +4891,7 @@ function POSSystem() {
                 <button onClick={function(){setActiveSub(null);}}
                   style={{padding:"4px 13px",borderRadius:20,border:!activeSub?"none":"1px solid #2e2a22",
                     background:!activeSub?mainColor:"#ffffff",color:!activeSub?"#ffffff":"#7a7068",
-                    cursor:"pointer",fontSize:13,fontWeight:!activeSub?700:500,flexShrink:0}}>
+                    cursor:"pointer",fontSize:16,fontWeight:!activeSub?700:500,flexShrink:0}}>
                   全部
                 </button>
                 {subCats.map(function(sc) {
@@ -4914,7 +4900,7 @@ function POSSystem() {
                     <button key={sc} onClick={function(){setActiveSub(isA?null:sc);}}
                         style={{padding:"4px 13px",borderRadius:20,border:isA?"none":"1px solid #2e2a22",
                           background:isA?mainColor:"#ffffff",color:isA?"#ffffff":"#9a968e",
-                          cursor:"pointer",fontSize:13,fontWeight:isA?700:500,flexShrink:0}}>
+                          cursor:"pointer",fontSize:16,fontWeight:isA?700:500,flexShrink:0}}>
                         {sc}
                       </button>
                   );
@@ -5303,6 +5289,13 @@ function POSSystem() {
                   : trainingMode ? "🎓 模擬結帳"
                   : "確認結帳"}
               </button>
+              {orderPlaced && (
+                <button onClick={function(){ printReceipt(orders[orders.length-1]); }}
+                  style={{width:"100%",padding:"10px 0",borderRadius:10,border:"1px solid #4a8ec0",
+                    background:"#ffffff",color:"#4a8ec0",fontSize:13,fontWeight:700,cursor:"pointer",marginTop:6}}>
+                  🖨 列印收據
+                </button>
+              )}
             </div>
 
           </div>{/* end 底部付款區 */}
