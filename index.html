@@ -548,14 +548,14 @@ function CatalogPanel(props) {
       var img = new Image();
       img.onload = function() {
         var canvas = document.createElement("canvas");
-        var max = 400;  // 最大尺寸 400px（原本 120px）
+        var max = 250;  // 最大尺寸 250px
         var w = img.width, h = img.height;
         if (w > h) { if (w>max){ h=Math.round(h*(max/w)); w=max; } }
         else { if (h>max){ w=Math.round(w*(max/h)); h=max; } }
         canvas.width = w; canvas.height = h;
         var ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0, w, h);
-        var dataUrl = canvas.toDataURL("image/jpeg", 0.8);  // 畫質 80%
+        var dataUrl = canvas.toDataURL("image/jpeg", 0.65);  // 畫質 65%
         setForm("image", dataUrl);
       };
       img.src = ev.target.result;
@@ -4085,14 +4085,38 @@ var FB_URL = "https://chocoolee-pos-default-rtdb.firebaseio.com";
 
 function saveData(key, value) {
   try {
-    var serialized = JSON.stringify(value);
-    // Claude.ai artifact storage
+    var serialized = typeof value === "string" ? value : JSON.stringify(value);
+
+    // 如果是 products，把圖片分開存
+    if (key === "products") {
+      try {
+        var prods = typeof value === "string" ? JSON.parse(value) : value;
+        var images = {};
+        var prodsNoImage = prods.map(function(p) {
+          if (!p) return p;
+          if (p.image && p.image.startsWith("data:")) {
+            images[String(p.id)] = p.image;
+            return Object.assign({}, p, {image: "__img__"});
+          }
+          return p;
+        });
+        // 圖片單獨存
+        if (Object.keys(images).length > 0) {
+          var existImg = {};
+          try { existImg = JSON.parse(localStorage.getItem("chocoolee-product-images") || "{}"); } catch(e) {}
+          var mergedImg = Object.assign({}, existImg, images);
+          var imgStr = JSON.stringify(mergedImg);
+          try { localStorage.setItem("chocoolee-product-images", imgStr); } catch(e) {}
+          try { if (window.pushToFirebase) window.pushToFirebase("product-images", imgStr); } catch(e) {}
+        }
+        serialized = JSON.stringify(prodsNoImage);
+      } catch(e) {}
+    }
+
     if (window.storage) {
       window.storage.set("chocoolee-"+key, serialized).catch(function(){});
     }
-    // localStorage fallback (HTML 版)
     try { localStorage.setItem("chocoolee-"+key, serialized); } catch(e) {}
-    // Firebase 同步（HTML 版有 pushToFirebase 時觸發）
     try {
       if (window.pushToFirebase) window.pushToFirebase(key, serialized);
     } catch(e) {}
@@ -4168,6 +4192,8 @@ function POSSystem() {
       schedule:   setSchedule,
       products:   function(val) {
         try {
+          var imgMap = {};
+          try { var _im2=localStorage.getItem("chocoolee-product-images"); if(_im2) imgMap=JSON.parse(_im2); }catch(er2){}
           var deletedSkusR = [];
           try { var _dsr=localStorage.getItem("chocoolee-deletedskus"); if(_dsr) deletedSkusR=JSON.parse(_dsr); }catch(er){}
           var saved = typeof val === "string" ? JSON.parse(val) : val;
@@ -4177,10 +4203,10 @@ function POSSystem() {
           var merged = saved
             .filter(function(s){ return deletedSkusR.indexOf(s.sku)===-1; })
             .map(function(s){
+              var img = s.image === "__img__" ? (imgMap[String(s.id)] || "") : (s.image || "");
               var raw = rawSkus[s.sku];
-              // mainEdited=true 代表手動改過分類，保留 Firebase 的值
-              if (raw && !s.mainEdited) return Object.assign({},s,{main:raw.main,sub:raw.sub});
-              return s;
+              if (raw && !s.mainEdited) return Object.assign({},s,{main:raw.main,sub:raw.sub,image:img});
+              return Object.assign({},s,{image:img});
             });
           PRODUCTS.forEach(function(p){
             if (p.main !== "業外收入") return;
@@ -4208,6 +4234,9 @@ function POSSystem() {
     loadOne("deletedskus", function(v){
       try { if(v) localStorage.setItem("chocoolee-deletedskus", typeof v==="string"?v:JSON.stringify(v)); }catch(e){}
     });
+    loadOne("product-images", function(v){
+      try { if(v) localStorage.setItem("chocoolee-product-images", typeof v==="string"?v:JSON.stringify(v)); }catch(e){}
+    });
     loadOne("members",    setMembers);
     loadOne("orders",     setOrders);
     loadOne("stocks",     setSharedStocks);
@@ -4224,24 +4253,26 @@ function POSSystem() {
         var deletedSkus2 = [];
         try { var _ds2=localStorage.getItem("chocoolee-deletedskus"); if(_ds2) deletedSkus2=JSON.parse(_ds2); }catch(e2){}
 
+        // 讀取圖片（存在獨立節點）
+        var imgMap = {};
+        try { var _im=localStorage.getItem("chocoolee-product-images"); if(_im) imgMap=JSON.parse(_im); }catch(e3){}
+
         var saved = JSON.parse(v);
         if (!saved || saved.length === 0) return;
 
-        // saved 已是完整商品列表（含新增的），以它為基礎
-        // 只用 RAW 覆蓋 main/sub（分類調整），不重新 merge 整份 RAW
         var rawSkus = {};
         PRODUCTS.forEach(function(p){ rawSkus[p.sku]=p; });
 
         var merged = saved
           .filter(function(s){ return deletedSkus2.indexOf(s.sku) === -1; })
           .map(function(s){
+            // 還原圖片（__img__ 代表圖片存在獨立節點）
+            var img = s.image === "__img__" ? (imgMap[String(s.id)] || "") : (s.image || "");
             var raw = rawSkus[s.sku];
             if (raw && !s.mainEdited) {
-              // RAW 存在且未手動改過分類：main/sub 以 RAW 為準
-              return Object.assign({},s,{main:raw.main, sub:raw.sub});
+              return Object.assign({},s,{main:raw.main, sub:raw.sub, image:img});
             }
-            // RAW 沒有的商品（新增的 / 業外收入）：完整保留
-            return s;
+            return Object.assign({},s,{image:img});
           });
 
         // 業外收入商品若不在 saved 裡，永遠補上
@@ -5031,7 +5062,7 @@ function POSSystem() {
           </div>
 
           {/* ── 折扣 + 金額小計 + 付款（固定底部，內部可捲動）── */}
-          <div style={{flexShrink:0,borderTop:"1px solid #d8d4cc",display:"flex",flexDirection:"column",maxHeight:"52vh",overflowY:"auto"}}>
+          <div style={{flexShrink:0,borderTop:"1px solid #d8d4cc",display:"flex",flexDirection:"column",overflowY:"auto",maxHeight:"60vh"}}>
 
             {/* 折扣 */}
             <div style={{padding:"8px 13px",borderBottom:"1px solid #e8e4de"}}>
@@ -5276,7 +5307,7 @@ function POSSystem() {
               )}
             </div>
             {/* 結帳按鈕 — 黏在付款區底部 */}
-            <div style={{padding:"8px 13px 12px",background:"#eeece8"}}>
+            <div style={{padding:"8px 13px 12px",background:"#eeece8",position:"sticky",bottom:0}}>
               <button onClick={handleCheckout} disabled={!cart.length || !splitOk}
                 style={{width:"100%",padding:"13px 0",borderRadius:9,border:"none",
                   background:!cart.length?"#e0dcd6":!splitOk?"#e8e4de":orderPlaced?"#3a7a30":"#b8910a",
