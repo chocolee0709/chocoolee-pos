@@ -4184,7 +4184,23 @@ function POSSystem() {
     // 把 setters 註冊到 window，讓 Firebase SSE 即時更新 React state
     window.__reactSetters = {
       members:    setMembers,
-      orders:     setOrders,
+      orders:     function(val) {
+        // 月份節點更新時合併到 orders state
+        try {
+          var arr = typeof val === "string" ? JSON.parse(val) : val;
+          if (Array.isArray(arr)) {
+            setOrders(function(prev){
+              // 合併：移除同月份的舊資料，加入新資料
+              if (arr.length === 0) return prev;
+              var monthKey = getOrderKey(arr[0].date);
+              var filtered = prev.filter(function(o){ return getOrderKey(o.date) !== monthKey; });
+              var combined = filtered.concat(arr);
+              combined.sort(function(a,b){ return (b.date+b.time).localeCompare(a.date+a.time); });
+              return combined;
+            });
+          }
+        } catch(e) {}
+      },
       stocks:     setSharedStocks,
       stocklog:   setSharedStockLog,
       shiftlog:   setShiftLog,
@@ -4238,7 +4254,50 @@ function POSSystem() {
       try { if(v) localStorage.setItem("chocoolee-product-images", typeof v==="string"?v:JSON.stringify(v)); }catch(e){}
     });
     loadOne("members",    setMembers);
-    loadOne("orders",     setOrders);
+    // 載入訂單：最近 6 個月
+    (function(){
+      var now = new Date();
+      var combined = [];
+      var loaded = 0;
+      var total = 6;
+      function tryMerge(v) {
+        if (v) {
+          try {
+            var arr = JSON.parse(v);
+            if (Array.isArray(arr)) combined = combined.concat(arr);
+          } catch(e) {}
+        }
+        loaded++;
+        if (loaded === total) {
+          combined.sort(function(a,b){ return (b.date+b.time).localeCompare(a.date+a.time); });
+          setOrders(combined);
+        }
+      }
+      for (var mi = 0; mi < total; mi++) {
+        var d = new Date(now.getFullYear(), now.getMonth()-mi, 1);
+        var key = "orders-"+d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
+        loadOne(key, tryMerge);
+      }
+      // 相容舊版 orders key
+      var oldOrders = localStorage.getItem("chocoolee-orders");
+      if (oldOrders) {
+        try {
+          var old = JSON.parse(oldOrders);
+          if (Array.isArray(old) && old.length > 0) {
+            var byMonth = {};
+            old.forEach(function(o){
+              var key2 = getOrderKey(o.date);
+              if (!byMonth[key2]) byMonth[key2] = [];
+              byMonth[key2].push(o);
+            });
+            Object.keys(byMonth).forEach(function(key2){
+              saveData(key2, byMonth[key2]);
+            });
+            localStorage.removeItem("chocoolee-orders");
+          }
+        } catch(e) {}
+      }
+    })();
     loadOne("stocks",     setSharedStocks);
     loadOne("stocklog",   setSharedStockLog);
     loadOne("shiftlog",   setShiftLog);
@@ -4305,10 +4364,27 @@ function POSSystem() {
       return next;
     });
   }
+  // 取得當月訂單 key，例如 "orders-2026-05"
+  function getOrderKey(dateStr) {
+    var d = dateStr ? new Date(dateStr) : new Date();
+    var y = d.getFullYear();
+    var m = String(d.getMonth()+1).padStart(2,"0");
+    return "orders-"+y+"-"+m;
+  }
+
   function saveOrders(updater) {
     setOrders(function(prev){
       var next = typeof updater==="function" ? updater(prev) : updater;
-      saveData("orders", next);
+      // 依月份分組儲存
+      var byMonth = {};
+      next.forEach(function(o){
+        var key = getOrderKey(o.date);
+        if (!byMonth[key]) byMonth[key] = [];
+        byMonth[key].push(o);
+      });
+      Object.keys(byMonth).forEach(function(key){
+        saveData(key, byMonth[key]);
+      });
       return next;
     });
   }
@@ -4465,28 +4541,33 @@ function POSSystem() {
 
   // ── 列印收據 ──
   function printReceipt(order) {
-    if (!order) return;
-    var win = window.open("","_blank","width=400,height=600");
-    if (!win) { alert("請允許瀏覽器彈出視窗"); return; }
+    if (!order) { alert("找不到訂單資料"); return; }
     var itemRows = (order.items||[]).map(function(i){
-      return '<tr><td style="padding:2px 0">'+i.name+'</td>'
-           + '<td style="text-align:center;padding:2px 4px">x'+i.qty+'</td>'
-           + '<td style="text-align:right;padding:2px 0">$'+(i.price*i.qty).toLocaleString()+'</td></tr>';
+      return '<tr><td style="padding:3px 0">'+i.name+'</td>'
+           + '<td style="text-align:center;padding:3px 4px">x'+i.qty+'</td>'
+           + '<td style="text-align:right;padding:3px 0;white-space:nowrap">$'+(i.price*i.qty).toLocaleString()+'</td></tr>';
     }).join("");
+    var cashier = order.cashier || (currentStaff ? currentStaff.name : "—");
     var html = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
       + '<title>收據</title>'
       + '<style>'
-      + 'body{font-family:"Noto Sans TC",Arial,sans-serif;font-size:13px;width:72mm;margin:0 auto;padding:8px;}'
-      + 'h2{text-align:center;font-size:15px;margin:4px 0;}'
-      + '.sub{text-align:center;font-size:11px;color:#666;margin-bottom:8px;}'
+      + 'body{font-family:"Noto Sans TC",Arial,sans-serif;font-size:13px;width:80mm;margin:0 auto;padding:10px 6px;}'
+      + 'h2{text-align:center;font-size:16px;font-weight:900;margin:4px 0 2px;letter-spacing:1px;}'
+      + '.center{text-align:center;}'
+      + '.sub{text-align:center;font-size:11px;color:#444;line-height:1.7;}'
       + 'table{width:100%;border-collapse:collapse;}'
+      + 'td{font-size:12px;vertical-align:top;}'
       + '.divider{border-top:1px dashed #999;margin:6px 0;}'
-      + '.total{font-size:15px;font-weight:bold;text-align:right;margin-top:4px;}'
-      + '.footer{text-align:center;font-size:11px;color:#666;margin-top:10px;}'
-      + '@media print{button{display:none;}}'
+      + '.total{font-size:16px;font-weight:bold;text-align:right;margin-top:4px;}'
+      + '.footer{text-align:center;font-size:11px;color:#555;margin-top:8px;line-height:1.8;}'
+      + '@media print{.noprint{display:none;}}'
       + '</style></head><body>'
       + '<h2>巧克莉莉選物店</h2>'
-      + '<div class="sub">員林店｜'+order.date+' '+order.time+'</div>'
+      + '<div class="sub">員林店</div>'
+      + '<div class="sub">彰化縣員林市萬年路三段61號</div>'
+      + '<div class="sub">統編：92298507</div>'
+      + '<div class="divider"></div>'
+      + '<div class="sub">'+order.date+' '+order.time+'　收銀員：'+cashier+'</div>'
       + '<div class="divider"></div>'
       + '<table>'+itemRows+'</table>'
       + '<div class="divider"></div>'
@@ -4499,14 +4580,30 @@ function POSSystem() {
       + '<div class="divider"></div>'
       + '<div class="sub">付款方式：'+(order.payMethod||"—")+'</div>'
       + (order.memberPhone?'<div class="sub">會員：'+order.memberPhone+'</div>':'')
-      + '<div class="footer">感謝您的光臨 ♡<br>歡迎再次蒞臨</div>'
-      + '<br><button onclick="window.print();window.close();" '
+      + '<div class="footer">感謝您的光臨 ♡<br>www.chocoolee.com</div>'
+      + '<br><button class="noprint" onclick="window.print();" '
       + 'style="width:100%;padding:8px;background:#b8910a;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;">🖨 列印</button>'
       + '</body></html>';
-    win.document.write(html);
-    win.document.close();
-    win.focus();
-    setTimeout(function(){ win.print(); }, 500);
+
+    var win = window.open("", "_blank", "width=420,height=700");
+    if (win) {
+      win.document.open();
+      win.document.write(html);
+      win.document.close();
+      win.focus();
+      setTimeout(function(){ win.print(); }, 600);
+    } else {
+      var iframe = document.createElement("iframe");
+      iframe.style.display = "none";
+      document.body.appendChild(iframe);
+      iframe.contentDocument.open();
+      iframe.contentDocument.write(html);
+      iframe.contentDocument.close();
+      setTimeout(function(){
+        iframe.contentWindow.print();
+        setTimeout(function(){ document.body.removeChild(iframe); }, 1000);
+      }, 600);
+    }
   }
 
   function handleCheckout() {
@@ -4719,14 +4816,30 @@ function POSSystem() {
               <div style={{padding:"8px 14px",borderTop:"1px solid #f0ede8"}}>
                 {/* 匯出/匯入資料備份 — 限店長 */}
                 {isManager && <button onClick={function(){
-                  var KEYS = ["members","orders","stocks","stocklog","shiftlog","products","staffrates","schedule"];
+                  var now = new Date();
+                  var monthKeys = [];
+                  for (var mi = 0; mi < 12; mi++) {
+                    var d = new Date(now.getFullYear(), now.getMonth()-mi, 1);
+                    monthKeys.push("orders-"+d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"));
+                  }
+                  var KEYS = ["members","stocks","stocklog","shiftlog","products","staffrates","schedule","deletedskus","product-images"].concat(monthKeys);
                   var result = {}; var pending = KEYS.length;
                   function tryExport(key) {
                     function gotVal(val) {
                       if (val) { try { result[key] = JSON.parse(val); } catch(e) { result[key] = val; } }
                       pending--;
                       if (pending === 0) {
-                        setExportJson(JSON.stringify(result, null, 2));
+                        var jsonStr = JSON.stringify(result, null, 2);
+                        // 自動下載 JSON 檔案
+                        var blob = new Blob([jsonStr], {type:"application/json"});
+                        var url = URL.createObjectURL(blob);
+                        var a = document.createElement("a");
+                        var now = new Date();
+                        var dateStr = now.toISOString().slice(0,10);
+                        a.href = url; a.download = "chocoolee-backup-"+dateStr+".json";
+                        document.body.appendChild(a); a.click();
+                        document.body.removeChild(a); URL.revokeObjectURL(url);
+                        setExportJson(jsonStr);
                         setShowExport(true);
                       }
                     }
@@ -5324,7 +5437,11 @@ function POSSystem() {
               </button>
               {orderPlaced && (
                 <div style={{display:"flex",gap:6,marginTop:6}}>
-                  <button onClick={function(){ printReceipt(orders[0]); }}
+                  <button onClick={function(){
+                    var lastOrder = orders[orders.length-1];
+                    if (!lastOrder) { alert("找不到訂單資料"); return; }
+                    printReceipt(lastOrder);
+                  }}
                     style={{flex:1,padding:"10px 0",borderRadius:9,border:"1px solid #4a8ec0",
                       background:"#ffffff",color:"#4a8ec0",fontSize:13,fontWeight:700,cursor:"pointer"}}>
                     🖨 列印收據
