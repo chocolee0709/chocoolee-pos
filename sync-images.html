@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>圖片同步工具 - 巧克莉莉</title>
+<style>
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:"Noto Sans TC",sans-serif; background:#f5f4f0; padding:24px; color:#2a2520; }
+h2 { font-size:18px; margin-bottom:8px; color:#b8910a; }
+.sub { font-size:12px; color:#9a968e; margin-bottom:16px; }
+.card { background:#fff; border-radius:12px; padding:20px; margin-bottom:16px; box-shadow:0 2px 8px rgba(0,0,0,0.08); }
+button { background:#b8910a; color:#fff; border:none; border-radius:8px; padding:10px 24px; font-size:14px; font-weight:700; cursor:pointer; margin-right:8px; }
+button.sec { background:#4a8ec0; }
+button:disabled { background:#d8d4cc; cursor:default; }
+.log { background:#f8f8f8; border:1px solid #e8e4de; border-radius:8px; padding:12px; font-size:12px; line-height:1.8; max-height:400px; overflow-y:auto; margin-top:12px; white-space:pre-wrap; font-family:monospace; }
+.warn { background:#fff8f0; border:1px solid #f0d0a0; border-radius:8px; padding:12px; font-size:12px; color:#a06000; margin-bottom:12px; }
+</style>
+</head>
+<body>
+<h2>🔄 圖片同步工具</h2>
+<p class="sub">將本機 localStorage 的商品圖片同步到 Firebase</p>
+
+<div class="card">
+  <div class="warn">
+    ⚠️ 請在<strong>原本有上傳圖片的電腦</strong>上開啟此工具，並確認 POS 系統已在同一台電腦登入過。
+  </div>
+
+  <button onclick="checkLocal()">1️⃣ 先確認本機圖片數量</button>
+  <button class="sec" id="syncBtn" onclick="syncToFirebase()" disabled>2️⃣ 同步到 Firebase</button>
+
+  <div class="log" id="log" style="display:none;"></div>
+</div>
+
+<script>
+var FB     = "https://chocoolee-pos-default-rtdb.firebaseio.com";
+var FB_KEY = "AIzaSyDqJZiwefGVMiTVusd-Z1jTuQByaMS_i2w";
+var FB_USER = "chocolee0709@gmail.com";
+var FB_PASS = "love0501";
+var fbToken = null;
+var localProducts = null;
+
+function log(msg) {
+  var el = document.getElementById("log");
+  el.style.display = "block";
+  el.textContent += msg + "\n";
+  el.scrollTop = el.scrollHeight;
+}
+
+function getToken() {
+  return fetch("https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=" + FB_KEY, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: FB_USER, password: FB_PASS, returnSecureToken: true })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.idToken) { fbToken = d.idToken; return d.idToken; }
+    throw new Error(d.error ? d.error.message : "登入失敗");
+  });
+}
+
+function checkLocal() {
+  document.getElementById("log").textContent = "";
+  log("🔍 讀取本機 localStorage...");
+
+  // 嘗試各種可能的 key
+  var keys = ["chocoolee-products", "pos-products", "products"];
+  var found = null;
+
+  for (var i = 0; i < keys.length; i++) {
+    var val = localStorage.getItem(keys[i]);
+    if (val) {
+      log("✅ 找到資料 key：" + keys[i] + "（" + Math.round(val.length/1024) + " KB）");
+      found = val;
+      break;
+    }
+  }
+
+  if (!found) {
+    log("❌ 找不到本機商品資料！");
+    log("");
+    log("可能原因：");
+    log("1. 請在有安裝 POS 系統的電腦上開啟此工具");
+    log("2. POS 系統需要先在此電腦登入並同步過");
+    log("");
+    log("📋 目前 localStorage 所有 key：");
+    for (var j = 0; j < localStorage.length; j++) {
+      var k = localStorage.key(j);
+      var v = localStorage.getItem(k);
+      log("  " + k + "（" + Math.round(v.length/1024) + " KB）");
+    }
+    return;
+  }
+
+  try {
+    var products = JSON.parse(found);
+    if (typeof products === "string") products = JSON.parse(products);
+    localProducts = products;
+
+    var withImage = products.filter(function(p) {
+      return p && p.image && p.image.startsWith("data:");
+    });
+
+    log("📦 共 " + products.length + " 件商品");
+    log("🖼 有圖片：" + withImage.length + " 件");
+
+    if (withImage.length > 0) {
+      log("");
+      log("有圖片的商品：");
+      withImage.forEach(function(p) {
+        var size = Math.round(p.image.length * 0.75 / 1024);
+        log("  • " + (p.name||p.sku) + "（" + size + " KB）");
+      });
+      log("");
+      log("✅ 確認無誤後，按「2️⃣ 同步到 Firebase」");
+      document.getElementById("syncBtn").disabled = false;
+    } else {
+      log("⚠️ 本機也沒有圖片資料，可能需要重新上傳圖片");
+    }
+  } catch(e) {
+    log("❌ 資料解析失敗：" + e.message);
+  }
+}
+
+async function syncToFirebase() {
+  if (!localProducts) { log("請先按步驟 1 確認本機資料"); return; }
+  document.getElementById("syncBtn").disabled = true;
+
+  log("\n🔐 登入 Firebase...");
+  try {
+    await getToken();
+    log("✅ 登入成功");
+
+    log("💾 推送商品資料（含圖片）到 Firebase...");
+    var r = await fetch(FB + "/chocoolee/products.json?auth=" + fbToken, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(localProducts)
+    });
+
+    if (r.ok) {
+      var withImage = localProducts.filter(function(p) { return p && p.image && p.image.startsWith("data:"); });
+      log("🎉 同步完成！" + withImage.length + " 張圖片已上傳到 Firebase");
+      log("重新整理所有 iPad 上的 POS 系統，圖片就會出現了！");
+    } else {
+      var txt = await r.text();
+      log("❌ 失敗 " + r.status + "：" + txt.slice(0, 300));
+
+      if (r.status === 413 || txt.includes("too large")) {
+        log("");
+        log("⚠️ 資料太大！Firebase 有大小限制");
+        log("建議：先用壓縮工具縮小圖片後再同步");
+      }
+    }
+  } catch(e) {
+    log("❌ 錯誤：" + e.message);
+  }
+
+  document.getElementById("syncBtn").disabled = false;
+}
+</script>
+</body>
+</html>
