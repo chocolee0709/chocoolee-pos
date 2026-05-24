@@ -132,7 +132,6 @@
             });
             if (changed.length > 0 && window.__reactSetters) {
               changed.forEach(function(key) {
-                // 月份訂單 key（orders-YYYY-MM）用 orders setter 處理
                 var setter = window.__reactSetters[key];
                 if (!setter && key.indexOf("orders-") === 0) {
                   setter = window.__reactSetters["orders"];
@@ -4109,14 +4108,20 @@ function saveData(key, value) {
           }
           return p;
         });
-        // 圖片單獨存
         if (Object.keys(images).length > 0) {
           var existImg = {};
           try { existImg = JSON.parse(localStorage.getItem("chocoolee-product-images") || "{}"); } catch(e) {}
           var mergedImg = Object.assign({}, existImg, images);
           var imgStr = JSON.stringify(mergedImg);
           try { localStorage.setItem("chocoolee-product-images", imgStr); } catch(e) {}
-          try { if (window.pushToFirebase) window.pushToFirebase("product-images", imgStr); } catch(e) {}
+          // 圖片用獨立 timer（2.5秒），比 products 的 2 秒晚一點推送，確保不被覆蓋
+          if (window.pushToFirebase) {
+            clearTimeout(window._imgPushTimer);
+            var _imgStr = imgStr;
+            window._imgPushTimer = setTimeout(function(){
+              window.pushToFirebase("product-images", _imgStr);
+            }, 2500);
+          }
         }
         serialized = JSON.stringify(prodsNoImage);
       } catch(e) {}
