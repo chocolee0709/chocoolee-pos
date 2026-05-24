@@ -131,7 +131,13 @@
               } catch(e){}
             });
             if (changed.length > 0 && window.__reactSetters) {
+              var needProductRefresh = false;
               changed.forEach(function(key) {
+                // 獨立圖片節點 product-images/{id}
+                if (key.indexOf("product-images/") === 0) {
+                  needProductRefresh = true;
+                  return;
+                }
                 var setter = window.__reactSetters[key];
                 if (!setter && key.indexOf("orders-") === 0) {
                   setter = window.__reactSetters["orders"];
@@ -143,6 +149,13 @@
                   } catch(e){}
                 }
               });
+              // 圖片有更新時，重新觸發 products setter 讓畫面更新
+              if (needProductRefresh && window.__reactSetters["products"]) {
+                try {
+                  var pval = localStorage.getItem("chocoolee-products");
+                  if (pval) window.__reactSetters["products"](JSON.parse(pval));
+                } catch(e) {}
+              }
             }
           }
           if(callback) callback(true);
@@ -4095,34 +4108,21 @@ function saveData(key, value) {
   try {
     var serialized = typeof value === "string" ? value : JSON.stringify(value);
 
-    // 如果是 products，把圖片分開存
+    // 如果是 products，把圖片分開存到獨立節點
     if (key === "products") {
       try {
         var prods = typeof value === "string" ? JSON.parse(value) : value;
-        var images = {};
         var prodsNoImage = prods.map(function(p) {
           if (!p) return p;
           if (p.image && p.image.startsWith("data:")) {
-            images[String(p.id)] = p.image;
+            // 每張圖單獨存到 product-images/{id}，完全獨立不覆蓋
+            var imgKey = "product-images/" + String(p.id);
+            try { localStorage.setItem("chocoolee-" + imgKey, p.image); } catch(e) {}
+            if (window.pushToFirebase) window.pushToFirebase(imgKey, p.image);
             return Object.assign({}, p, {image: "__img__"});
           }
           return p;
         });
-        if (Object.keys(images).length > 0) {
-          var existImg = {};
-          try { existImg = JSON.parse(localStorage.getItem("chocoolee-product-images") || "{}"); } catch(e) {}
-          var mergedImg = Object.assign({}, existImg, images);
-          var imgStr = JSON.stringify(mergedImg);
-          try { localStorage.setItem("chocoolee-product-images", imgStr); } catch(e) {}
-          // 圖片用獨立 timer（2.5秒），比 products 的 2 秒晚一點推送，確保不被覆蓋
-          if (window.pushToFirebase) {
-            clearTimeout(window._imgPushTimer);
-            var _imgStr = imgStr;
-            window._imgPushTimer = setTimeout(function(){
-              window.pushToFirebase("product-images", _imgStr);
-            }, 2500);
-          }
-        }
         serialized = JSON.stringify(prodsNoImage);
       } catch(e) {}
     }
@@ -4222,8 +4222,6 @@ function POSSystem() {
       schedule:   setSchedule,
       products:   function(val) {
         try {
-          var imgMap = {};
-          try { var _im2=localStorage.getItem("chocoolee-product-images"); if(_im2) imgMap=JSON.parse(_im2); }catch(er2){}
           var deletedSkusR = [];
           try { var _dsr=localStorage.getItem("chocoolee-deletedskus"); if(_dsr) deletedSkusR=JSON.parse(_dsr); }catch(er){}
           var saved = typeof val === "string" ? JSON.parse(val) : val;
@@ -4233,7 +4231,18 @@ function POSSystem() {
           var merged = saved
             .filter(function(s){ return deletedSkusR.indexOf(s.sku)===-1; })
             .map(function(s){
-              var img = s.image === "__img__" ? (imgMap[String(s.id)] || "") : (s.image || "");
+              var img = "";
+              if (s.image === "__img__") {
+                img = localStorage.getItem("chocoolee-product-images/" + String(s.id)) || "";
+                if (!img) {
+                  try {
+                    var oldImgMap = JSON.parse(localStorage.getItem("chocoolee-product-images") || "{}");
+                    img = oldImgMap[String(s.id)] || "";
+                  } catch(e) {}
+                }
+              } else {
+                img = s.image || "";
+              }
               var raw = rawSkus[s.sku];
               if (raw && !s.mainEdited) return Object.assign({},s,{main:raw.main,sub:raw.sub,image:img});
               return Object.assign({},s,{image:img});
@@ -4265,7 +4274,24 @@ function POSSystem() {
       try { if(v) localStorage.setItem("chocoolee-deletedskus", typeof v==="string"?v:JSON.stringify(v)); }catch(e){}
     });
     loadOne("product-images", function(v){
-      try { if(v) localStorage.setItem("chocoolee-product-images", typeof v==="string"?v:JSON.stringify(v)); }catch(e){}
+      if (!v) return;
+      try {
+        var imgData = typeof v === "string" ? JSON.parse(v) : v;
+        if (typeof imgData === "object" && imgData !== null) {
+          // 新格式：{id: base64} — 每張圖存為子節點
+          Object.keys(imgData).forEach(function(imgId) {
+            var imgVal = imgData[imgId];
+            if (imgVal && typeof imgVal === "string" && imgVal.startsWith("data:")) {
+              try { localStorage.setItem("chocoolee-product-images/" + imgId, imgVal); } catch(e) {}
+            }
+          });
+          // 也存整包給相容用
+          try { localStorage.setItem("chocoolee-product-images", JSON.stringify(imgData)); } catch(e) {}
+        } else if (typeof imgData === "string") {
+          // 舊格式：整包字串
+          try { localStorage.setItem("chocoolee-product-images", imgData); } catch(e) {}
+        }
+      } catch(e) {}
     });
     loadOne("members",    setMembers);
     // 載入訂單：最近 6 個月
@@ -4326,10 +4352,6 @@ function POSSystem() {
         var deletedSkus2 = [];
         try { var _ds2=localStorage.getItem("chocoolee-deletedskus"); if(_ds2) deletedSkus2=JSON.parse(_ds2); }catch(e2){}
 
-        // 讀取圖片（存在獨立節點）
-        var imgMap = {};
-        try { var _im=localStorage.getItem("chocoolee-product-images"); if(_im) imgMap=JSON.parse(_im); }catch(e3){}
-
         var saved = JSON.parse(v);
         if (!saved || saved.length === 0) return;
 
@@ -4339,8 +4361,21 @@ function POSSystem() {
         var merged = saved
           .filter(function(s){ return deletedSkus2.indexOf(s.sku) === -1; })
           .map(function(s){
-            // 還原圖片（__img__ 代表圖片存在獨立節點）
-            var img = s.image === "__img__" ? (imgMap[String(s.id)] || "") : (s.image || "");
+            // 從獨立節點讀取圖片
+            var img = "";
+            if (s.image === "__img__") {
+              // 先試獨立節點
+              img = localStorage.getItem("chocoolee-product-images/" + String(s.id)) || "";
+              // 如果沒有，試舊版整包節點
+              if (!img) {
+                try {
+                  var oldImgMap = JSON.parse(localStorage.getItem("chocoolee-product-images") || "{}");
+                  img = oldImgMap[String(s.id)] || "";
+                } catch(e) {}
+              }
+            } else {
+              img = s.image || "";
+            }
             var raw = rawSkus[s.sku];
             if (raw && !s.mainEdited) {
               return Object.assign({},s,{main:raw.main, sub:raw.sub, image:img});
@@ -4348,7 +4383,7 @@ function POSSystem() {
             return Object.assign({},s,{image:img});
           });
 
-        // 業外收入商品若不在 saved 裡，永遠補上
+        // 業外收入永遠保留
         PRODUCTS.forEach(function(p){
           if (p.main !== "業外收入") return;
           var already = merged.find(function(m){ return m.sku===p.sku; });
