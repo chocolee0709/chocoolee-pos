@@ -132,7 +132,11 @@
             });
             if (changed.length > 0 && window.__reactSetters) {
               changed.forEach(function(key) {
+                // 月份訂單 key（orders-YYYY-MM）用 orders setter 處理
                 var setter = window.__reactSetters[key];
+                if (!setter && key.indexOf("orders-") === 0) {
+                  setter = window.__reactSetters["orders"];
+                }
                 if (setter) {
                   try {
                     var val = localStorage.getItem("chocoolee-" + key);
@@ -1791,6 +1795,7 @@ function OrdersDrawer(props) {
       +'body{font-family:"Noto Sans TC","PingFang TC",sans-serif;padding:24px;color:#222;max-width:560px;margin:0 auto}'
       +'h1{font-size:18px;margin:0 0 4px;letter-spacing:0.05em}'
       +'.sub{color:#888;font-size:11px;margin-bottom:18px;border-bottom:2px solid #b8910a;padding-bottom:10px}'
+      +'@media print{.noprint{display:none!important;}}'
       +'.kpi{display:flex;gap:8px;margin-bottom:18px}'
       +'.kpi-box{flex:1;border:1px solid #d8d4cc;border-radius:6px;padding:10px;text-align:center}'
       +'.kpi-label{font-size:9px;color:#888;margin-bottom:3px}'
@@ -1837,6 +1842,10 @@ function OrdersDrawer(props) {
       +'</div>'
 
       +'<div class="footer">CHOCOOLEE POS · 巧克莉莉選物店．員林店</div>'
+      +'<div class="noprint" style="margin-top:16px;display:flex;gap:8px;">'
+      +'<button onclick="window.print()" style="flex:1;padding:10px;background:#b8910a;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">🖨 列印</button>'
+      +'<button onclick="window.close()" style="flex:1;padding:10px;background:#f5f4f0;color:#2a2520;border:1px solid #d8d4cc;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">✕ 關閉</button>'
+      +'</div>'
       +'</body></html>';
 
     win.document.write(html);
@@ -4375,15 +4384,30 @@ function POSSystem() {
   function saveOrders(updater) {
     setOrders(function(prev){
       var next = typeof updater==="function" ? updater(prev) : updater;
-      // 依月份分組儲存
-      var byMonth = {};
+      // 找出有變動的月份（比對新舊訂單）
+      var prevKeys = {};
+      prev.forEach(function(o){ prevKeys[o.no] = o; });
+      var changedMonths = {};
       next.forEach(function(o){
-        var key = getOrderKey(o.date);
-        if (!byMonth[key]) byMonth[key] = [];
-        byMonth[key].push(o);
+        var old = prevKeys[o.no];
+        if (!old || old.status !== o.status || old.total !== o.total) {
+          changedMonths[getOrderKey(o.date)] = true;
+        }
       });
-      Object.keys(byMonth).forEach(function(key){
-        saveData(key, byMonth[key]);
+      // 也檢查被刪除的訂單
+      var nextKeys = {};
+      next.forEach(function(o){ nextKeys[o.no] = true; });
+      prev.forEach(function(o){
+        if (!nextKeys[o.no]) changedMonths[getOrderKey(o.date)] = true;
+      });
+      // 只存有變動的月份
+      if (Object.keys(changedMonths).length === 0) {
+        // 新訂單：存當月
+        changedMonths[getOrderKey()] = true;
+      }
+      Object.keys(changedMonths).forEach(function(key){
+        var monthOrders = next.filter(function(o){ return getOrderKey(o.date) === key; });
+        saveData(key, monthOrders);
       });
       return next;
     });
