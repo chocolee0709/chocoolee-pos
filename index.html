@@ -97,6 +97,7 @@
     }).then(function(r){ return r.json(); }).then(function(d){
       if (d.idToken) {
         fbToken = d.idToken;
+        window._fbToken = d.idToken;
         fbTokenExpiry = now + (parseInt(d.expiresIn||3600)*1000);
         cb(fbToken);
       } else {
@@ -108,6 +109,7 @@
       cb(null);
     });
   }
+  window.getFirebaseToken = getToken;
 
   function fetchAllFromFirebase(callback) {
     getToken(function(token){
@@ -122,6 +124,20 @@
             var changed = [];
             Object.keys(data).forEach(function(key){
               try {
+                // product-images 是物件，要展開每張獨立圖
+                if (key === "product-images" && data[key] && typeof data[key] === "object") {
+                  var imgs = data[key];
+                  Object.keys(imgs).forEach(function(imgId){
+                    var imgKey = "product-images/" + imgId;
+                    var newImg = typeof imgs[imgId] === "string" ? imgs[imgId] : JSON.stringify(imgs[imgId]);
+                    var oldImg = localStorage.getItem("chocoolee-" + imgKey);
+                    if (newImg !== oldImg) {
+                      localStorage.setItem("chocoolee-" + imgKey, newImg);
+                      changed.push(imgKey);
+                    }
+                  });
+                  return;
+                }
                 var newVal = typeof data[key] === "string" ? data[key] : JSON.stringify(data[key]);
                 var oldVal = localStorage.getItem("chocoolee-" + key);
                 if (newVal !== oldVal) {
@@ -4104,6 +4120,68 @@ function AttendanceReport(props) {
 
 var FB_URL = "https://chocoolee-pos-default-rtdb.firebaseio.com";
 
+// 圖片推送佇列（每張獨立推送 + 重試 + 驗證）
+window._imageQueue = window._imageQueue || {};
+function pushImageWithRetry(imgId, imgData, retries) {
+  retries = retries || 0;
+  // 取得有效 token（用 window.getToken，會自動處理過期）
+  if (!window.getFirebaseToken) {
+    if (retries < 5) {
+      setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 1500);
+    }
+    return;
+  }
+  window.getFirebaseToken(function(token){
+    if (!token) {
+      if (retries < 5) {
+        setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+      }
+      return;
+    }
+    fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/product-images/" + imgId + ".json?auth=" + token, {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(imgData)
+    }).then(function(r){
+      if (!r.ok) {
+        if (retries < 5) {
+          setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+        }
+        return;
+      }
+      // 驗證圖片真的存上去了
+      setTimeout(function(){
+        fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/product-images/" + imgId + ".json?auth=" + token)
+          .then(function(vr){
+            if (!vr.ok) {
+              if (retries < 5) {
+                setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+              }
+              return;
+            }
+            return vr.json();
+          })
+          .then(function(v){
+            if (!v || typeof v !== "string" || !v.startsWith("data:")) {
+              if (retries < 5) {
+                setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+              }
+            }
+          })
+          .catch(function(){
+            if (retries < 5) {
+              setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+            }
+          });
+      }, 500);
+    }).catch(function(){
+      if (retries < 5) {
+        setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+      }
+    });
+  });
+}
+
 function saveData(key, value) {
   try {
     var serialized = typeof value === "string" ? value : JSON.stringify(value);
@@ -4115,10 +4193,10 @@ function saveData(key, value) {
         var prodsNoImage = prods.map(function(p) {
           if (!p) return p;
           if (p.image && p.image.startsWith("data:")) {
-            // 每張圖單獨存到 product-images/{id}，完全獨立不覆蓋
+            // 每張圖獨立推送（不經過防抖，避免互相覆蓋）
             var imgKey = "product-images/" + String(p.id);
             try { localStorage.setItem("chocoolee-" + imgKey, p.image); } catch(e) {}
-            if (window.pushToFirebase) window.pushToFirebase(imgKey, p.image);
+            pushImageWithRetry(String(p.id), p.image);
             return Object.assign({}, p, {image: "__img__"});
           }
           return p;
@@ -4878,6 +4956,129 @@ function POSSystem() {
 
               {/* 系統版本 + 資料管理 */}
               <div style={{padding:"8px 14px",borderTop:"1px solid #f0ede8"}}>
+                {/* 同步圖片到 Firebase — 限店長 */}
+                {isManager && <button onClick={function(){
+                  setShowMenu(false);
+                  if (!confirm("即將把本機所有商品圖片強制同步到 Firebase，確定？")) return;
+
+                  var images = {};
+                  try {
+                    var oldMap = JSON.parse(localStorage.getItem("chocoolee-product-images") || "{}");
+                    Object.keys(oldMap).forEach(function(k){
+                      if (oldMap[k] && typeof oldMap[k]==="string" && oldMap[k].startsWith("data:")) {
+                        images[k] = oldMap[k];
+                      }
+                    });
+                  } catch(e){}
+                  for (var i = 0; i < localStorage.length; i++) {
+                    var k = localStorage.key(i);
+                    if (k && k.indexOf("chocoolee-product-images/") === 0) {
+                      var imgId = k.replace("chocoolee-product-images/", "");
+                      var v = localStorage.getItem(k);
+                      if (v && v.startsWith("data:")) images[imgId] = v;
+                    }
+                  }
+                  try {
+                    var prods = JSON.parse(localStorage.getItem("chocoolee-products") || "[]");
+                    prods.forEach(function(p){
+                      if (p && p.image && p.image.startsWith("data:")) {
+                        images[String(p.id)] = p.image;
+                      }
+                    });
+                  } catch(e){}
+
+                  var ids = Object.keys(images);
+                  if (ids.length === 0) { alert("本機沒有找到圖片"); return; }
+
+                  var modal = document.createElement("div");
+                  modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center;";
+                  modal.innerHTML = '<div style="background:#fff;border-radius:14px;padding:24px;width:420px;max-width:92vw;font-family:\'Noto Sans TC\',sans-serif;">'
+                    + '<div style="font-size:15px;font-weight:700;color:#b8910a;margin-bottom:8px;">🔄 同步圖片到 Firebase</div>'
+                    + '<div id="syncImgStatus" style="font-size:13px;color:#7a7068;margin-bottom:12px;">準備中...</div>'
+                    + '<div style="background:#e8e4de;border-radius:20px;height:14px;overflow:hidden;margin-bottom:12px;">'
+                    + '<div id="syncImgBar" style="background:#b8910a;height:100%;width:0%;transition:width 0.3s;"></div>'
+                    + '</div>'
+                    + '<div id="syncImgLog" style="font-size:11px;color:#7a7068;max-height:240px;overflow-y:auto;font-family:monospace;background:#f8f8f8;padding:8px;border-radius:6px;white-space:pre-wrap;"></div>'
+                    + '<button id="syncImgClose" style="display:none;margin-top:12px;width:100%;padding:10px;background:#b8910a;color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;">關閉</button>'
+                    + '</div>';
+                  document.body.appendChild(modal);
+                  var statusEl = document.getElementById("syncImgStatus");
+                  var barEl = document.getElementById("syncImgBar");
+                  var logEl = document.getElementById("syncImgLog");
+                  var closeBtn = document.getElementById("syncImgClose");
+                  closeBtn.onclick = function(){ document.body.removeChild(modal); };
+
+                  function logSync(msg) {
+                    logEl.textContent += msg + "\n";
+                    logEl.scrollTop = logEl.scrollHeight;
+                  }
+
+                  function sleep(ms) { return new Promise(function(r){setTimeout(r,ms);}); }
+
+                  async function syncAll() {
+                    statusEl.textContent = "找到 " + ids.length + " 張圖片，開始同步...";
+                    logSync("📦 共 " + ids.length + " 張圖片");
+                    var ok = 0, fail = 0;
+
+                    for (var idx = 0; idx < ids.length; idx++) {
+                      var imgId = ids[idx];
+                      var imgData = images[imgId];
+                      statusEl.textContent = "處理中 " + (idx+1) + " / " + ids.length;
+                      barEl.style.width = Math.round((idx+1)/ids.length*100) + "%";
+
+                      var token = null;
+                      if (window.getFirebaseToken) {
+                        await new Promise(function(r){ window.getFirebaseToken(function(t){ token=t; r(); }); });
+                      }
+                      if (!token) {
+                        logSync("[" + (idx+1) + "/" + ids.length + "] id:" + imgId + " ❌ 無 token");
+                        fail++; continue;
+                      }
+
+                      var success = false;
+                      for (var attempt = 1; attempt <= 3 && !success; attempt++) {
+                        try {
+                          var r = await fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/product-images/" + imgId + ".json?auth=" + token, {
+                            method: "PUT",
+                            headers: {"Content-Type": "application/json"},
+                            body: JSON.stringify(imgData)
+                          });
+                          if (r.ok) {
+                            await sleep(300);
+                            var vr = await fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/product-images/" + imgId + ".json?auth=" + token);
+                            if (vr.ok) {
+                              var v = await vr.json();
+                              if (v && typeof v === "string" && v.startsWith("data:")) success = true;
+                            }
+                          }
+                          if (!success) await sleep(800);
+                        } catch(e) { await sleep(800); }
+                      }
+
+                      if (success) { logSync("[" + (idx+1) + "/" + ids.length + "] id:" + imgId + " ✅"); ok++; }
+                      else { logSync("[" + (idx+1) + "/" + ids.length + "] id:" + imgId + " ❌"); fail++; }
+                    }
+
+                    statusEl.textContent = "🎉 完成！成功 " + ok + "／失敗 " + fail;
+                    barEl.style.width = "100%";
+                    closeBtn.style.display = "block";
+                    if (ok > 0) logSync("\n✅ 請通知其他裝置重新整理 POS 系統");
+                  }
+
+                  syncAll();
+                }}
+                  style={{width:"100%",padding:"9px 14px",border:"none",background:"transparent",
+                    cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
+                    borderBottom:"1px solid #f0ede8",transition:"background 0.1s"}}
+                  onMouseEnter={function(e){e.currentTarget.style.background="#f0fff0";}}
+                  onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
+                  <span style={{fontSize:16,width:24,textAlign:"center"}}>🔄</span>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:600,color:"#2a7040"}}>同步圖片到 Firebase</div>
+                    <div style={{fontSize:10,color:"#9a968e"}}>強制把本機所有圖片上傳到雲端</div>
+                  </div>
+                </button>}
+
                 {/* 匯出/匯入資料備份 — 限店長 */}
                 {isManager && <button onClick={function(){
                   var now = new Date();
