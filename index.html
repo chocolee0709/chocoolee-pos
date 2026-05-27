@@ -333,6 +333,23 @@ const MANAGER_TABS = [
 ];
 const PAYMENTS = ["現金","信用卡","Line Pay","轉帳"];
 
+// 付款方式顏色配置（4 種主色 + 混合付款灰色）
+const PAY_COLORS = {
+  "現金":     {bg:"#e8f5e0", color:"#3d9e32"},  // 綠
+  "信用卡":   {bg:"#fff4e0", color:"#b8910a"},  // 金
+  "Line Pay": {bg:"#e0f4e8", color:"#06a04a"},  // Line 綠
+  "轉帳":     {bg:"#e0f0fc", color:"#2a7080"},  // 藍
+};
+function renderPayBadge(payment) {
+  if (!payment) return null;
+  // 混合付款（含「+」或「、」）
+  if (payment.indexOf("+") !== -1 || payment.indexOf("、") !== -1) {
+    return React.createElement("span", {style:{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:12,background:"#f0ede8",color:"#5a5048"}}, payment);
+  }
+  var c = PAY_COLORS[payment] || {bg:"#f0ede8", color:"#5a5048"};
+  return React.createElement("span", {style:{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:12,background:c.bg,color:c.color}}, payment);
+}
+
 // ── 工作人員設定 ──
 var STAFF_LIST = [
   {id:1, name:"Choco",  pin:"1951", role:"店長", hourlyRate:250},
@@ -1813,13 +1830,28 @@ function OrdersDrawer(props) {
   PAYMENTS.forEach(function(m){ payBreakdown[m] = 0; });
   dayPaid.forEach(function(o) {
     if (o.payBreakdown) {
+      // 有付款明細：直接加總
       PAYMENTS.forEach(function(m) {
         payBreakdown[m] += Number(o.payBreakdown[m]) || 0;
       });
+      // 補差：如果 payBreakdown 加總 < total，把差額補到第一個有金額的付款別
+      var sumBd = PAYMENTS.reduce(function(s,m){return s+(Number(o.payBreakdown[m])||0);},0);
+      if (sumBd < o.total) {
+        var diff = o.total - sumBd;
+        var firstMethod = PAYMENTS.find(function(m){return (Number(o.payBreakdown[m])||0)>0;}) || "現金";
+        payBreakdown[firstMethod] += diff;
+      }
     } else if (o.payment) {
+      // 舊版單一付款方式
+      var matched = false;
       PAYMENTS.forEach(function(m) {
-        if (o.payment === m) payBreakdown[m] += o.total;
+        if (o.payment === m) { payBreakdown[m] += o.total; matched = true; }
       });
+      // 無法 match（例如「現金+信用卡」這種字串）→ 預設算現金
+      if (!matched) payBreakdown["現金"] += o.total;
+    } else {
+      // 完全沒有付款資訊 → 預設現金
+      payBreakdown["現金"] += o.total;
     }
   });
 
@@ -2002,7 +2034,10 @@ function OrdersDrawer(props) {
                       </span>
                       <span style={{fontSize:10,color:"#c8c4bc"}}>原始日期：{o.date}</span>
                     </div>
-                    <div style={{fontSize:12,color:"#7a7068"}}>{o.member} · {o.payment}</div>
+                    <div style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"#7a7068"}}>
+                      <span>{o.member}</span>
+                      {renderPayBadge(o.payment)}
+                    </div>
                   </div>
                   <div style={{textAlign:"right",flexShrink:0}}>
                     <div style={{fontSize:14,fontWeight:700,color:"#d0552f",textDecoration:"line-through"}}>-${o.total.toLocaleString()}</div>
@@ -2040,7 +2075,7 @@ function OrdersDrawer(props) {
                     </div>
                     <div style={{display:"flex",alignItems:"center",gap:8}}>
                       <span style={{fontSize:12,color:"#2a2520"}}>{o.member}</span>
-                      <span style={{fontSize:10,color:"#9a968e"}}>{o.payment}</span>
+                      {renderPayBadge(o.payment)}
                       {o.discount>0 && <span style={{fontSize:10,color:"#d0552f"}}>-{o.discount}%</span>}
                     </div>
                   </div>
@@ -5139,27 +5174,17 @@ function saveData(key, value) {
     if (key === "products") {
       try {
         var prods = typeof value === "string" ? JSON.parse(value) : value;
-        // 取得舊版本，比對哪些圖片真的有變化
-        var oldImgMap = {};
-        try {
-          var oldStr = localStorage.getItem("chocoolee-products");
-          if (oldStr) {
-            var oldProds = JSON.parse(oldStr);
-            oldProds.forEach(function(p){
-              if (p && p.id) oldImgMap[String(p.id)] = p.image;
-            });
-          }
-        } catch(e) {}
 
         var prodsNoImage = prods.map(function(p) {
           if (!p) return p;
           if (p.image && p.image.startsWith("data:")) {
-            // 每張圖獨立存到 localStorage
+            // 比對舊圖片（從獨立節點讀）
             var imgKey = "product-images/" + String(p.id);
-            try { localStorage.setItem("chocoolee-" + imgKey, p.image); } catch(e) {}
-            // 只在圖片有變化時才推送到 Firebase（節省大量網路請求）
-            var oldImg = oldImgMap[String(p.id)];
+            var oldImg = null;
+            try { oldImg = localStorage.getItem("chocoolee-" + imgKey); } catch(e) {}
+            // 只在圖片真的有變化時才推送到 Firebase
             if (oldImg !== p.image) {
+              try { localStorage.setItem("chocoolee-" + imgKey, p.image); } catch(e) {}
               pushImageWithRetry(String(p.id), p.image);
             }
             return Object.assign({}, p, {image: "__img__"});
@@ -5248,11 +5273,15 @@ function POSSystem() {
         try {
           var arr = typeof val === "string" ? JSON.parse(val) : val;
           if (Array.isArray(arr)) {
+            // 內部 getOrderKey（避免 closure 問題）
+            function _getKey(ds) {
+              var d = ds ? new Date(ds) : new Date();
+              return "orders-" + d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
+            }
             setOrders(function(prev){
-              // 合併：移除同月份的舊資料，加入新資料
               if (arr.length === 0) return prev;
-              var monthKey = getOrderKey(arr[0].date);
-              var filtered = prev.filter(function(o){ return getOrderKey(o.date) !== monthKey; });
+              var monthKey = _getKey(arr[0].date);
+              var filtered = prev.filter(function(o){ return _getKey(o.date) !== monthKey; });
               var combined = filtered.concat(arr);
               combined.sort(function(a,b){ return (b.date+b.time).localeCompare(a.date+a.time); });
               return combined;
