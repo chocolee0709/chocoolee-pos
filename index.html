@@ -333,21 +333,24 @@ const MANAGER_TABS = [
 ];
 const PAYMENTS = ["現金","信用卡","Line Pay","轉帳"];
 
-// 付款方式顏色配置（4 種主色 + 混合付款灰色）
+// 付款方式顏色配置
 const PAY_COLORS = {
-  "現金":     {bg:"#e8f5e0", color:"#3d9e32"},  // 綠
-  "信用卡":   {bg:"#fff4e0", color:"#b8910a"},  // 金
-  "Line Pay": {bg:"#e0f4e8", color:"#06a04a"},  // Line 綠
-  "轉帳":     {bg:"#e0f0fc", color:"#2a7080"},  // 藍
+  "現金":     {bg:"#fff8e0", color:"#a87c00"},  // 淡黃
+  "信用卡":   {bg:"#e0f0fc", color:"#2a7080"},  // 淡藍
+  "Line Pay": {bg:"#e8f5e0", color:"#3d9e32"},  // 淡綠
+  "轉帳":     {bg:"#f0e8fc", color:"#6040a0"},  // 淡紫（剩下的轉帳保留差異）
 };
-function renderPayBadge(payment) {
+function renderPayBadge(payment, showAmount) {
   if (!payment) return null;
-  // 混合付款（含「+」或「、」）
+  // 混合付款（含「+」或「、」）→ 顯示完整文字（含金額）
   if (payment.indexOf("+") !== -1 || payment.indexOf("、") !== -1) {
-    return React.createElement("span", {style:{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:12,background:"#f0ede8",color:"#5a5048"}}, payment);
+    return React.createElement("span", {style:{fontSize:11,fontWeight:700,padding:"3px 9px",borderRadius:12,background:"#f0ede8",color:"#5a5048",whiteSpace:"nowrap"}}, payment);
   }
-  var c = PAY_COLORS[payment] || {bg:"#f0ede8", color:"#5a5048"};
-  return React.createElement("span", {style:{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:12,background:c.bg,color:c.color}}, payment);
+  // 單一付款別：只顯示付款方式，不顯示金額
+  // payment 可能是 "現金:$580" 或 "現金"，要切出純付款方式名稱
+  var pureMethod = payment.indexOf(":") !== -1 ? payment.split(":")[0] : payment;
+  var c = PAY_COLORS[pureMethod] || {bg:"#f0ede8", color:"#5a5048"};
+  return React.createElement("span", {style:{fontSize:12,fontWeight:700,padding:"3px 10px",borderRadius:12,background:c.bg,color:c.color,whiteSpace:"nowrap"}}, pureMethod);
 }
 
 // ── 工作人員設定 ──
@@ -1999,16 +2002,20 @@ function OrdersDrawer(props) {
         </div>
 
         {/* 付款別收受金額 */}
-        <div style={{background:"#e8e6e2",border:"1px solid #2e2a22",borderRadius:8,padding:"8px 12px"}}>
-          <div style={{fontSize:9,color:"#9a968e",marginBottom:6,letterSpacing:"0.08em"}}>付款別收受金額</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:6}}>
+        <div style={{background:"#ffffff",border:"1px solid #e8e4de",borderRadius:9,padding:"10px 13px"}}>
+          <div style={{fontSize:10,color:"#9a968e",marginBottom:8,letterSpacing:"0.06em",fontWeight:600}}>付款別收受金額</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
             {PAYMENTS.map(function(m) {
               var amt = payBreakdown[m] || 0;
+              var c = PAY_COLORS[m] || {bg:"#f0ede8", color:"#5a5048"};
+              var active = amt > 0;
               return (
-                <div key={m} style={{textAlign:"center"}}>
-                  <div style={{fontSize:9,color:amt>0?"#6a6258":"#c8c4bc",marginBottom:2}}>{m}</div>
-                  <div style={{fontSize:13,fontWeight:700,color:amt>0?"#2a2520":"#c8c4bc"}}>
-                    {amt>0 ? "$"+amt.toLocaleString() : "—"}
+                <div key={m} style={{textAlign:"center",padding:"8px 6px",borderRadius:8,
+                  background: active ? c.bg : "#fafafa",
+                  border: active ? "1px solid "+c.color+"22" : "1px solid #f0ede8"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:active?c.color:"#c8c4bc",marginBottom:4,letterSpacing:"0.04em"}}>{m}</div>
+                  <div style={{fontSize:17,fontWeight:800,color:active?c.color:"#c8c4bc"}}>
+                    {active ? "$"+amt.toLocaleString() : "—"}
                   </div>
                 </div>
               );
@@ -2067,9 +2074,9 @@ function OrdersDrawer(props) {
                   style={{padding:"9px 12px",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:3}}>
-                      <span style={{fontSize:10,color:"#9a968e",fontFamily:"monospace"}}>{o.no}</span>
-                      {o.time && <span style={{fontSize:10,color:"#c8c4bc"}}>{o.time}</span>}
-                      <span style={{fontSize:10,fontWeight:700,padding:"1px 7px",borderRadius:20,background:statusBg,color:statusColor}}>
+                      <span style={{fontSize:12,color:"#9a968e",fontFamily:"monospace"}}>{o.no}</span>
+                      {o.time && <span style={{fontSize:12,color:"#c8c4bc"}}>{o.time}</span>}
+                      <span style={{fontSize:12,fontWeight:700,padding:"1px 7px",borderRadius:20,background:statusBg,color:statusColor}}>
                         {statusLabel}
                       </span>
                     </div>
@@ -2077,11 +2084,11 @@ function OrdersDrawer(props) {
                       <span style={{fontSize:12,color:"#2a2520"}}>{o.member}</span>
                       {renderPayBadge(o.payment)}
                       {o.discount>0 && <span style={{fontSize:10,color:"#d0552f"}}>-{o.discount}%</span>}
+                      <span style={{fontSize:10,color:"#9a968e"}}>{o.items||0}種 {o.qty||0}件</span>
                     </div>
                   </div>
                   <div style={{textAlign:"right",flexShrink:0}}>
-                    <div style={{fontSize:14,fontWeight:700,color:isPaid?"#b8910a":"#9a968e",textDecoration:isPaid?"none":"line-through"}}>${o.total.toLocaleString()}</div>
-                    <div style={{fontSize:10,color:"#9a968e"}}>{o.items||0}種 {o.qty||0}件</div>
+                    <div style={{fontSize:16,fontWeight:700,color:isPaid?"#b8910a":"#9a968e",textDecoration:isPaid?"none":"line-through"}}>${o.total.toLocaleString()}</div>
                   </div>
                   <span style={{fontSize:12,color:"#c8c4bc",flexShrink:0}}>{isOpen?"▲":"▼"}</span>
                 </div>
@@ -2089,40 +2096,40 @@ function OrdersDrawer(props) {
                   <div style={{borderTop:"1px solid #2e2a22",padding:"8px 12px",background:"#eeece8"}}>
                     {o.subtotal !== undefined && (
                       <div style={{display:"flex",gap:16,marginBottom:6,flexWrap:"wrap"}}>
-                        <span style={{fontSize:10,color:"#9a968e"}}>小計 <b style={{color:"#2a2520"}}>${o.subtotal.toLocaleString()}</b></span>
-                        {o.discAmt>0 && <span style={{fontSize:10,color:"#d0552f"}}>折扣 -${o.discAmt.toLocaleString()}</span>}
-                        <span style={{fontSize:10,color:"#9a968e"}}>實收 <b style={{color:"#b8910a"}}>${o.total.toLocaleString()}</b></span>
+                        <span style={{fontSize:12,color:"#9a968e"}}>小計 <b style={{color:"#2a2520"}}>${o.subtotal.toLocaleString()}</b></span>
+                        {o.discAmt>0 && <span style={{fontSize:12,color:"#d0552f"}}>折扣 -${o.discAmt.toLocaleString()}</span>}
+                        <span style={{fontSize:12,color:"#9a968e"}}>實收 <b style={{color:"#b8910a"}}>${o.total.toLocaleString()}</b></span>
                       </div>
                     )}
                     {o.detail && (
-                      <div style={{fontSize:10,color:"#7a7068",lineHeight:1.7}}>
+                      <div style={{fontSize:12,color:"#7a7068",lineHeight:1.7}}>
                         {o.detail.split("、").map(function(item,idx){
                           return <div key={idx} style={{paddingLeft:8,borderLeft:"2px solid #2e2a22",marginBottom:2}}>　{item}</div>;
                         })}
                       </div>
                     )}
                     {o.phone && o.member!=="—" && (
-                      <div style={{marginTop:4,fontSize:10,color:"#aaA69e"}}>{o.phone}</div>
+                      <div style={{marginTop:4,fontSize:12,color:"#aaA69e"}}>{o.phone}</div>
                     )}
                     {/* 取消/退貨按鈕 */}
                     {(canCancel || canReturn) && (
                       <div style={{marginTop:8,display:"flex",gap:6,justifyContent:"flex-end"}}>
                         {canCancel && (
                           <button onClick={function(e){e.stopPropagation();setConfirmOp({no:o.no,type:"cancel",total:o.total});}}
-                            style={{padding:"5px 12px",borderRadius:6,border:"1px solid #d8d4cc",background:"#f8f7f4",color:"#9a968e",fontSize:11,cursor:"pointer",fontWeight:600}}>
+                            style={{padding:"5px 12px",borderRadius:6,border:"1px solid #d8d4cc",background:"#f8f7f4",color:"#9a968e",fontSize:13,cursor:"pointer",fontWeight:600}}>
                             ✕ 取消訂單
                           </button>
                         )}
                         {canReturn && (
                           <button onClick={function(e){e.stopPropagation();setConfirmOp({no:o.no,type:"return",total:o.total});}}
-                            style={{padding:"5px 12px",borderRadius:6,border:"1px solid #e8c4c4",background:"#fdf4f4",color:"#d0552f",fontSize:11,cursor:"pointer",fontWeight:600}}>
+                            style={{padding:"5px 12px",borderRadius:6,border:"1px solid #e8c4c4",background:"#fdf4f4",color:"#d0552f",fontSize:13,cursor:"pointer",fontWeight:600}}>
                             ↩ 退貨
                           </button>
                         )}
                       </div>
                     )}
                     {(isCancelled||isRefunded) && o.cancelDate && (
-                      <div style={{marginTop:6,fontSize:10,color:"#9a968e",textAlign:"right"}}>
+                      <div style={{marginTop:6,fontSize:12,color:"#9a968e",textAlign:"right"}}>
                         {isCancelled?"取消":"退貨"}日期：{o.cancelDate}
                       </div>
                     )}
