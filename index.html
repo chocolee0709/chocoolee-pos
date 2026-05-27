@@ -322,6 +322,7 @@ const ALL_TABS = [
   {key:"catalog",  label:"商品庫存",icon:"◆"},
   {key:"orders",   label:"訂單",    icon:"◎"},
   {key:"members",  label:"會員",    icon:"❋"},
+  {key:"purchase", label:"採購單",  icon:"📋"},
 ];
 // 店長專屬 tab（僅下拉選單中顯示）
 const MANAGER_TABS = [
@@ -571,29 +572,58 @@ function CatalogPanel(props) {
   }
 
   // ── 圖片上傳處理（縮成 120x120 + 60% 品質，每張約 5-10KB）──
+  var iup = useState(false); var imgUploading = iup[0], setImgUploading = iup[1];
   function handleImageUpload(e, setForm) {
     var file = e.target.files[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) { alert("請選擇圖片檔"); return; }
-    var reader = new FileReader();
-    reader.onload = function(ev) {
-      var img = new Image();
-      img.onload = function() {
+    e.target.value = "";
+    setImgUploading(true);
+
+    // 用 createImageBitmap（比 FileReader+Image 快 2-3 倍，且不卡 UI）
+    if (window.createImageBitmap) {
+      createImageBitmap(file).then(function(bitmap){
         var canvas = document.createElement("canvas");
-        var max = 250;  // 最大尺寸 250px
-        var w = img.width, h = img.height;
+        var max = 250;
+        var w = bitmap.width, h = bitmap.height;
         if (w > h) { if (w>max){ h=Math.round(h*(max/w)); w=max; } }
         else { if (h>max){ w=Math.round(w*(max/h)); h=max; } }
         canvas.width = w; canvas.height = h;
         var ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, w, h);
-        var dataUrl = canvas.toDataURL("image/jpeg", 0.65);  // 畫質 65%
+        ctx.drawImage(bitmap, 0, 0, w, h);
+        bitmap.close && bitmap.close();
+        var dataUrl = canvas.toDataURL("image/jpeg", 0.65);
         setForm("image", dataUrl);
+        setImgUploading(false);
+      }).catch(function(){
+        // 失敗 fallback 用舊方法
+        fallbackUpload(file, setForm);
+      });
+    } else {
+      fallbackUpload(file, setForm);
+    }
+
+    function fallbackUpload(file, setForm) {
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        var img = new Image();
+        img.onload = function() {
+          var canvas = document.createElement("canvas");
+          var max = 250;
+          var w = img.width, h = img.height;
+          if (w > h) { if (w>max){ h=Math.round(h*(max/w)); w=max; } }
+          else { if (h>max){ w=Math.round(w*(max/h)); h=max; } }
+          canvas.width = w; canvas.height = h;
+          var ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, w, h);
+          var dataUrl = canvas.toDataURL("image/jpeg", 0.65);
+          setForm("image", dataUrl);
+          setImgUploading(false);
+        };
+        img.src = ev.target.result;
       };
-      img.src = ev.target.result;
-    };
-    reader.readAsDataURL(file);
-    e.target.value = "";
+      reader.readAsDataURL(file);
+    }
   }
 
   var dcs = useState(false); var showDeleteConfirm = dcs[0], setShowDeleteConfirm = dcs[1];
@@ -1191,17 +1221,25 @@ function CatalogPanel(props) {
             {/* 圖片上傳區 */}
             <div style={{flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
               <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
-                {editForm.image ? (
-                  <img src={editForm.image} alt="預覽" style={{width:110,height:110,objectFit:"cover",borderRadius:8,border:"2px solid #4a8ec0"}}/>
-                ) : (
-                  <label style={{cursor:"pointer"}}>
-                    <div style={{width:110,height:110,borderRadius:8,border:"2px dashed #d8d4cc",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:4,background:"#ffffff"}}>
-                      <span style={{fontSize:28}}>📷</span>
-                      <span style={{fontSize:10,color:"#9a968e"}}>點此選圖</span>
+                <div style={{position:"relative"}}>
+                  {editForm.image ? (
+                    <img src={editForm.image} alt="預覽" style={{width:110,height:110,objectFit:"cover",borderRadius:8,border:"2px solid #4a8ec0"}}/>
+                  ) : (
+                    <label style={{cursor:"pointer"}}>
+                      <div style={{width:110,height:110,borderRadius:8,border:"2px dashed #d8d4cc",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:4,background:"#ffffff"}}>
+                        <span style={{fontSize:28}}>📷</span>
+                        <span style={{fontSize:10,color:"#9a968e"}}>點此選圖</span>
+                      </div>
+                      <input type="file" accept="image/*" onChange={function(e){handleImageUpload(e,setEF);}} style={{display:"none"}}/>
+                    </label>
+                  )}
+                  {imgUploading && (
+                    <div style={{position:"absolute",inset:0,background:"rgba(255,255,255,0.85)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:4}}>
+                      <div style={{fontSize:20}}>⏳</div>
+                      <div style={{fontSize:10,color:"#b8910a",fontWeight:600}}>處理中...</div>
                     </div>
-                    <input type="file" accept="image/*" onChange={function(e){handleImageUpload(e,setEF);}} style={{display:"none"}}/>
-                  </label>
-                )}
+                  )}
+                </div>
                 <div style={{display:"flex",gap:6}}>
                   {editForm.image && (
                     <label style={{cursor:"pointer"}}>
@@ -2413,6 +2451,917 @@ function MembersDrawer(props) {
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 採購單頁面 ─────────────────────────────────────────────────────
+function PurchasePanel(props) {
+  var purchases = props.purchases || [];
+  var setPurchases = props.setPurchases;
+  var products = props.products || [];
+  var currentStaff = props.currentStaff;
+  var isManager = currentStaff && currentStaff.role === "店長";
+  var setSharedStocks = props.setSharedStocks;
+  var setSharedProducts = props.setSharedProducts;
+  var sharedAddLog = props.sharedAddLog;
+
+  var sm = useState("list"); var mode = sm[0], setMode = sm[1]; // list / create / edit / receive / verify
+  var sel = useState(null);  var selPo = sel[0], setSelPo = sel[1];
+  var sf  = useState("all"); var filter = sf[0], setFilter = sf[1];
+
+  // 店長視角：列出全部；店員：待收貨 + 待確認
+  var visiblePurchases = purchases.filter(function(p){
+    if (!isManager && p.status === "completed") return false;
+    if (filter === "pending"  && p.status !== "pending") return false;
+    if (filter === "review"   && p.status !== "review")  return false;
+    if (filter === "completed"&& p.status !== "completed")return false;
+    return true;
+  }).sort(function(a,b){ return (b.date||"").localeCompare(a.date||""); });
+
+  function newPurchase() {
+    setSelPo({
+      no: "PO-" + new Date().toISOString().slice(0,10).split("-").join("") + "-" + String(purchases.length+1).padStart(3,"0"),
+      date: new Date().toISOString().slice(0,10),
+      eta: "",
+      items: [],
+      note: "",
+      status: "draft",
+      createdBy: currentStaff ? currentStaff.name : "—"
+    });
+    setMode("create");
+  }
+
+  function savePurchase() {
+    if (!selPo.items || selPo.items.length === 0) { alert("請新增至少一筆商品"); return; }
+    var po = Object.assign({}, selPo, {status: "pending"});
+    setPurchases(function(prev){
+      var ex = prev.find(function(p){ return p.no === po.no; });
+      if (ex) return prev.map(function(p){ return p.no === po.no ? po : p; });
+      return [po].concat(prev);
+    });
+    setMode("list"); setSelPo(null);
+  }
+
+  function delPurchase() {
+    if (!confirm("確定刪除此採購單？")) return;
+    setPurchases(function(prev){ return prev.filter(function(p){ return p.no !== selPo.no; }); });
+    setMode("list"); setSelPo(null);
+  }
+
+  // 店員初驗完成
+  function submitReceive() {
+    var po = Object.assign({}, selPo, {
+      status: "review",
+      receivedBy: currentStaff ? currentStaff.name : "—",
+      receivedAt: new Date().toISOString().slice(0,16).replace("T", " ")
+    });
+    setPurchases(function(prev){ return prev.map(function(p){ return p.no === po.no ? po : p; }); });
+    setMode("list"); setSelPo(null);
+    alert("✓ 已送出驗收結果，等待店長覆驗");
+  }
+
+  // 店長覆驗：確認入庫
+  function confirmPurchase() {
+    if (!confirm("確認完成？將自動入庫並建立新品")) return;
+    var po = Object.assign({}, selPo, {
+      status: "completed",
+      confirmedBy: currentStaff ? currentStaff.name : "—",
+      confirmedAt: new Date().toISOString().slice(0,16).replace("T", " ")
+    });
+
+    // 自動處理：新品加入商品庫存頁、庫存增加
+    var newProducts = [];
+    var stockAdds = {};
+    var logs = [];
+    var now = new Date();
+    var dateStr = now.toISOString().slice(0,10);
+    var timeStr = now.toTimeString().slice(0,5);
+
+    po.items.forEach(function(item) {
+      var goodQty = (item.receivedQty || 0) - (item.damagedQty || 0);
+      if (goodQty <= 0) return;
+
+      if (item.isNew) {
+        // 新品：建立商品 + 入庫
+        var newId = Date.now() + Math.floor(Math.random()*1000);
+        var newProd = {
+          id: newId, sku: item.sku, name: item.name,
+          price: item.price || 0, cost: item.cost || 0,
+          main: item.main || "生活選物", sub: item.sub || "生活小物",
+          barcode: item.barcode || String(newId).slice(-9),
+          image: item.image || "", stock: 0,
+          mainEdited: true  // 防止 mergeProducts 覆蓋分類
+        };
+        newProducts.push(newProd);
+        stockAdds[newId] = goodQty;
+        logs.push({
+          id: Date.now()+Math.random(), date: dateStr, time: timeStr,
+          productId: newId, sku: item.sku, name: item.name,
+          main: newProd.main, sub: newProd.sub,
+          reason: "採購入庫（新品）", change: goodQty, before: 0, after: goodQty,
+          operator: currentStaff ? currentStaff.name : "—"
+        });
+      } else {
+        // 既有商品：庫存增加
+        stockAdds[item.productId] = (stockAdds[item.productId] || 0) + goodQty;
+        logs.push({
+          id: Date.now()+Math.random(), date: dateStr, time: timeStr,
+          productId: item.productId, sku: item.sku, name: item.name,
+          main: item.main, sub: item.sub,
+          reason: "採購入庫" + (item.damagedQty>0 ? "（含破損"+item.damagedQty+"）" : ""),
+          change: goodQty, before: 0, after: 0,
+          operator: currentStaff ? currentStaff.name : "—"
+        });
+      }
+    });
+
+    // 套用變更
+    if (newProducts.length > 0 && setSharedProducts) {
+      setSharedProducts(function(prev){ return prev.concat(newProducts); });
+    }
+    if (Object.keys(stockAdds).length > 0 && setSharedStocks) {
+      setSharedStocks(function(prev){
+        var n = Object.assign({}, prev);
+        Object.keys(stockAdds).forEach(function(id){
+          n[id] = (n[id] || 0) + stockAdds[id];
+        });
+        return n;
+      });
+    }
+    if (logs.length > 0 && sharedAddLog) sharedAddLog(logs);
+
+    setPurchases(function(prev){ return prev.map(function(p){ return p.no === po.no ? po : p; }); });
+    setMode("list"); setSelPo(null);
+    alert("✓ 採購單已完成，庫存已更新");
+  }
+
+  function rejectPurchase() {
+    if (!confirm("退回讓店員重新驗收？")) return;
+    var po = Object.assign({}, selPo, {status: "pending"});
+    setPurchases(function(prev){ return prev.map(function(p){ return p.no === po.no ? po : p; }); });
+    setMode("list"); setSelPo(null);
+  }
+
+  // 狀態顯示
+  function statusBadge(s) {
+    var map = {
+      "draft":     {bg:"#e8e4de", color:"#7a7068", text:"📝 草稿"},
+      "pending":   {bg:"#fff4e0", color:"#b8910a", text:"📋 待收貨"},
+      "review":    {bg:"#fff0e0", color:"#d0552f", text:"⏳ 待店長確認"},
+      "completed": {bg:"#e8f5e0", color:"#3d9e32", text:"✅ 已完成"},
+    };
+    var st = map[s] || map.draft;
+    return (
+      <span style={{display:"inline-block",padding:"3px 9px",borderRadius:12,background:st.bg,color:st.color,fontSize:10,fontWeight:700}}>
+        {st.text}
+      </span>
+    );
+  }
+
+  // ====== 列表模式 ======
+  if (mode === "list") {
+    return (
+      <div style={{display:"flex",flexDirection:"column",gap:10,height:"100%",overflow:"hidden"}}>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
+          <div style={{fontSize:16,fontWeight:700,color:"#2a2520"}}>📋 採購單管理</div>
+          {isManager && (
+            <button onClick={newPurchase}
+              style={{marginLeft:"auto",background:"#b8910a",border:"none",borderRadius:6,padding:"6px 14px",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+              ＋ 新增採購單
+            </button>
+          )}
+        </div>
+
+        <div style={{display:"flex",gap:6,flexShrink:0}}>
+          {[
+            {k:"all", label:"全部"},
+            {k:"pending", label:"📋 待收貨"},
+            {k:"review", label:"⏳ 待確認"},
+            {k:"completed", label:"✅ 已完成"},
+          ].map(function(f){
+            return (
+              <button key={f.k} onClick={function(){setFilter(f.k);}}
+                style={{padding:"4px 12px",borderRadius:14,border:filter===f.k?"none":"1px solid #d8d4cc",
+                  background:filter===f.k?"#2a2520":"transparent",color:filter===f.k?"#fff":"#7a7068",
+                  cursor:"pointer",fontSize:12,fontWeight:600}}>
+                {f.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{flex:1,overflowY:"auto",background:"#fff",borderRadius:8,padding:8}}>
+          {visiblePurchases.length === 0 ? (
+            <div style={{padding:40,textAlign:"center",color:"#9a968e",fontSize:12}}>
+              目前沒有採購單
+            </div>
+          ) : visiblePurchases.map(function(po){
+            var itemCount = (po.items||[]).length;
+            var totalQty = (po.items||[]).reduce(function(s,i){return s+(Number(i.qty)||0);},0);
+            var totalCost = (po.items||[]).reduce(function(s,i){return s+(Number(i.cost)||0)*(Number(i.qty)||0);},0);
+            return (
+              <div key={po.no} onClick={function(){
+                setSelPo(po);
+                if (po.status === "pending") setMode("receive");
+                else if (po.status === "review") setMode(isManager ? "verify" : "receive");
+                else setMode("view");
+              }}
+                style={{padding:"10px 14px",borderBottom:"1px solid #f0ede8",cursor:"pointer",display:"flex",alignItems:"center",gap:12}}>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                    <span style={{fontSize:13,fontWeight:700,color:"#2a2520"}}>{po.no}</span>
+                    {statusBadge(po.status)}
+                  </div>
+                  <div style={{fontSize:11,color:"#7a7068"}}>
+                    {po.date} · {itemCount} 項 / {totalQty} 件
+                    {isManager && " · 成本 $" + totalCost.toLocaleString()}
+                  </div>
+                </div>
+                <span style={{fontSize:14,color:"#b8b0a4"}}>›</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ====== 建立/編輯模式 ======
+  if (mode === "create") {
+    return <PurchaseEditor po={selPo} setPo={setSelPo} products={products}
+      onSave={savePurchase} onCancel={function(){setMode("list");setSelPo(null);}}
+      onDelete={selPo && purchases.find(function(p){return p.no===selPo.no;}) ? delPurchase : null}/>;
+  }
+
+  // ====== 店員初驗模式 ======
+  if (mode === "receive") {
+    return <PurchaseReceiver po={selPo} setPo={setSelPo}
+      readOnly={selPo.status === "review" && !isManager}
+      onSubmit={submitReceive}
+      onCancel={function(){setMode("list");setSelPo(null);}}/>;
+  }
+
+  // ====== 店長覆驗模式 ======
+  if (mode === "verify") {
+    return <PurchaseVerifier po={selPo}
+      onConfirm={confirmPurchase}
+      onReject={rejectPurchase}
+      onCancel={function(){setMode("list");setSelPo(null);}}/>;
+  }
+
+  // ====== 查看模式（已完成） ======
+  if (mode === "view") {
+    return <PurchaseViewer po={selPo} onClose={function(){setMode("list");setSelPo(null);}}/>;
+  }
+
+  return null;
+}
+
+// 採購單編輯器
+function PurchaseEditor(props) {
+  var po = props.po;
+  var setPo = props.setPo;
+  var products = props.products || [];
+  var sa = useState(false); var showAddItem = sa[0], setShowAddItem = sa[1];
+  var sn = useState(false); var addingNew = sn[0], setAddingNew = sn[1];
+
+  function updatePo(field, value) {
+    setPo(Object.assign({}, po, {[field]: value}));
+  }
+
+  function addItem(item) {
+    setPo(Object.assign({}, po, {items: (po.items || []).concat([item])}));
+    // 新品加入後關閉視窗（單筆），既有商品保留視窗讓使用者繼續選
+    if (item.isNew) {
+      setShowAddItem(false);
+      setAddingNew(false);
+    }
+  }
+
+  function closePicker() {
+    setShowAddItem(false);
+    setAddingNew(false);
+  }
+
+  function removeItem(idx) {
+    var next = (po.items || []).filter(function(_, i){return i !== idx;});
+    setPo(Object.assign({}, po, {items: next}));
+  }
+
+  function updateItem(idx, field, value) {
+    var next = (po.items || []).map(function(item, i){
+      return i === idx ? Object.assign({}, item, {[field]: value}) : item;
+    });
+    setPo(Object.assign({}, po, {items: next}));
+  }
+
+  var lbl = {fontSize:10,color:"#7a7068",marginBottom:3,display:"block"};
+  var inp = {width:"100%",padding:"6px 8px",border:"1px solid #d8d4cc",borderRadius:5,fontSize:12,outline:"none",color:"#2a2520",background:"#fff"};
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:10,height:"100%",overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+        <button onClick={props.onCancel} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#7a7068"}}>‹</button>
+        <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>📝 採購單 {po.no}</div>
+        {props.onDelete && (
+          <button onClick={props.onDelete} style={{marginLeft:"auto",background:"none",border:"1px solid #d0552f",borderRadius:5,padding:"4px 10px",color:"#d0552f",fontSize:11,cursor:"pointer"}}>
+            🗑 刪除
+          </button>
+        )}
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,flexShrink:0}}>
+        <div><label style={lbl}>建立日期</label>
+          <input type="date" value={po.date||""} onChange={function(e){updatePo("date",e.target.value);}} style={inp}/></div>
+        <div><label style={lbl}>預計到貨日</label>
+          <input type="date" value={po.eta||""} onChange={function(e){updatePo("eta",e.target.value);}} style={inp}/></div>
+      </div>
+      <div style={{flexShrink:0}}>
+        <label style={lbl}>備註</label>
+        <input value={po.note||""} onChange={function(e){updatePo("note",e.target.value);}} style={inp}/>
+      </div>
+
+      {/* 商品清單 */}
+      <div style={{flex:1,overflowY:"auto",background:"#fff",borderRadius:8,padding:10}}>
+        <div style={{display:"flex",alignItems:"center",marginBottom:8}}>
+          <span style={{fontSize:12,fontWeight:700,color:"#2a2520"}}>商品清單 ({(po.items||[]).length})</span>
+          <button onClick={function(){setShowAddItem(true);setAddingNew(false);}}
+            style={{marginLeft:"auto",background:"#4a8ec0",border:"none",borderRadius:5,padding:"4px 10px",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+            ＋ 既有商品
+          </button>
+          <button onClick={function(){setShowAddItem(true);setAddingNew(true);}}
+            style={{marginLeft:6,background:"#7055c0",border:"none",borderRadius:5,padding:"4px 10px",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+            ＋ 新品
+          </button>
+        </div>
+
+        {(po.items||[]).length === 0 ? (
+          <div style={{padding:24,textAlign:"center",color:"#9a968e",fontSize:11}}>
+            尚未新增商品
+          </div>
+        ) : (
+          <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+            <thead>
+              <tr style={{borderBottom:"2px solid #e8e4de",color:"#7a7068",fontSize:10}}>
+                <th style={{padding:"6px 4px",textAlign:"center",width:42}}>圖片</th>
+                <th style={{padding:"6px 4px",textAlign:"left"}}>商品名稱</th>
+                <th style={{padding:"6px 4px",textAlign:"left",width:80}}>貨號</th>
+                <th style={{padding:"6px 4px",textAlign:"left",width:120}}>分類</th>
+                <th style={{padding:"6px 4px",textAlign:"center",width:65}}>採購數量</th>
+                <th style={{padding:"6px 4px",textAlign:"center",width:65}}>採購單價</th>
+                <th style={{padding:"6px 4px",textAlign:"right",width:75}}>小計</th>
+                <th style={{padding:"6px 4px",textAlign:"center",width:30}}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(po.items||[]).map(function(item, idx){
+                return (
+                  <tr key={idx} style={{borderBottom:"1px solid #f0ede8"}}>
+                    <td style={{padding:"4px",textAlign:"center"}}>
+                      {item.image ? (
+                        <img src={item.image} alt="" style={{width:34,height:34,objectFit:"cover",borderRadius:4,border:"1px solid #e8e4de"}}/>
+                      ) : (
+                        <div style={{width:34,height:34,borderRadius:4,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,color:"#d8d4cc"}}>📦</div>
+                      )}
+                    </td>
+                    <td style={{padding:"6px 4px"}}>
+                      {item.isNew && <span style={{background:"#7055c0",color:"#fff",padding:"1px 5px",borderRadius:3,fontSize:9,marginRight:4}}>新品</span>}
+                      {item.name}
+                    </td>
+                    <td style={{padding:"6px 4px",color:"#9a968e",fontSize:10}}>{item.sku}</td>
+                    <td style={{padding:"6px 4px",color:"#9a968e",fontSize:10}}>{item.main}/{item.sub}</td>
+                    <td style={{padding:"6px 4px",textAlign:"center"}}>
+                      <input type="number" min="1" value={item.qty||""} onChange={function(e){updateItem(idx,"qty",Number(e.target.value)||0);}}
+                        style={{width:55,padding:"3px 6px",border:"1px solid #d8d4cc",borderRadius:4,fontSize:11,textAlign:"center"}}/>
+                    </td>
+                    <td style={{padding:"6px 4px",textAlign:"center"}}>
+                      <input type="number" min="0" value={item.cost||""} onChange={function(e){updateItem(idx,"cost",Number(e.target.value)||0);}}
+                        style={{width:60,padding:"3px 6px",border:"1px solid #d8d4cc",borderRadius:4,fontSize:11,textAlign:"center"}}/>
+                    </td>
+                    <td style={{padding:"6px 4px",textAlign:"right",color:"#b8910a",fontWeight:600}}>
+                      ${((item.cost||0)*(item.qty||0)).toLocaleString()}
+                    </td>
+                    <td style={{padding:"6px 4px",textAlign:"center"}}>
+                      <button onClick={function(){removeItem(idx);}} style={{background:"none",border:"none",color:"#d0552f",fontSize:14,cursor:"pointer"}}>×</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {showAddItem && (
+        <ItemPicker addingNew={addingNew} products={products}
+          existingSkus={(po.items||[]).map(function(i){return i.sku;})}
+          onAdd={addItem} onCancel={function(){setShowAddItem(false);}}/>
+      )}
+
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexShrink:0}}>
+        <button onClick={props.onCancel}
+          style={{background:"none",border:"1px solid #d8d4cc",borderRadius:6,padding:"7px 16px",color:"#7a7068",fontSize:12,cursor:"pointer"}}>取消</button>
+        <button onClick={props.onSave}
+          style={{background:"#b8910a",border:"none",borderRadius:6,padding:"7px 20px",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>儲存採購單</button>
+      </div>
+    </div>
+  );
+}
+
+// 商品選擇器（既有 or 新品）
+function ItemPicker(props) {
+  var addingNew = props.addingNew;
+  var products = props.products || [];
+  var existingSkus = props.existingSkus || [];
+  var q = useState(""); var query = q[0], setQuery = q[1];
+  var fm = useState("");  var fMain = fm[0], setFMain = fm[1];
+  var fs2 = useState(""); var fSub = fs2[0], setFSub = fs2[1];
+
+  var defaultMain = Object.keys(CAT_STRUCT)[0];
+  var newItem = useState({sku:"",name:"",main:defaultMain,sub:CAT_STRUCT[defaultMain][0],cost:0,price:0,qty:1,image:""});
+  var nf = newItem[0], setNf = newItem[1];
+
+  // 圖片上傳處理（縮成 250x250 + 65% 品質）
+  function handleNewImageUpload(e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { alert("請選擇圖片檔"); return; }
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      var img = new Image();
+      img.onload = function() {
+        var canvas = document.createElement("canvas");
+        var max = 250;
+        var w = img.width, h = img.height;
+        if (w > h) { if (w>max){ h=Math.round(h*(max/w)); w=max; } }
+        else { if (h>max){ w=Math.round(w*(max/h)); h=max; } }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        setNfField("image", canvas.toDataURL("image/jpeg", 0.65));
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function setNfField(k,v){
+    var n = Object.assign({},nf,{[k]:v});
+    // 切換大分類時自動帶入小分類第一個
+    if (k === "main") {
+      var subs = CAT_STRUCT[v] || [];
+      n.sub = subs[0] || "";
+      // 大分類變更時清空貨號讓使用者重新自動產生
+      n.sku = "";
+    }
+    setNf(n);
+  }
+
+  // 自動產生貨號（同分類下找空缺號碼）
+  function autoGenerateSku() {
+    var allSku = products.filter(function(p){
+      return p.main === nf.main && p.sub === nf.sub;
+    }).map(function(p){ return p.sku; });
+
+    // 不用正則：手動解析「前綴 + 數字 + 後綴」
+    function parseSku(s) {
+      s = String(s);
+      var startNum = -1, endNum = -1;
+      for (var i = 0; i < s.length; i++) {
+        var ch = s.charCodeAt(i);
+        var isDigit = ch >= 48 && ch <= 57;
+        if (isDigit && startNum === -1) startNum = i;
+        if (isDigit) endNum = i;
+        else if (startNum !== -1) break;
+      }
+      if (startNum === -1) return null;
+      var numLen = endNum - startNum + 1;
+      if (numLen < 3 || numLen > 4) return null;
+      return {
+        prefix: s.slice(0, startNum),
+        num: parseInt(s.slice(startNum, endNum+1)),
+        width: numLen,  // 保留原始數字寬度（包含前導零）
+        suffix: s.slice(endNum+1)
+      };
+    }
+
+    var nums = [];
+    var prefix = "";
+    var suffix = "";
+    var width = 4; // 預設 4 位
+    allSku.forEach(function(s){
+      var p = parseSku(s);
+      if (p) {
+        if (!prefix && !suffix && nums.length === 0) {
+          prefix = p.prefix; suffix = p.suffix; width = p.width;
+        }
+        if (p.prefix === prefix && p.suffix === suffix) {
+          nums.push(p.num);
+        }
+      }
+    });
+
+    if (nums.length === 0) {
+      setNfField("sku", "NEW" + String(Date.now()).slice(-6));
+      return;
+    }
+
+    nums.sort(function(a,b){return a-b;});
+    // 找第一個空缺號碼（從最小號碼開始找）
+    var nextNum = null;
+    for (var i = nums[0]; i <= nums[nums.length-1] + 1; i++) {
+      if (nums.indexOf(i) === -1) { nextNum = i; break; }
+    }
+    if (!nextNum) nextNum = nums[nums.length-1] + 1;
+    // 用 width 補齊前導零
+    var numStr = String(nextNum);
+    while (numStr.length < width) numStr = "0" + numStr;
+    var newSku = prefix + numStr + suffix;
+    setNfField("sku", newSku);
+  }
+
+  // 既有商品篩選
+  var subOptions = fMain ? (CAT_STRUCT[fMain] || []) : [];
+  var filtered = products.filter(function(p){
+    if (existingSkus.indexOf(p.sku) !== -1) return false;
+    if (fMain && p.main !== fMain) return false;
+    if (fSub && p.sub !== fSub) return false;
+    if (!query) return true;
+    var qq = query.toLowerCase();
+    return (p.name||"").toLowerCase().indexOf(qq) !== -1 || (p.sku||"").toLowerCase().indexOf(qq) !== -1;
+  }).slice(0, 50);
+
+  // 檢查貨號重複
+  var skuDup = nf.sku && products.some(function(p){ return p.sku === nf.sku.trim(); });
+
+  var lbl = {fontSize:10,color:"#7a7068",marginBottom:3,display:"block"};
+  var inp = {width:"100%",padding:"6px 8px",border:"1px solid #d8d4cc",borderRadius:5,fontSize:12,outline:"none",color:"#2a2520",background:"#fff"};
+  var sel = Object.assign({},inp,{cursor:"pointer"});
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",borderRadius:12,padding:20,width:580,maxWidth:"92vw",maxHeight:"86vh",display:"flex",flexDirection:"column"}}>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:12,color:"#2a2520"}}>
+          {addingNew ? "➕ 新品" : "🔍 選擇商品"}
+        </div>
+
+        {addingNew ? (
+          <div style={{display:"flex",gap:12}}>
+            {/* 圖片區 */}
+            <div style={{flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
+              <label style={{cursor:"pointer"}}>
+                {nf.image ? (
+                  <img src={nf.image} alt="預覽" style={{width:90,height:90,objectFit:"cover",borderRadius:8,border:"2px solid #7055c0"}}/>
+                ) : (
+                  <div style={{width:90,height:90,borderRadius:8,border:"2px dashed #d8d4cc",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:2,background:"#fff"}}>
+                    <span style={{fontSize:22}}>📷</span>
+                    <span style={{fontSize:9,color:"#9a968e"}}>點此選圖</span>
+                  </div>
+                )}
+                <input type="file" accept="image/*" onChange={handleNewImageUpload} style={{display:"none"}}/>
+              </label>
+              <label style={{cursor:"pointer"}}>
+                <span style={{fontSize:10,color:"#3d9e32",padding:"3px 8px",border:"1px solid #3d9e32",borderRadius:5,whiteSpace:"nowrap"}}>📷 拍照</span>
+                <input type="file" accept="image/*" capture="environment" onChange={handleNewImageUpload} style={{display:"none"}}/>
+              </label>
+              {nf.image && (
+                <button onClick={function(){setNfField("image","");}}
+                  style={{background:"none",border:"none",color:"#d0552f",fontSize:9,cursor:"pointer"}}>移除</button>
+              )}
+            </div>
+
+            {/* 表單區 */}
+            <div style={{flex:1,display:"flex",flexDirection:"column",gap:8}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                <div><label style={lbl}>大分類 *</label>
+                  <select value={nf.main} onChange={function(e){setNfField("main",e.target.value);}} style={sel}>
+                    {Object.keys(CAT_STRUCT).map(function(m){return <option key={m} value={m}>{m}</option>;})}
+                  </select>
+                </div>
+                <div><label style={lbl}>小分類 *</label>
+                  <select value={nf.sub} onChange={function(e){setNfField("sub",e.target.value);}} style={sel}>
+                    {(CAT_STRUCT[nf.main]||[]).map(function(s){return <option key={s} value={s}>{s}</option>;})}
+                  </select>
+                </div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                <div><label style={lbl}>商品名稱 *</label>
+                  <input value={nf.name} onChange={function(e){setNfField("name",e.target.value);}} style={inp}/></div>
+                <div>
+                  <label style={lbl}>貨號 * {skuDup && <span style={{color:"#d0552f"}}>⚠️ 重複</span>}</label>
+                  <div style={{display:"flex",gap:4}}>
+                    <input value={nf.sku} onChange={function(e){setNfField("sku",e.target.value);}}
+                      style={Object.assign({},inp,{borderColor:skuDup?"#d0552f":"#d8d4cc"})}/>
+                    <button onClick={autoGenerateSku} title="依分類自動產生空缺號碼"
+                      style={{background:"#4a8ec0",border:"none",borderRadius:5,padding:"0 10px",color:"#fff",fontSize:11,cursor:"pointer",whiteSpace:"nowrap"}}>
+                      ⚡ 自動
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+                <div><label style={lbl}>採購數量</label>
+                  <input type="number" min="1" value={nf.qty} onChange={function(e){setNfField("qty",Number(e.target.value)||0);}} style={inp}/></div>
+                <div><label style={lbl}>成本</label>
+                  <input type="number" min="0" value={nf.cost} onChange={function(e){setNfField("cost",Number(e.target.value)||0);}} style={inp}/></div>
+                <div><label style={lbl}>售價</label>
+                  <input type="number" min="0" value={nf.price} onChange={function(e){setNfField("price",Number(e.target.value)||0);}} style={inp}/></div>
+              </div>
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:4}}>
+                <button onClick={props.onCancel} style={{background:"none",border:"1px solid #d8d4cc",borderRadius:5,padding:"6px 14px",color:"#7a7068",fontSize:12,cursor:"pointer"}}>取消</button>
+                <button onClick={function(){
+                  if(!nf.name || !nf.sku) { alert("商品名稱和貨號必填"); return; }
+                  if(skuDup) { alert("貨號已存在，請改用其他貨號或按「⚡ 自動」"); return; }
+                  props.onAdd(Object.assign({}, nf, {isNew: true}));
+                }} disabled={skuDup}
+                  style={{background:skuDup?"#d8d4cc":"#7055c0",border:"none",borderRadius:5,padding:"6px 16px",color:"#fff",fontSize:12,fontWeight:700,cursor:skuDup?"default":"pointer"}}>新增</button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={{display:"flex",gap:6,marginBottom:8}}>
+              <select value={fMain} onChange={function(e){setFMain(e.target.value);setFSub("");}} style={Object.assign({},sel,{width:"32%"})}>
+                <option value="">全部大分類</option>
+                {Object.keys(CAT_STRUCT).map(function(m){return <option key={m} value={m}>{m}</option>;})}
+              </select>
+              <select value={fSub} onChange={function(e){setFSub(e.target.value);}} style={Object.assign({},sel,{width:"32%"})} disabled={!fMain}>
+                <option value="">全部小分類</option>
+                {subOptions.map(function(s){return <option key={s} value={s}>{s}</option>;})}
+              </select>
+              <input placeholder="搜尋..." value={query} onChange={function(e){setQuery(e.target.value);}}
+                style={Object.assign({},inp,{width:"36%"})}/>
+            </div>
+            {existingSkus.length > 0 && (
+              <div style={{fontSize:11,color:"#3d9e32",marginBottom:6,fontWeight:600}}>
+                ✓ 已加入 {existingSkus.length} 項商品
+              </div>
+            )}
+            <div style={{flex:1,overflowY:"auto",border:"1px solid #f0ede8",borderRadius:6,maxHeight:380}}>
+              {filtered.length === 0 ? (
+                <div style={{padding:24,textAlign:"center",color:"#9a968e",fontSize:11}}>沒有符合條件的商品</div>
+              ) : filtered.map(function(p){
+                return (
+                  <div key={p.id} onClick={function(){
+                    props.onAdd({
+                      productId: p.id, sku: p.sku, name: p.name,
+                      main: p.main, sub: p.sub,
+                      cost: p.cost || 0, price: p.price || 0,
+                      image: p.image || "",
+                      qty: 1, isNew: false
+                    });
+                  }} style={{padding:"6px 10px",borderBottom:"1px solid #f0ede8",cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",gap:8}}
+                    onMouseEnter={function(e){e.currentTarget.style.background="#f8f8f8";}}
+                    onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
+                    {p.image ? (
+                      <img src={p.image} alt="" style={{width:34,height:34,objectFit:"cover",borderRadius:4,border:"1px solid #e8e4de"}}/>
+                    ) : (
+                      <div style={{width:34,height:34,borderRadius:4,background:"#f5f4f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,color:"#d8d4cc"}}>📦</div>
+                    )}
+                    <span style={{fontSize:10,color:"#9a968e",width:60}}>{p.sku}</span>
+                    <span style={{flex:1}}>{p.name}</span>
+                    <span style={{fontSize:10,color:"#9a968e"}}>{p.main}/{p.sub}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <button onClick={props.onCancel}
+              style={{marginTop:8,padding:"8px 14px",background:"#b8910a",border:"none",borderRadius:5,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+              ✓ 完成
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// 店員初驗
+function PurchaseReceiver(props) {
+  var po = props.po, setPo = props.setPo;
+  var readOnly = props.readOnly;
+  var items = po.items || [];
+
+  function updateItem(idx, field, value) {
+    var next = items.map(function(item, i){
+      return i === idx ? Object.assign({}, item, {[field]: value}) : item;
+    });
+    setPo(Object.assign({}, po, {items: next}));
+  }
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:10,height:"100%",overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+        <button onClick={props.onCancel} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#7a7068"}}>‹</button>
+        <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>📦 收貨驗收 {po.no}</div>
+      </div>
+
+      <div style={{display:"flex",gap:12,flexShrink:0,fontSize:11,color:"#7a7068"}}>
+        <span>建立日期：{po.date}</span>
+        {po.eta && <span>預計到貨：{po.eta}</span>}
+      </div>
+
+      <div style={{flex:1,overflowY:"auto",background:"#fff",borderRadius:8,padding:10}}>
+        <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{borderBottom:"2px solid #e8e4de"}}>
+              <th style={{padding:"6px 4px",textAlign:"center",width:60}}>圖片</th>
+              <th style={{padding:"6px 4px",textAlign:"left"}}>商品</th>
+              <th style={{padding:"6px 4px",textAlign:"center",width:60}}>採購</th>
+              <th style={{padding:"6px 4px",textAlign:"center",width:70}}>實收</th>
+              <th style={{padding:"6px 4px",textAlign:"center",width:70}}>破損</th>
+              <th style={{padding:"6px 4px",textAlign:"center",width:60}}>狀態</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(function(item, idx){
+              var received = Number(item.receivedQty) || 0;
+              var damaged = Number(item.damagedQty) || 0;
+              var diff = received - item.qty;
+              var bad = damaged > 0 || diff < 0;
+              return (
+                <tr key={idx} style={{borderBottom:"1px solid #f0ede8"}}>
+                  <td style={{padding:"6px 4px",textAlign:"center"}}>
+                    {item.image ? (
+                      <img src={item.image} alt="" style={{width:50,height:50,objectFit:"cover",borderRadius:5,border:"1px solid #e8e4de"}}/>
+                    ) : (
+                      <div style={{width:50,height:50,borderRadius:5,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:18,color:"#d8d4cc"}}>📦</div>
+                    )}
+                  </td>
+                  <td style={{padding:"6px 4px"}}>
+                    {item.isNew && <span style={{background:"#7055c0",color:"#fff",padding:"1px 5px",borderRadius:3,fontSize:9,marginRight:4}}>新品</span>}
+                    {item.name}
+                    <div style={{fontSize:9,color:"#9a968e"}}>{item.sku}</div>
+                  </td>
+                  <td style={{padding:"6px 4px",textAlign:"center"}}>{item.qty}</td>
+                  <td style={{padding:"6px 4px",textAlign:"center"}}>
+                    <input type="number" min="0" value={item.receivedQty||""} disabled={readOnly}
+                      onChange={function(e){updateItem(idx,"receivedQty",Number(e.target.value)||0);}}
+                      style={{width:55,padding:"3px",border:"1px solid "+(diff<0?"#d0552f":"#d8d4cc"),borderRadius:4,fontSize:11,textAlign:"center",background:readOnly?"#f5f4f0":"#fff"}}/>
+                  </td>
+                  <td style={{padding:"6px 4px",textAlign:"center"}}>
+                    <input type="number" min="0" value={item.damagedQty||""} disabled={readOnly}
+                      onChange={function(e){updateItem(idx,"damagedQty",Number(e.target.value)||0);}}
+                      style={{width:55,padding:"3px",border:"1px solid "+(damaged>0?"#d0552f":"#d8d4cc"),borderRadius:4,fontSize:11,textAlign:"center",background:readOnly?"#f5f4f0":"#fff"}}/>
+                  </td>
+                  <td style={{padding:"6px 4px",textAlign:"center",fontSize:10}}>
+                    {!item.receivedQty ? <span style={{color:"#9a968e"}}>—</span>
+                      : bad ? <span style={{color:"#d0552f",fontWeight:700}}>⚠️ 異常</span>
+                      : <span style={{color:"#3d9e32",fontWeight:700}}>✓ 完整</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {!readOnly && (
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexShrink:0}}>
+          <button onClick={props.onCancel}
+            style={{background:"none",border:"1px solid #d8d4cc",borderRadius:6,padding:"7px 16px",color:"#7a7068",fontSize:12,cursor:"pointer"}}>取消</button>
+          <button onClick={props.onSubmit}
+            style={{background:"#d0552f",border:"none",borderRadius:6,padding:"7px 20px",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+            送出驗收給店長確認
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 店長覆驗
+function PurchaseVerifier(props) {
+  var po = props.po;
+  var items = po.items || [];
+  var hasAbnormal = items.some(function(i){
+    return (Number(i.receivedQty)||0) !== i.qty || (Number(i.damagedQty)||0) > 0;
+  });
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:10,height:"100%",overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+        <button onClick={props.onCancel} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#7a7068"}}>‹</button>
+        <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>👔 店長覆驗 {po.no}</div>
+      </div>
+
+      <div style={{display:"flex",gap:12,flexShrink:0,fontSize:11,color:"#7a7068",flexWrap:"wrap"}}>
+        <span>初驗人員：<strong style={{color:"#2a2520"}}>{po.receivedBy}</strong></span>
+        <span>初驗時間：{po.receivedAt}</span>
+      </div>
+
+      {hasAbnormal && (
+        <div style={{padding:8,background:"#fff0e0",border:"1px solid #f0d0a0",borderRadius:6,fontSize:11,color:"#a06000",flexShrink:0}}>
+          ⚠️ 此採購單有異常項目（數量不符或破損），請仔細確認
+        </div>
+      )}
+
+      <div style={{flex:1,overflowY:"auto",background:"#fff",borderRadius:8,padding:10}}>
+        <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{borderBottom:"2px solid #e8e4de"}}>
+              <th style={{padding:"6px 4px",textAlign:"left"}}>商品</th>
+              <th style={{padding:"6px 4px",textAlign:"center"}}>採購</th>
+              <th style={{padding:"6px 4px",textAlign:"center"}}>實收</th>
+              <th style={{padding:"6px 4px",textAlign:"center"}}>破損</th>
+              <th style={{padding:"6px 4px",textAlign:"center"}}>實際入庫</th>
+              <th style={{padding:"6px 4px",textAlign:"center"}}>狀態</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(function(item, idx){
+              var received = Number(item.receivedQty)||0;
+              var damaged = Number(item.damagedQty)||0;
+              var inStock = received - damaged;
+              var bad = damaged>0 || received !== item.qty;
+              return (
+                <tr key={idx} style={{borderBottom:"1px solid #f0ede8"}}>
+                  <td style={{padding:"6px 4px"}}>
+                    {item.isNew && <span style={{background:"#7055c0",color:"#fff",padding:"1px 5px",borderRadius:3,fontSize:9,marginRight:4}}>新品</span>}
+                    {item.name}
+                    <div style={{fontSize:9,color:"#9a968e"}}>{item.sku}</div>
+                  </td>
+                  <td style={{padding:"6px 4px",textAlign:"center"}}>{item.qty}</td>
+                  <td style={{padding:"6px 4px",textAlign:"center",color:received!==item.qty?"#d0552f":"#2a2520",fontWeight:received!==item.qty?700:400}}>{received}</td>
+                  <td style={{padding:"6px 4px",textAlign:"center",color:damaged>0?"#d0552f":"#2a2520",fontWeight:damaged>0?700:400}}>{damaged}</td>
+                  <td style={{padding:"6px 4px",textAlign:"center",fontWeight:700,color:"#3d9e32"}}>{inStock}</td>
+                  <td style={{padding:"6px 4px",textAlign:"center",fontSize:10}}>
+                    {bad ? <span style={{color:"#d0552f",fontWeight:700}}>⚠️ 異常</span>
+                     : <span style={{color:"#3d9e32",fontWeight:700}}>✓ 完整</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexShrink:0}}>
+        <button onClick={props.onCancel}
+          style={{background:"none",border:"1px solid #d8d4cc",borderRadius:6,padding:"7px 14px",color:"#7a7068",fontSize:12,cursor:"pointer"}}>取消</button>
+        <button onClick={props.onReject}
+          style={{background:"none",border:"1px solid #d0552f",borderRadius:6,padding:"7px 14px",color:"#d0552f",fontSize:12,cursor:"pointer"}}>
+          ↩ 退回重驗
+        </button>
+        <button onClick={props.onConfirm}
+          style={{background:"#3d9e32",border:"none",borderRadius:6,padding:"7px 20px",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+          ✓ 確認入庫
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// 已完成採購單查看
+function PurchaseViewer(props) {
+  var po = props.po;
+  var items = po.items || [];
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:10,height:"100%",overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+        <button onClick={props.onClose} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#7a7068"}}>‹</button>
+        <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>✅ 已完成 {po.no}</div>
+      </div>
+
+      <div style={{display:"flex",gap:12,flexShrink:0,fontSize:11,color:"#7a7068",flexWrap:"wrap"}}>
+        <span>建立：{po.date}</span>
+        {po.receivedBy && <span>初驗：{po.receivedBy} ({po.receivedAt})</span>}
+        {po.confirmedBy && <span>覆驗：{po.confirmedBy} ({po.confirmedAt})</span>}
+      </div>
+
+      <div style={{flex:1,overflowY:"auto",background:"#fff",borderRadius:8,padding:10}}>
+        <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{borderBottom:"2px solid #e8e4de"}}>
+              <th style={{padding:"6px 4px",textAlign:"left"}}>商品</th>
+              <th style={{padding:"6px 4px",textAlign:"center"}}>採購</th>
+              <th style={{padding:"6px 4px",textAlign:"center"}}>實收</th>
+              <th style={{padding:"6px 4px",textAlign:"center"}}>破損</th>
+              <th style={{padding:"6px 4px",textAlign:"center"}}>入庫</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(function(item, idx){
+              var received = Number(item.receivedQty)||0;
+              var damaged = Number(item.damagedQty)||0;
+              return (
+                <tr key={idx} style={{borderBottom:"1px solid #f0ede8"}}>
+                  <td style={{padding:"6px 4px"}}>
+                    {item.isNew && <span style={{background:"#7055c0",color:"#fff",padding:"1px 5px",borderRadius:3,fontSize:9,marginRight:4}}>新品</span>}
+                    {item.name}
+                    <div style={{fontSize:9,color:"#9a968e"}}>{item.sku}</div>
+                  </td>
+                  <td style={{padding:"6px 4px",textAlign:"center"}}>{item.qty}</td>
+                  <td style={{padding:"6px 4px",textAlign:"center"}}>{received}</td>
+                  <td style={{padding:"6px 4px",textAlign:"center",color:damaged>0?"#d0552f":"#2a2520"}}>{damaged}</td>
+                  <td style={{padding:"6px 4px",textAlign:"center",fontWeight:700,color:"#3d9e32"}}>{received-damaged}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -4248,6 +5197,7 @@ function POSSystem() {
   var tabs=useState("pos"); var activeTab=tabs[0],setActiveTab=tabs[1];
   var mbrs=useState([]); var members=mbrs[0],setMembers=mbrs[1];  // 初始空陣列，由 storage 載入
   var ords=useState([]);    var orders=ords[0],setOrders=ords[1];
+  var purs=useState([]);    var purchases=purs[0],setPurchases=purs[1];
   var lgs2=useState([]);    var sharedStockLog=lgs2[0],setSharedStockLog=lgs2[1];
   var sts2=useState(function(){var m={};PRODUCTS.forEach(function(p){m[p.id]=p.stock;});return m;});
   var sharedStocks=sts2[0],setSharedStocks=sts2[1];
@@ -4276,6 +5226,7 @@ function POSSystem() {
     // 把 setters 註冊到 window，讓 Firebase SSE 即時更新 React state
     window.__reactSetters = {
       members:    setMembers,
+      purchases:  setPurchases,
       orders:     function(val) {
         // 月份節點更新時合併到 orders state
         try {
@@ -4372,6 +5323,7 @@ function POSSystem() {
       } catch(e) {}
     });
     loadOne("members",    setMembers);
+    loadOne("purchases",  setPurchases);
     // 載入訂單：最近 6 個月
     (function(){
       var now = new Date();
@@ -4534,6 +5486,13 @@ function POSSystem() {
     setSharedStocks(function(prev){
       var next = typeof updater==="function" ? updater(prev) : updater;
       saveData("stocks", next);
+      return next;
+    });
+  }
+  function savePurchases(updater) {
+    setPurchases(function(prev){
+      var next = typeof updater==="function" ? updater(prev) : updater;
+      saveData("purchases", next);
       return next;
     });
   }
@@ -5087,7 +6046,7 @@ function POSSystem() {
                     var d = new Date(now.getFullYear(), now.getMonth()-mi, 1);
                     monthKeys.push("orders-"+d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"));
                   }
-                  var KEYS = ["members","stocks","stocklog","shiftlog","products","staffrates","schedule","deletedskus","product-images"].concat(monthKeys);
+                  var KEYS = ["members","stocks","stocklog","shiftlog","products","staffrates","schedule","deletedskus","product-images","purchases"].concat(monthKeys);
                   var result = {}; var pending = KEYS.length;
                   function tryExport(key) {
                     function gotVal(val) {
@@ -5732,6 +6691,7 @@ function POSSystem() {
             {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={sharedStockLog} sharedAddLog={sharedAddLog}/>}
             {activeTab==="orders"    && <OrdersDrawer orders={orders} setOrders={saveOrders}/>}
             {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers}/>}
+            {activeTab==="purchase"  && <PurchasePanel purchases={purchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
             {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={orders}/>}
             {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={orders} products={sharedProducts} stocks={sharedStocks}/>}
             {activeTab==="consign"   && isManager && <ConsignSettlement orders={orders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
