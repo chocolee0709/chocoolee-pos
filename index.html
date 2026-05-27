@@ -5139,13 +5139,29 @@ function saveData(key, value) {
     if (key === "products") {
       try {
         var prods = typeof value === "string" ? JSON.parse(value) : value;
+        // 取得舊版本，比對哪些圖片真的有變化
+        var oldImgMap = {};
+        try {
+          var oldStr = localStorage.getItem("chocoolee-products");
+          if (oldStr) {
+            var oldProds = JSON.parse(oldStr);
+            oldProds.forEach(function(p){
+              if (p && p.id) oldImgMap[String(p.id)] = p.image;
+            });
+          }
+        } catch(e) {}
+
         var prodsNoImage = prods.map(function(p) {
           if (!p) return p;
           if (p.image && p.image.startsWith("data:")) {
-            // 每張圖獨立推送（不經過防抖，避免互相覆蓋）
+            // 每張圖獨立存到 localStorage
             var imgKey = "product-images/" + String(p.id);
             try { localStorage.setItem("chocoolee-" + imgKey, p.image); } catch(e) {}
-            pushImageWithRetry(String(p.id), p.image);
+            // 只在圖片有變化時才推送到 Firebase（節省大量網路請求）
+            var oldImg = oldImgMap[String(p.id)];
+            if (oldImg !== p.image) {
+              pushImageWithRetry(String(p.id), p.image);
+            }
             return Object.assign({}, p, {image: "__img__"});
           }
           return p;
