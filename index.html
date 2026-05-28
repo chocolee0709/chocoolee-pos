@@ -195,24 +195,38 @@
   };
 
   window.pushToFirebase = function(key, value) {
-    // 採購單立即推送（不防抖，避免多步驟操作互相覆蓋）
-    // 訂單短延遲（500ms）確保結帳後快速同步
-    // 其他資料 2 秒防抖
-    var delay = (key === "purchases") ? 0 : (key.indexOf("orders-") === 0) ? 500 : 2000;
+    // 採購單立即推送；訂單 300ms；其他 1.5 秒防抖
+    var delay = (key === "purchases") ? 0 : (key.indexOf("orders-") === 0) ? 300 : 1500;
     clearTimeout(syncTimers[key]);
+    var snapshot = typeof value === "string" ? value : JSON.stringify(value);
     syncTimers[key] = setTimeout(function(){
-      getToken(function(token){
-        if (!token) return;
-        lastLoadTime = Date.now();
-        fetch(FB + "/chocoolee/" + key + ".json?auth=" + token, {
-          method:"PUT",
-          headers:{"Content-Type":"application/json"},
-          body: typeof value === "string" ? value : JSON.stringify(value)
-        }).then(function(r){
-          if (r.ok) showToast("☁️ 已同步");
-          else showToast("⚠️ 同步失敗", true);
-        }).catch(function(){ showToast("⚠️ 推送失敗", true); });
-      });
+      function doPush(retry) {
+        getToken(function(token){
+          if (!token) {
+            if (retry > 0) setTimeout(function(){ doPush(retry-1); }, 3000);
+            else showToast("⚠️ 推送失敗（無法取得 token）", true);
+            return;
+          }
+          fetch(FB + "/chocoolee/" + key + ".json?auth=" + token, {
+            method:"PUT",
+            headers:{"Content-Type":"application/json"},
+            body: snapshot
+          }).then(function(r){
+            if (r.ok) { showToast("☁️ 已同步"); }
+            else if (r.status === 401) {
+              // token 過期，清掉後重試
+              fbToken = null;
+              if (retry > 0) setTimeout(function(){ doPush(retry-1); }, 1000);
+            } else {
+              showToast("⚠️ 同步失敗 ("+r.status+")", true);
+            }
+          }).catch(function(){
+            if (retry > 0) setTimeout(function(){ doPush(retry-1); }, 3000);
+            else showToast("⚠️ 推送失敗", true);
+          });
+        });
+      }
+      doPush(3); // 最多重試 3 次
     }, delay);
   };
 
@@ -226,14 +240,20 @@
         sseSource = new EventSource(url);
         sseSource.addEventListener("put", function(e) {
           var now = Date.now();
-          if (now - lastLoadTime < 3000) return;
+          if (now - lastLoadTime < 1500) return;
           lastLoadTime = now;
+          try {
+            var payload = JSON.parse(e.data);
+            var path = payload.path || "";
+            // 只有圖片更新時不需要重新 fetch 全部
+            if (path.indexOf("/product-images/") === 0) return;
+          } catch(ex) {}
           showToast("🔄 偵測到資料更新，同步中...");
           fetchAllFromFirebase(function(ok){ if (ok) showToast("✅ 資料已同步最新"); });
         });
         sseSource.addEventListener("patch", function(e) {
           var now = Date.now();
-          if (now - lastLoadTime < 3000) return;
+          if (now - lastLoadTime < 1500) return;
           lastLoadTime = now;
           fetchAllFromFirebase(null);
         });
@@ -289,6 +309,122 @@
     fbToken = null;
     if (sseSource) startSSE();
   }, 50 * 60 * 1000);
+
+  // iPad 螢幕喚醒或切回頁面時，強制同步所有待推送資料
+  document.addEventListener("visibilitychange", function(){
+    if (document.visibilityState !== "visible") return;
+    // 重新整理 token 和 SSE
+    fbToken = null;
+    if (sseSource) startSSE();
+    // 把 localStorage 所有 chocoolee- 資料重新推送到 Firebase
+    setTimeout(function(){
+      getToken(function(token){
+        if (!token) return;
+        var keys = ["products","stocks","members","purchases","stocklog","addlog"];
+        keys.forEach(function(k){
+          var val = localStorage.getItem("chocoolee-" + k);
+          if (val) {
+            fetch(FB + "/chocoolee/" + k + ".json?auth=" + token, {
+              method:"PUT",
+              headers:{"Content-Type":"application/json"},
+              body: val
+            }).catch(function(){});
+          }
+        });
+        // 訂單月份節點
+        for (var i = 0; i < 6; i++) {
+          var d = new Date();
+          d.setMonth(d.getMonth() - i);
+          var mk = "orders-" + d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
+          var mv = localStorage.getItem("chocoolee-" + mk);
+          if (mv) {
+            (function(key, body){
+              fetch(FB + "/chocoolee/" + key + ".json?auth=" + token, {
+                method:"PUT",
+                headers:{"Content-Type":"application/json"},
+                body: body
+              }).catch(function(){});
+            })(mk, mv);
+          }
+        }
+      });
+    }, 1000);
+  });
+
+  // 網路重新連線時也強制同步
+  window.addEventListener("online", function(){
+    fbToken = null;
+    if (sseSource) startSSE();
+  });
+
+  // ── 下拉更新（Pull to Refresh）──
+  var ptrStartY = 0;
+  var ptrDist = 0;
+  var ptrActive = false;
+  var ptrIndicator = document.createElement("div");
+  ptrIndicator.id = "ptr-indicator";
+  ptrIndicator.style.cssText = [
+    "position:fixed","top:0","left:0","right:0","z-index:9999",
+    "display:flex","align-items:center","justify-content:center","gap:8px",
+    "background:#f0fdf0","color:#3d9e32","font-size:13px","font-weight:700",
+    "height:0","overflow:hidden","transition:height 0.15s ease",
+    "border-bottom:1px solid #a0d8a0","pointer-events:none"
+  ].join(";");
+  ptrIndicator.innerHTML = "<span id='ptr-icon'>↓</span><span id='ptr-text'>下拉更新</span>";
+  document.body.appendChild(ptrIndicator);
+
+  document.addEventListener("touchstart", function(e){
+    // 只有在頁面頂端才啟動
+    if (window.scrollY === 0 || document.documentElement.scrollTop === 0) {
+      ptrStartY = e.touches[0].clientY;
+      ptrActive = true;
+    }
+  }, {passive: true});
+
+  document.addEventListener("touchmove", function(e){
+    if (!ptrActive) return;
+    ptrDist = e.touches[0].clientY - ptrStartY;
+    if (ptrDist < 0) { ptrActive = false; return; }
+    var h = Math.min(ptrDist * 0.4, 56);
+    ptrIndicator.style.height = h + "px";
+    var icon = document.getElementById("ptr-icon");
+    var text = document.getElementById("ptr-text");
+    if (ptrDist > 80) {
+      if (icon) icon.textContent = "↻";
+      if (text) text.textContent = "放開即更新";
+      ptrIndicator.style.background = "#e8f5e0";
+    } else {
+      if (icon) icon.textContent = "↓";
+      if (text) text.textContent = "下拉更新";
+      ptrIndicator.style.background = "#f0fdf0";
+    }
+  }, {passive: true});
+
+  document.addEventListener("touchend", function(){
+    if (!ptrActive) return;
+    ptrActive = false;
+    if (ptrDist > 80) {
+      // 執行更新
+      var icon = document.getElementById("ptr-icon");
+      var text = document.getElementById("ptr-text");
+      ptrIndicator.style.height = "44px";
+      if (icon) icon.textContent = "⟳";
+      if (text) text.textContent = "更新中...";
+      ptrIndicator.style.color = "#3d9e32";
+      fbToken = null;
+      fetchAllFromFirebase(function(ok){
+        if (icon) icon.textContent = ok ? "✓" : "⚠";
+        if (text) text.textContent = ok ? "已更新" : "更新失敗";
+        setTimeout(function(){
+          ptrIndicator.style.height = "0";
+          ptrDist = 0;
+        }, 1000);
+      });
+    } else {
+      ptrIndicator.style.height = "0";
+      ptrDist = 0;
+    }
+  });
   </script>
 
   <script type="text/babel" data-presets="react">
@@ -2869,9 +3005,9 @@ function PurchaseEditor(props) {
                   <tr key={idx} style={{borderBottom:"1px solid #f0ede8"}}>
                     <td style={{padding:"4px",textAlign:"center"}}>
                       {item.image ? (
-                        <img src={item.image} alt="" style={{width:34,height:34,objectFit:"cover",borderRadius:4,border:"1px solid #e8e4de"}}/>
+                        <img src={item.image} alt="" style={{width:60,height:60,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de"}}/>
                       ) : (
-                        <div style={{width:34,height:34,borderRadius:4,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,color:"#d8d4cc"}}>📦</div>
+                        <div style={{width:60,height:60,borderRadius:6,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#d8d4cc"}}>📦</div>
                       )}
                     </td>
                     <td style={{padding:"6px 4px"}}>
@@ -3163,9 +3299,9 @@ function ItemPicker(props) {
                     onMouseEnter={function(e){e.currentTarget.style.background="#f8f8f8";}}
                     onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
                     {p.image ? (
-                      <img src={p.image} alt="" style={{width:34,height:34,objectFit:"cover",borderRadius:4,border:"1px solid #e8e4de"}}/>
+                      <img src={p.image} alt="" style={{width:60,height:60,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de"}}/>
                     ) : (
-                      <div style={{width:34,height:34,borderRadius:4,background:"#f5f4f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,color:"#d8d4cc"}}>📦</div>
+                      <div style={{width:60,height:60,borderRadius:6,background:"#f5f4f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#d8d4cc"}}>📦</div>
                     )}
                     <span style={{fontSize:10,color:"#9a968e",width:60}}>{p.sku}</span>
                     <span style={{flex:1}}>{p.name}</span>
@@ -3232,9 +3368,9 @@ function PurchaseReceiver(props) {
                 <tr key={idx} style={{borderBottom:"1px solid #f0ede8"}}>
                   <td style={{padding:"6px 4px",textAlign:"center"}}>
                     {item.image ? (
-                      <img src={item.image} alt="" style={{width:50,height:50,objectFit:"cover",borderRadius:5,border:"1px solid #e8e4de"}}/>
+                      <img src={item.image} alt="" style={{width:80,height:80,objectFit:"cover",borderRadius:8,border:"1px solid #e8e4de"}}/>
                     ) : (
-                      <div style={{width:50,height:50,borderRadius:5,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:18,color:"#d8d4cc"}}>📦</div>
+                      <div style={{width:80,height:80,borderRadius:8,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:26,color:"#d8d4cc"}}>📦</div>
                     )}
                   </td>
                   <td style={{padding:"6px 4px"}}>
