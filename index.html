@@ -368,51 +368,57 @@
     if (sseSource) startSSE();
   }, 50 * 60 * 1000);
 
-  // iPad 螢幕喚醒或切回頁面時，強制同步所有待推送資料
-  document.addEventListener("visibilitychange", function(){
-    if (document.visibilityState !== "visible") return;
-    // 重新整理 token 和 SSE
-    fbToken = null;
-    if (sseSource) startSSE();
-    // 把 localStorage 所有 chocoolee- 資料重新推送到 Firebase
-    setTimeout(function(){
-      getToken(function(token){
-        if (!token) return;
-        var keys = ["products","stocks","members","purchases","stocklog","addlog"];
-        keys.forEach(function(k){
-          var val = localStorage.getItem("chocoolee-" + k);
-          if (val) {
-            fetch(FB + "/chocoolee/" + k + ".json?auth=" + token, {
-              method:"PUT",
-              headers:{"Content-Type":"application/json"},
-              body: val
-            }).catch(function(){});
-          }
-        });
-        // 訂單月份節點
-        for (var i = 0; i < 6; i++) {
-          var d = new Date();
-          d.setMonth(d.getMonth() - i);
-          var mk = "orders-" + d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
-          var mv = localStorage.getItem("chocoolee-" + mk);
-          if (mv) {
-            (function(key, body){
-              fetch(FB + "/chocoolee/" + key + ".json?auth=" + token, {
-                method:"PUT",
-                headers:{"Content-Type":"application/json"},
-                body: body
-              }).catch(function(){});
-            })(mk, mv);
-          }
-        }
-      });
-    }, 1000);
-  });
+  // iPad 螢幕喚醒或切回頁面時：重新整理 token 和 SSE（實際同步由 visibilitychange 處理）
 
   // 網路重新連線時也強制同步
   window.addEventListener("online", function(){
     fbToken = null;
     if (sseSource) startSSE();
+    window.syncLocalToFirebase(function(){ fetchAllFromFirebase(null); });
+  });
+
+  // ── 本機推送到 Firebase（先推再拉）──
+  window.syncLocalToFirebase = function(callback) {
+    getToken(function(token){
+      if (!token) { if (callback) callback(false); return; }
+      var pushList = [];
+      // 一般資料
+      var keys = ["products","stocks","members","purchases","stocklog","addlog"];
+      keys.forEach(function(k){
+        var val = localStorage.getItem("chocoolee-" + k);
+        if (val) pushList.push({key: k, body: val});
+      });
+      // 訂單月份節點（最近 6 個月）
+      for (var i = 0; i < 6; i++) {
+        var d = new Date();
+        d.setMonth(d.getMonth() - i);
+        var mk = "orders-" + d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
+        var mv = localStorage.getItem("chocoolee-" + mk);
+        if (mv) pushList.push({key: mk, body: mv});
+      }
+      if (pushList.length === 0) { if (callback) callback(true); return; }
+      var done = 0;
+      pushList.forEach(function(item){
+        fetch(FB + "/chocoolee/" + item.key + ".json?auth=" + token, {
+          method: "PUT",
+          headers: {"Content-Type":"application/json"},
+          body: item.body
+        }).then(function(){ done++; if (done >= pushList.length && callback) callback(true); })
+          .catch(function(){ done++; if (done >= pushList.length && callback) callback(false); });
+      });
+    });
+  };
+
+  // iPad 螢幕喚醒或切回頁面時：先推本機，再拉 Firebase
+  document.addEventListener("visibilitychange", function(){
+    if (document.visibilityState !== "visible") return;
+    fbToken = null;
+    if (sseSource) startSSE();
+    setTimeout(function(){
+      window.syncLocalToFirebase(function(){
+        fetchAllFromFirebase(null);
+      });
+    }, 500);
   });
 
   // ── 下拉更新（Pull to Refresh）──
@@ -432,7 +438,6 @@
   document.body.appendChild(ptrIndicator);
 
   document.addEventListener("touchstart", function(e){
-    // 只有在頁面頂端才啟動
     if (window.scrollY === 0 || document.documentElement.scrollTop === 0) {
       ptrStartY = e.touches[0].clientY;
       ptrActive = true;
@@ -448,7 +453,7 @@
     var icon = document.getElementById("ptr-icon");
     var text = document.getElementById("ptr-text");
     if (ptrDist > 80) {
-      if (icon) icon.textContent = "↻";
+      if (icon) icon.textContent = "↑";
       if (text) text.textContent = "放開即更新";
       ptrIndicator.style.background = "#e8f5e0";
     } else {
@@ -462,21 +467,26 @@
     if (!ptrActive) return;
     ptrActive = false;
     if (ptrDist > 80) {
-      // 執行更新
       var icon = document.getElementById("ptr-icon");
       var text = document.getElementById("ptr-text");
       ptrIndicator.style.height = "44px";
-      if (icon) icon.textContent = "⟳";
-      if (text) text.textContent = "更新中...";
-      ptrIndicator.style.color = "#3d9e32";
-      fbToken = null;
-      fetchAllFromFirebase(function(ok){
-        if (icon) icon.textContent = ok ? "✓" : "⚠";
-        if (text) text.textContent = ok ? "已更新" : "更新失敗";
-        setTimeout(function(){
-          ptrIndicator.style.height = "0";
-          ptrDist = 0;
-        }, 1000);
+      if (icon) icon.textContent = "⬆";
+      if (text) text.textContent = "上傳本機資料...";
+      ptrIndicator.style.color = "#2a7080";
+      // 第一步：先把本機資料推到 Firebase
+      window.syncLocalToFirebase(function(pushOk){
+        if (text) text.textContent = pushOk ? "同步中..." : "上傳失敗，嘗試讀取...";
+        if (icon) icon.textContent = "⬇";
+        // 第二步：再從 Firebase 拉取最新資料
+        fetchAllFromFirebase(function(ok){
+          if (icon) icon.textContent = ok ? "✓" : "⚠";
+          if (text) text.textContent = ok ? "已更新" : "更新失敗";
+          ptrIndicator.style.color = ok ? "#3d9e32" : "#d0552f";
+          setTimeout(function(){
+            ptrIndicator.style.height = "0";
+            ptrDist = 0;
+          }, 1200);
+        });
       });
     } else {
       ptrIndicator.style.height = "0";
