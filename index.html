@@ -195,6 +195,10 @@
   };
 
   window.pushToFirebase = function(key, value) {
+    // 採購單立即推送（不防抖，避免多步驟操作互相覆蓋）
+    // 訂單短延遲（500ms）確保結帳後快速同步
+    // 其他資料 2 秒防抖
+    var delay = (key === "purchases") ? 0 : (key.indexOf("orders-") === 0) ? 500 : 2000;
     clearTimeout(syncTimers[key]);
     syncTimers[key] = setTimeout(function(){
       getToken(function(token){
@@ -209,7 +213,7 @@
           else showToast("⚠️ 同步失敗", true);
         }).catch(function(){ showToast("⚠️ 推送失敗", true); });
       });
-    }, 2000);
+    }, delay);
   };
 
   function startSSE() {
@@ -5530,25 +5534,24 @@ function POSSystem() {
   function saveOrders(updater) {
     setOrders(function(prev){
       var next = typeof updater==="function" ? updater(prev) : updater;
-      // 找出有變動的月份（比對新舊訂單）
+      // 找出有變動的月份
       var prevKeys = {};
-      prev.forEach(function(o){ prevKeys[o.no] = o; });
+      prev.forEach(function(o){ prevKeys[o.no] = JSON.stringify(o); });
       var changedMonths = {};
       next.forEach(function(o){
-        var old = prevKeys[o.no];
-        if (!old || old.status !== o.status || old.total !== o.total) {
+        // 比對整筆訂單，任何欄位變動都算
+        if (prevKeys[o.no] !== JSON.stringify(o)) {
           changedMonths[getOrderKey(o.date)] = true;
         }
       });
-      // 也檢查被刪除的訂單
+      // 被刪除的訂單也要更新該月份
       var nextKeys = {};
       next.forEach(function(o){ nextKeys[o.no] = true; });
       prev.forEach(function(o){
         if (!nextKeys[o.no]) changedMonths[getOrderKey(o.date)] = true;
       });
-      // 只存有變動的月份
+      // 沒偵測到變動 → 預設存當月（新增訂單的情況）
       if (Object.keys(changedMonths).length === 0) {
-        // 新訂單：存當月
         changedMonths[getOrderKey()] = true;
       }
       Object.keys(changedMonths).forEach(function(key){
