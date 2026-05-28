@@ -396,15 +396,34 @@
         var mv = localStorage.getItem("chocoolee-" + mk);
         if (mv) pushList.push({key: mk, body: mv});
       }
-      if (pushList.length === 0) { if (callback) callback(true); return; }
+      // 圖片（逐一推送）
+      var imgPushList = [];
+      for (var si = 0; si < localStorage.length; si++) {
+        var sk = localStorage.key(si);
+        if (sk && sk.indexOf("chocoolee-product-images/") === 0) {
+          var imgId = sk.replace("chocoolee-product-images/","");
+          var imgVal = localStorage.getItem(sk);
+          if (imgVal && imgVal.startsWith("data:")) imgPushList.push({id: imgId, data: imgVal});
+        }
+      }
+
+      var total = pushList.length + imgPushList.length;
+      if (total === 0) { if (callback) callback(true); return; }
       var done = 0;
+      function onDone() { done++; if (done >= total && callback) callback(true); }
+
+      // 推送一般資料
       pushList.forEach(function(item){
         fetch(FB + "/chocoolee/" + item.key + ".json?auth=" + token, {
-          method: "PUT",
-          headers: {"Content-Type":"application/json"},
-          body: item.body
-        }).then(function(){ done++; if (done >= pushList.length && callback) callback(true); })
-          .catch(function(){ done++; if (done >= pushList.length && callback) callback(false); });
+          method: "PUT", headers: {"Content-Type":"application/json"}, body: item.body
+        }).then(onDone).catch(onDone);
+      });
+
+      // 推送圖片（只推 pendingImages 或比 Firebase 新的）
+      imgPushList.forEach(function(item){
+        fetch(FB + "/chocoolee/product-images/" + item.id + ".json?auth=" + token, {
+          method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(item.data)
+        }).then(onDone).catch(onDone);
       });
     });
   };
@@ -5325,20 +5344,23 @@ var FB_URL = "https://chocoolee-pos-default-rtdb.firebaseio.com";
 window._imageQueue = window._imageQueue || {};
 function pushImageWithRetry(imgId, imgData, retries) {
   retries = retries || 0;
-  // 標記此圖片正在推送中，防止 SSE 同步時被舊圖覆蓋
   if (!window.__pendingImages) window.__pendingImages = {};
   window.__pendingImages[imgId] = true;
 
   if (!window.getFirebaseToken) {
-    if (retries < 5) {
-      setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 1500);
+    if (retries < 5) setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 1500);
+    else {
+      delete window.__pendingImages[imgId];
+      if (window.showToast) window.showToast("⚠️ 圖片推送失敗（無法取得 token）", true);
     }
     return;
   }
   window.getFirebaseToken(function(token){
     if (!token) {
-      if (retries < 5) {
-        setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+      if (retries < 5) setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+      else {
+        delete window.__pendingImages[imgId];
+        if (window.showToast) window.showToast("⚠️ 圖片推送失敗（無 token）", true);
       }
       return;
     }
@@ -5348,42 +5370,44 @@ function pushImageWithRetry(imgId, imgData, retries) {
       body: JSON.stringify(imgData)
     }).then(function(r){
       if (!r.ok) {
-        if (retries < 5) {
-          setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+        if (retries < 5) setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+        else {
+          delete window.__pendingImages[imgId];
+          if (window.showToast) window.showToast("⚠️ 圖片推送失敗 ("+r.status+")", true);
         }
         return;
       }
       // 驗證圖片真的存上去了
       setTimeout(function(){
         fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/product-images/" + imgId + ".json?auth=" + token)
-          .then(function(vr){
-            if (!vr.ok) {
-              if (retries < 5) {
-                setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
-              }
-              return;
-            }
-            return vr.json();
-          })
+          .then(function(vr){ return vr.ok ? vr.json() : null; })
           .then(function(v){
             if (!v || typeof v !== "string" || !v.startsWith("data:")) {
               if (retries < 5) {
                 setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+              } else {
+                delete window.__pendingImages[imgId];
+                if (window.showToast) window.showToast("⚠️ 圖片驗證失敗，請手動同步", true);
               }
             } else {
-              // 推送並驗證成功，解除保護
-              if (window.__pendingImages) delete window.__pendingImages[imgId];
+              // 推送並驗證成功
+              delete window.__pendingImages[imgId];
+              if (window.showToast) window.showToast("🖼 圖片已儲存到雲端");
             }
           })
           .catch(function(){
-            if (retries < 5) {
-              setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+            if (retries < 5) setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+            else {
+              delete window.__pendingImages[imgId];
+              if (window.showToast) window.showToast("⚠️ 圖片驗證失敗", true);
             }
           });
-      }, 500);
+      }, 800);
     }).catch(function(){
-      if (retries < 5) {
-        setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+      if (retries < 5) setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
+      else {
+        delete window.__pendingImages[imgId];
+        if (window.showToast) window.showToast("⚠️ 圖片推送失敗（網路錯誤）", true);
       }
     });
   });
@@ -5540,7 +5564,7 @@ function POSSystem() {
               .filter(function(s){ return deletedSkusR.indexOf(s.sku)===-1; })
               .map(function(s){
                 var img = "";
-                if (s.image === "__img__") {
+                if (s.image === "__img__" || s.image === "" || !s.image) {
                   // 1. 先試獨立節點
                   img = localStorage.getItem("chocoolee-product-images/" + String(s.id)) || "";
                   // 2. 再試舊版整包
@@ -5550,7 +5574,7 @@ function POSSystem() {
                       img = oldImgMap[String(s.id)] || "";
                     } catch(e) {}
                   }
-                  // 3. 都沒有的話，保留 React state 裡的舊圖（防止剛上傳的新圖被覆蓋）
+                  // 3. 都沒有的話，保留 React state 裡的舊圖
                   if (!img && prevImgMap[String(s.id)]) {
                     img = prevImgMap[String(s.id)];
                   }
@@ -5683,7 +5707,7 @@ function POSSystem() {
           .map(function(s){
             // 從獨立節點讀取圖片
             var img = "";
-            if (s.image === "__img__") {
+            if (s.image === "__img__" || s.image === "" || !s.image) {
               // 先試獨立節點
               img = localStorage.getItem("chocoolee-product-images/" + String(s.id)) || "";
               // 如果沒有，試舊版整包節點
