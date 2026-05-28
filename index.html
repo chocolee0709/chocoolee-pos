@@ -132,8 +132,13 @@
                     var fbImg = imgs[imgId];
                     // 必須是有效的 base64 圖片
                     if (!fbImg || typeof fbImg !== "string" || !fbImg.startsWith("data:")) return;
-                    var oldImg = localStorage.getItem("chocoolee-" + imgKey);
-                    if (fbImg !== oldImg) {
+                    var localImg = localStorage.getItem("chocoolee-" + imgKey);
+                    // 本機有圖片且 Firebase 版本不同時：
+                    // 如果本機圖片是「最近剛上傳的」（在 pendingImages 保護清單中），不覆蓋
+                    if (localImg && localImg !== fbImg) {
+                      if (window.__pendingImages && window.__pendingImages[imgId]) return;
+                    }
+                    if (fbImg !== localImg) {
                       localStorage.setItem("chocoolee-" + imgKey, fbImg);
                       changed.push(imgKey);
                     }
@@ -142,10 +147,63 @@
                 }
                 var newVal = typeof data[key] === "string" ? data[key] : JSON.stringify(data[key]);
                 var oldVal = localStorage.getItem("chocoolee-" + key);
-                if (newVal !== oldVal) {
-                  localStorage.setItem("chocoolee-" + key, newVal);
-                  changed.push(key);
+                if (newVal === oldVal) return; // 沒變動，跳過
+
+                // 訂單月份節點：合併兩邊，避免本機未推送的新訂單被覆蓋
+                if (key.indexOf("orders-") === 0) {
+                  try {
+                    var fbOrders = JSON.parse(newVal) || [];
+                    var localOrders = JSON.parse(oldVal || "[]") || [];
+                    // 以 order.no 為 key 合併，Firebase 資料優先（較新的 status/cancelDate）
+                    // 但本機有而 Firebase 沒有的訂單要保留
+                    var fbMap = {};
+                    fbOrders.forEach(function(o){ if(o && o.no) fbMap[o.no] = o; });
+                    var merged = fbOrders.slice();
+                    localOrders.forEach(function(o){
+                      if (o && o.no && !fbMap[o.no]) merged.push(o); // 本機有但 Firebase 沒有 → 保留
+                    });
+                    merged.sort(function(a,b){ return (b.date+b.time).localeCompare(a.date+a.time); });
+                    var mergedStr = JSON.stringify(merged);
+                    localStorage.setItem("chocoolee-" + key, mergedStr);
+                    // 如果本機有 Firebase 沒有的訂單，補推到 Firebase
+                    if (merged.length > fbOrders.length) {
+                      if (window.pushToFirebase) window.pushToFirebase(key, mergedStr);
+                    }
+                    changed.push(key);
+                  } catch(e) {
+                    localStorage.setItem("chocoolee-" + key, newVal);
+                    changed.push(key);
+                  }
+                  return;
                 }
+
+                // 採購單：合併兩邊，以 id 為 key
+                if (key === "purchases") {
+                  try {
+                    var fbPurchases = JSON.parse(newVal) || [];
+                    var localPurchases = JSON.parse(oldVal || "[]") || [];
+                    var fbPMap = {};
+                    fbPurchases.forEach(function(p){ if(p && p.id) fbPMap[p.id] = p; });
+                    var mergedP = fbPurchases.slice();
+                    localPurchases.forEach(function(p){
+                      if (p && p.id && !fbPMap[p.id]) mergedP.push(p);
+                    });
+                    var mergedPStr = JSON.stringify(mergedP);
+                    localStorage.setItem("chocoolee-" + key, mergedPStr);
+                    if (mergedP.length > fbPurchases.length) {
+                      if (window.pushToFirebase) window.pushToFirebase(key, mergedPStr);
+                    }
+                    changed.push(key);
+                  } catch(e) {
+                    localStorage.setItem("chocoolee-" + key, newVal);
+                    changed.push(key);
+                  }
+                  return;
+                }
+
+                // 其他資料：直接用 Firebase 版本
+                localStorage.setItem("chocoolee-" + key, newVal);
+                changed.push(key);
               } catch(e){}
             });
             if (changed.length > 0 && window.__reactSetters) {
@@ -5257,7 +5315,10 @@ var FB_URL = "https://chocoolee-pos-default-rtdb.firebaseio.com";
 window._imageQueue = window._imageQueue || {};
 function pushImageWithRetry(imgId, imgData, retries) {
   retries = retries || 0;
-  // 取得有效 token（用 window.getToken，會自動處理過期）
+  // 標記此圖片正在推送中，防止 SSE 同步時被舊圖覆蓋
+  if (!window.__pendingImages) window.__pendingImages = {};
+  window.__pendingImages[imgId] = true;
+
   if (!window.getFirebaseToken) {
     if (retries < 5) {
       setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 1500);
@@ -5299,6 +5360,9 @@ function pushImageWithRetry(imgId, imgData, retries) {
               if (retries < 5) {
                 setTimeout(function(){ pushImageWithRetry(imgId, imgData, retries+1); }, 2000);
               }
+            } else {
+              // 推送並驗證成功，解除保護
+              if (window.__pendingImages) delete window.__pendingImages[imgId];
             }
           })
           .catch(function(){
