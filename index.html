@@ -598,7 +598,6 @@ const MANAGER_TABS = [
   {key:"analytics", label:"銷售分析",icon:"▲"},
   {key:"smart",     label:"智能分析",icon:"✦"},
   {key:"consign",   label:"寄售結算",icon:"❋"},
-  {key:"attendance",label:"出勤薪資",icon:"⏱"},
 ];
 const PAYMENTS = ["現金","信用卡","Line Pay","轉帳"];
 
@@ -1351,20 +1350,19 @@ function CatalogPanel(props) {
 
       {/* ── 篩選列 ── */}
       <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0,flexWrap:"wrap"}}>
-        <input value={q} onChange={function(e){setQ(e.target.value);setPage(0);}} placeholder="搜尋商品名稱 / 貨號..."
-          style={Object.assign({},inp,{flex:"1 1 160px",width:"auto"})}/>
+        <input value={q} onChange={function(e){setQ(e.target.value);setPage(0);}} placeholder="搜尋..."
+          style={Object.assign({},inp,{flex:"0 0 160px",width:160})}/>
         <select value={filterMain} onChange={function(e){setFilterMain(e.target.value);setFilterSub("");setPage(0);}}
           style={Object.assign({},inp,{width:"auto",cursor:"pointer",flex:"0 0 auto"})}>
           <option value="">全部大分類</option>
           {MAIN_CATS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
         </select>
-        {filterMain && (
-          <select value={filterSub} onChange={function(e){setFilterSub(e.target.value);setPage(0);}}
-            style={Object.assign({},inp,{width:"auto",cursor:"pointer",flex:"0 0 auto"})}>
-            <option value="">全部小分類</option>
-            {subOptions.map(function(s){return <option key={s} value={s}>{s}</option>;})}
-          </select>
-        )}
+        <select value={filterSub} onChange={function(e){setFilterSub(e.target.value);setPage(0);}}
+          disabled={!filterMain}
+          style={Object.assign({},inp,{width:"auto",cursor:filterMain?"pointer":"not-allowed",flex:"0 0 auto",opacity:filterMain?1:0.5})}>
+          <option value="">{filterMain?"全部小分類":"請先選大分類"}</option>
+          {subOptions.map(function(s){return <option key={s} value={s}>{s}</option>;})}
+        </select>
         {(q||filterMain) && (
           <button onClick={function(){setQ("");setFilterMain("");setFilterSub("");setPage(0);}}
             style={{background:"none",border:"1px solid #d8d4cc",borderRadius:20,padding:"4px 10px",color:"#9a968e",fontSize:10,cursor:"pointer"}}>
@@ -2870,6 +2868,7 @@ function PurchasePanel(props) {
   var sharedAddLog = props.sharedAddLog;
 
   var sm = useState("list"); var mode = sm[0], setMode = sm[1]; // list / create / edit / receive / verify
+  var ep = useState(null); var expandedPo = ep[0], setExpandedPo = ep[1];
   var sel = useState(null);  var selPo = sel[0], setSelPo = sel[1];
   var sf  = useState("all"); var filter = sf[0], setFilter = sf[1];
 
@@ -3072,25 +3071,79 @@ function PurchasePanel(props) {
             var itemCount = (po.items||[]).length;
             var totalQty = (po.items||[]).reduce(function(s,i){return s+(Number(i.qty)||0);},0);
             var totalCost = (po.items||[]).reduce(function(s,i){return s+(Number(i.cost)||0)*(Number(i.qty)||0);},0);
+            var isExpanded = expandedPo === po.no;
             return (
-              <div key={po.no} onClick={function(){
-                setSelPo(po);
-                if (po.status === "pending") setMode("receive");
-                else if (po.status === "review") setMode(isManager ? "verify" : "receive");
-                else setMode("view");
-              }}
-                style={{padding:"10px 14px",borderBottom:"1px solid #f0ede8",cursor:"pointer",display:"flex",alignItems:"center",gap:12}}>
-                <div style={{flex:1}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
-                    <span style={{fontSize:13,fontWeight:700,color:"#2a2520"}}>{po.no}</span>
-                    {statusBadge(po.status)}
+              <div key={po.no} style={{borderBottom:"1px solid #f0ede8"}}>
+                <div style={{padding:"10px 14px",display:"flex",alignItems:"center",gap:12}}>
+                  <div onClick={function(){setExpandedPo(isExpanded?null:po.no);}}
+                    style={{flex:1,cursor:"pointer"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                      <span style={{fontSize:11,color:"#9a968e",transform:isExpanded?"rotate(90deg)":"none",transition:"transform 0.15s",display:"inline-block"}}>▶</span>
+                      <span style={{fontSize:13,fontWeight:700,color:"#2a2520"}}>{po.no}</span>
+                      {statusBadge(po.status)}
+                    </div>
+                    <div style={{fontSize:11,color:"#7a7068",paddingLeft:18}}>
+                      {po.date} · {itemCount} 項 / {totalQty} 件
+                      {isManager && " · 成本 $" + totalCost.toLocaleString()}
+                    </div>
                   </div>
-                  <div style={{fontSize:11,color:"#7a7068"}}>
-                    {po.date} · {itemCount} 項 / {totalQty} 件
-                    {isManager && " · 成本 $" + totalCost.toLocaleString()}
-                  </div>
+                  <button onClick={function(e){
+                    e.stopPropagation();
+                    setSelPo(po);
+                    if (po.status === "pending") setMode("receive");
+                    else if (po.status === "review") setMode(isManager ? "verify" : "receive");
+                    else setMode("view");
+                  }}
+                    style={{background:"#b8910a",border:"none",borderRadius:6,padding:"5px 12px",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+                    開啟
+                  </button>
                 </div>
-                <span style={{fontSize:14,color:"#b8b0a4"}}>›</span>
+
+                {/* 展開：商品明細 */}
+                {isExpanded && (
+                  <div style={{padding:"4px 14px 12px 32px",background:"#faf9f7"}}>
+                    {itemCount === 0 ? (
+                      <div style={{fontSize:11,color:"#9a968e",padding:"6px 0"}}>無商品</div>
+                    ) : (
+                      <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+                        <thead>
+                          <tr style={{color:"#9a968e",fontSize:10,borderBottom:"1px solid #e8e4de"}}>
+                            <th style={{padding:"4px 6px",textAlign:"left",width:40}}>圖</th>
+                            <th style={{padding:"4px 6px",textAlign:"left"}}>商品</th>
+                            <th style={{padding:"4px 6px",textAlign:"left",width:70}}>貨號</th>
+                            <th style={{padding:"4px 6px",textAlign:"center",width:50}}>數量</th>
+                            {isManager && <th style={{padding:"4px 6px",textAlign:"right",width:65}}>單價</th>}
+                            {isManager && <th style={{padding:"4px 6px",textAlign:"right",width:75}}>小計</th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(po.items||[]).map(function(item,ii){
+                            var subtotal = (Number(item.qty)||0) * (Number(item.cost)||0);
+                            return (
+                              <tr key={ii} style={{borderBottom:"1px solid #f0ede8"}}>
+                                <td style={{padding:"4px 6px"}}>
+                                  {item.image ? (
+                                    <img src={item.image} alt="" style={{width:30,height:30,objectFit:"cover",borderRadius:4}}/>
+                                  ) : (
+                                    <div style={{width:30,height:30,borderRadius:4,background:"#f0ede8",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#c8c4bc"}}>📦</div>
+                                  )}
+                                </td>
+                                <td style={{padding:"4px 6px",color:"#2a2520"}}>
+                                  {item.isNew && <span style={{background:"#7055c0",color:"#fff",padding:"1px 4px",borderRadius:3,fontSize:9,marginRight:4}}>新</span>}
+                                  {item.name}
+                                </td>
+                                <td style={{padding:"4px 6px",color:"#7a7068",fontSize:10}}>{item.sku}</td>
+                                <td style={{padding:"4px 6px",textAlign:"center",color:"#2a2520",fontWeight:600}}>{item.qty}</td>
+                                {isManager && <td style={{padding:"4px 6px",textAlign:"right",color:"#7a7068"}}>${(item.cost||0).toLocaleString()}</td>}
+                                {isManager && <td style={{padding:"4px 6px",textAlign:"right",color:"#b8910a",fontWeight:600}}>${subtotal.toLocaleString()}</td>}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -3111,6 +3164,7 @@ function PurchasePanel(props) {
     return <PurchaseReceiver po={selPo} setPo={setSelPo}
       readOnly={selPo.status === "review" && !isManager}
       onSubmit={submitReceive}
+      onEdit={isManager && selPo.status === "pending" ? function(){setMode("create");} : null}
       onCancel={function(){setMode("list");setSelPo(null);}}/>;
   }
 
@@ -3137,6 +3191,7 @@ function PurchaseEditor(props) {
   var products = props.products || [];
   var sa = useState(false); var showAddItem = sa[0], setShowAddItem = sa[1];
   var sn = useState(false); var addingNew = sn[0], setAddingNew = sn[1];
+  var eim = useState(-1); var editingIdx = eim[0], setEditingIdx = eim[1];
 
   function updatePo(field, value) {
     setPo(Object.assign({}, po, {[field]: value}));
@@ -3238,8 +3293,13 @@ function PurchaseEditor(props) {
                       )}
                     </td>
                     <td style={{padding:"6px 4px"}}>
-                      {item.isNew && <span style={{background:"#7055c0",color:"#fff",padding:"1px 5px",borderRadius:3,fontSize:9,marginRight:4}}>新品</span>}
-                      {item.name}
+                      <span onClick={function(){setEditingIdx(idx);}}
+                        style={{cursor:"pointer",display:"inline-flex",alignItems:"center",gap:4}}
+                        title="點擊編輯">
+                        {item.isNew && <span style={{background:"#7055c0",color:"#fff",padding:"1px 5px",borderRadius:3,fontSize:9}}>新品</span>}
+                        <span style={{borderBottom:"1px dashed #b8910a"}}>{item.name}</span>
+                        <span style={{fontSize:11,color:"#b8910a"}}>✎</span>
+                      </span>
                     </td>
                     <td style={{padding:"6px 4px",color:"#9a968e",fontSize:10}}>{item.sku}</td>
                     <td style={{padding:"6px 4px",color:"#9a968e",fontSize:10}}>{item.main}/{item.sub}</td>
@@ -3269,6 +3329,150 @@ function PurchaseEditor(props) {
         <ItemPicker addingNew={addingNew} products={products}
           existingSkus={(po.items||[]).map(function(i){return i.sku;})}
           onAdd={addItem} onCancel={function(){setShowAddItem(false);}}/>
+      )}
+
+      {/* 編輯商品 Modal */}
+      {editingIdx >= 0 && (po.items||[])[editingIdx] && (
+        (function(){
+          var item = po.items[editingIdx];
+          var subOpts = CAT_STRUCT[item.main] || [];
+          function setF(field, val) { updateItem(editingIdx, field, val); }
+          return (
+            <div style={{position:"fixed",inset:0,background:"rgba(42,37,32,0.85)",zIndex:950,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              <div style={{background:"#fff",borderRadius:12,padding:20,width:480,maxWidth:"95vw",maxHeight:"90vh",overflowY:"auto"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+                  <div style={{fontSize:14,fontWeight:700,color:"#2a2520"}}>編輯商品</div>
+                  <button onClick={function(){setEditingIdx(-1);}}
+                    style={{background:"none",border:"none",fontSize:20,color:"#9a968e",cursor:"pointer"}}>×</button>
+                </div>
+
+                {/* 圖片 */}
+                <div style={{display:"flex",justifyContent:"center",marginBottom:14}}>
+                  {item.image ? (
+                    <div style={{position:"relative"}}>
+                      <img src={item.image} alt="" style={{width:120,height:120,objectFit:"cover",borderRadius:8,border:"1px solid #e8e4de"}}/>
+                      {item.isNew && (
+                        <label style={{position:"absolute",bottom:4,right:4,background:"#fff",borderRadius:6,padding:"3px 8px",fontSize:10,cursor:"pointer",border:"1px solid #d8d4cc"}}>
+                          🖼 換圖
+                          <input type="file" accept="image/*" style={{display:"none"}}
+                            onChange={function(e){
+                              var f=e.target.files[0]; if(!f) return;
+                              var r=new FileReader();
+                              r.onload=function(ev){
+                                var img=new Image();
+                                img.onload=function(){
+                                  var c=document.createElement("canvas");
+                                  var max=250, w=img.width, h=img.height;
+                                  if(w>h){if(w>max){h=Math.round(h*(max/w));w=max;}}
+                                  else{if(h>max){w=Math.round(w*(max/h));h=max;}}
+                                  c.width=w;c.height=h;
+                                  c.getContext("2d").drawImage(img,0,0,w,h);
+                                  setF("image", c.toDataURL("image/jpeg",0.65));
+                                };
+                                img.src=ev.target.result;
+                              };
+                              r.readAsDataURL(f);
+                            }}/>
+                        </label>
+                      )}
+                    </div>
+                  ) : item.isNew ? (
+                    <label style={{cursor:"pointer"}}>
+                      <div style={{width:120,height:120,borderRadius:8,border:"2px dashed #d8d4cc",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:4}}>
+                        <span style={{fontSize:32}}>📷</span>
+                        <span style={{fontSize:10,color:"#9a968e"}}>點此選圖</span>
+                      </div>
+                      <input type="file" accept="image/*" style={{display:"none"}}
+                        onChange={function(e){
+                          var f=e.target.files[0]; if(!f) return;
+                          var r=new FileReader();
+                          r.onload=function(ev){
+                            var img=new Image();
+                            img.onload=function(){
+                              var c=document.createElement("canvas");
+                              var max=250, w=img.width, h=img.height;
+                              if(w>h){if(w>max){h=Math.round(h*(max/w));w=max;}}
+                              else{if(h>max){w=Math.round(w*(max/h));h=max;}}
+                              c.width=w;c.height=h;
+                              c.getContext("2d").drawImage(img,0,0,w,h);
+                              setF("image", c.toDataURL("image/jpeg",0.65));
+                            };
+                            img.src=ev.target.result;
+                          };
+                          r.readAsDataURL(f);
+                        }}/>
+                    </label>
+                  ) : (
+                    <div style={{width:120,height:120,borderRadius:8,background:"#f5f4f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:32,color:"#d8d4cc"}}>📦</div>
+                  )}
+                </div>
+
+                {/* 欄位 */}
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                  <div>
+                    <label style={lbl}>商品名稱{!item.isNew && " 🔒"}</label>
+                    <input value={item.name||""} disabled={!item.isNew}
+                      onChange={function(e){setF("name", e.target.value);}}
+                      style={Object.assign({},inp,{background:item.isNew?"#fff":"#f5f4f0"})}/>
+                  </div>
+                  <div>
+                    <label style={lbl}>貨號{!item.isNew && " 🔒"}</label>
+                    <input value={item.sku||""} disabled={!item.isNew}
+                      onChange={function(e){setF("sku", e.target.value);}}
+                      style={Object.assign({},inp,{background:item.isNew?"#fff":"#f5f4f0"})}/>
+                  </div>
+                  <div>
+                    <label style={lbl}>大分類{!item.isNew && " 🔒"}</label>
+                    <select value={item.main||""} disabled={!item.isNew}
+                      onChange={function(e){setF("main", e.target.value); setF("sub", "");}}
+                      style={Object.assign({},inp,{cursor:item.isNew?"pointer":"not-allowed",background:item.isNew?"#fff":"#f5f4f0"})}>
+                      {MAIN_CATS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={lbl}>小分類{!item.isNew && " 🔒"}</label>
+                    <select value={item.sub||""} disabled={!item.isNew}
+                      onChange={function(e){setF("sub", e.target.value);}}
+                      style={Object.assign({},inp,{cursor:item.isNew?"pointer":"not-allowed",background:item.isNew?"#fff":"#f5f4f0"})}>
+                      <option value="">—</option>
+                      {subOpts.map(function(s){return <option key={s} value={s}>{s}</option>;})}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={lbl}>採購數量</label>
+                    <input type="number" min="1" value={item.qty||""}
+                      onChange={function(e){setF("qty", Number(e.target.value)||0);}} style={inp}/>
+                  </div>
+                  <div>
+                    <label style={lbl}>採購單價</label>
+                    <input type="number" min="0" value={item.cost||""}
+                      onChange={function(e){setF("cost", Number(e.target.value)||0);}} style={inp}/>
+                  </div>
+                  {item.isNew && (
+                    <div>
+                      <label style={lbl}>售價</label>
+                      <input type="number" min="0" value={item.price||""}
+                        onChange={function(e){setF("price", Number(e.target.value)||0);}} style={inp}/>
+                    </div>
+                  )}
+                </div>
+
+                {!item.isNew && (
+                  <div style={{marginTop:10,padding:"6px 10px",background:"#fff8e0",borderRadius:6,fontSize:10,color:"#a87c00"}}>
+                    🔒 鎖定欄位為既有商品的原始資料，僅可調整採購數量和單價
+                  </div>
+                )}
+
+                <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:14}}>
+                  <button onClick={function(){setEditingIdx(-1);}}
+                    style={{background:"#b8910a",border:"none",borderRadius:6,padding:"8px 20px",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                    完成
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()
       )}
 
       <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexShrink:0}}>
@@ -3331,9 +3535,15 @@ function ItemPicker(props) {
 
   // 自動產生貨號（同分類下找空缺號碼）
   function autoGenerateSku() {
+    // 商品庫存的同分類貨號
     var allSku = products.filter(function(p){
       return p.main === nf.main && p.sub === nf.sub;
     }).map(function(p){ return p.sku; });
+
+    // 也排除採購單本次已選的貨號（避免重複）
+    existingSkus.forEach(function(s){
+      if (allSku.indexOf(s) === -1) allSku.push(s);
+    });
 
     // 不用正則：手動解析「前綴 + 數字 + 後綴」
     function parseSku(s) {
@@ -3566,6 +3776,12 @@ function PurchaseReceiver(props) {
       <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
         <button onClick={props.onCancel} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#7a7068"}}>‹</button>
         <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>📦 收貨驗收 {po.no}</div>
+        {props.onEdit && (
+          <button onClick={props.onEdit}
+            style={{marginLeft:"auto",background:"#fff8e0",border:"1px solid #b8910a",borderRadius:6,padding:"5px 12px",color:"#a87c00",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+            ✎ 編輯採購內容
+          </button>
+        )}
       </div>
 
       <div style={{display:"flex",gap:12,flexShrink:0,fontSize:11,color:"#7a7068"}}>
@@ -3932,12 +4148,12 @@ function ShiftLogin(props) {
 
         {/* 標題列 */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-          <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>👤 打卡管理</div>
+          <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>🔄 換班</div>
           <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,color:"#9a968e",cursor:"pointer"}}>×</button>
         </div>
 
-        {/* Tab 切換 */}
-        <div style={{display:"flex",gap:4,marginBottom:16,background:"#f5f4f0",borderRadius:9,padding:4}}>
+        {/* 隱藏打卡 tab，員工登入即可 */}
+        <div style={{display:"none"}}>
           <button onClick={function(){setActiveTab("clockin");setSelStaff(null);setPin("");setErr("");}}
             style={{flex:1,padding:"7px 0",borderRadius:7,border:"none",fontSize:12,fontWeight:600,cursor:"pointer",
               background:activeTab==="clockin"?"#ffffff":"transparent",
@@ -3954,8 +4170,8 @@ function ShiftLogin(props) {
           </button>
         </div>
 
-        {/* 目前在班人員一覽 */}
-        {onlineStaff.length > 0 && (
+        {/* 目前在班人員一覽（已停用打卡，隱藏） */}
+        {false && onlineStaff.length > 0 && (
           <div style={{background:"#f0f9f0",border:"1px solid #c8e8c8",borderRadius:9,padding:"10px 12px",marginBottom:14}}>
             <div style={{fontSize:10,color:"#4a8a4a",fontWeight:700,marginBottom:6,letterSpacing:"0.05em"}}>目前在班</div>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
@@ -5656,6 +5872,9 @@ function POSSystem() {
   var slg=useState(true);  var showLogin=slg[0],setShowLogin=slg[1];
   var trn=useState(false);  var trainingMode=trn[0],setTrainingMode=trn[1];
   var smn=useState(false);  var showMenu=smn[0],setShowMenu=smn[1];
+  var pst=useState(null);  var pendingSwitchTo=pst[0],setPendingSwitchTo=pst[1];
+  var spn=useState("");  var switchPin=spn[0],setSwitchPin=spn[1];
+  var ser=useState("");  var switchErr=ser[0],setSwitchErr=ser[1];
   var exp=useState(false); var showExport=exp[0],setShowExport=exp[1];
   var exj=useState(""); var exportJson=exj[0],setExportJson=exj[1];
   // ── 資料載入（只在 mount 時執行一次）──
@@ -6363,41 +6582,29 @@ function POSSystem() {
               background:"#ffffff",border:"1px solid #e0dcd6",borderRadius:12,
               boxShadow:"0 8px 32px rgba(0,0,0,0.12)",minWidth:210,zIndex:201,overflow:"hidden"}}>
 
-              {/* 在班人員資訊 */}
+              {/* 員工列表（所有員工都可切換） */}
               <div style={{padding:"10px 14px",borderBottom:"1px solid #f0ede8",background:"#faf9f7"}}>
-                <div style={{fontSize:10,color:"#9a968e",marginBottom:5}}>目前在班</div>
-                {onlineStaff.length > 0 ? (
-                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                    {onlineStaff.map(function(s){
-                      var isOp = currentOperator && currentOperator.id===s.id;
-                      return (
-                        <div key={s.id} onClick={function(){setCurrentOperator(s);setShowMenu(false);}}
-                          style={{display:"flex",alignItems:"center",gap:5,padding:"4px 9px",borderRadius:20,cursor:"pointer",
-                            background:isOp?"#fffef0":"#f0ede8",border:isOp?"1px solid #b8910a":"1px solid #d8d4cc"}}>
-                          <span style={{fontSize:11,fontWeight:700,color:isOp?"#b8910a":"#2a2520"}}>{s.name}</span>
-                          {isOp && <span style={{fontSize:8,color:"#b8910a",fontWeight:700}}>操作中</span>}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div style={{fontSize:12,color:"#d0552f",fontWeight:600}}>尚未登入</div>
-                )}
-              </div>
-
-              {/* 打上下班卡 */}
-              <button onClick={function(){setShowLogin(true);setShowMenu(false);}}
-                style={{width:"100%",padding:"11px 14px",border:"none",background:"transparent",
-                  cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
-                  borderBottom:"1px solid #f0ede8",transition:"background 0.1s"}}
-                onMouseEnter={function(e){e.currentTarget.style.background="#f0f9f0";}}
-                onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
-                <span style={{fontSize:18,width:24,textAlign:"center"}}>🕐</span>
-                <div>
-                  <div style={{fontSize:12,fontWeight:600,color:"#3d9e32"}}>打卡管理</div>
-                  <div style={{fontSize:10,color:"#9a968e"}}>上班 / 下班 / 換班</div>
+                <div style={{fontSize:10,color:"#9a968e",marginBottom:5}}>員工</div>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  {STAFF_LIST.map(function(s){
+                    var isOp = currentOperator && currentOperator.id===s.id;
+                    return (
+                      <div key={s.id} onClick={function(){
+                        if (isOp) return;
+                        setPendingSwitchTo(s);
+                        setSwitchPin("");
+                        setSwitchErr("");
+                        setShowMenu(false);
+                      }}
+                        style={{display:"flex",alignItems:"center",gap:5,padding:"4px 9px",borderRadius:20,cursor:isOp?"default":"pointer",
+                          background:isOp?"#fffef0":"#f0ede8",border:isOp?"1px solid #b8910a":"1px solid #d8d4cc"}}>
+                        <span style={{fontSize:11,fontWeight:700,color:isOp?"#b8910a":"#2a2520"}}>{s.name}</span>
+                        {isOp && <span style={{fontSize:8,color:"#b8910a",fontWeight:700}}>操作中</span>}
+                      </div>
+                    );
+                  })}
                 </div>
-              </button>
+              </div>
 
               {/* 螢幕鎖定 */}
               {onlineStaff.length > 0 && (
@@ -7325,6 +7532,87 @@ function POSSystem() {
           onUnlock={function(staff){setIsLocked(false);setCurrentOperator(staff);}}
           onlineStaff={onlineStaff}
         />
+      )}
+
+      {/* ── 換班 PIN 驗證 ── */}
+      {pendingSwitchTo && (
+        <div style={{position:"fixed",inset:0,background:"rgba(42,37,32,0.85)",zIndex:900,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{background:"#ffffff",borderRadius:14,padding:24,width:340,maxWidth:"95vw",boxShadow:"0 12px 48px rgba(0,0,0,0.3)"}}>
+            <div style={{fontSize:14,fontWeight:700,color:"#2a2520",marginBottom:6,textAlign:"center"}}>切換到 {pendingSwitchTo.name}</div>
+            <div style={{fontSize:11,color:"#9a968e",marginBottom:14,textAlign:"center"}}>請輸入 PIN 確認</div>
+
+            {/* PIN 顯示 */}
+            <div style={{width:"100%",padding:"12px",border:"1px solid #d8d4cc",borderRadius:8,
+              fontSize:24,fontWeight:700,textAlign:"center",letterSpacing:"0.4em",color:"#2a2520",
+              background:"#faf9f7",marginBottom:10,minHeight:30,boxSizing:"border-box"}}>
+              {switchPin ? switchPin.split("").map(function(){return "●";}).join("") : <span style={{color:"#c8c4bc",fontSize:13,letterSpacing:"normal",fontWeight:400}}>輸入 4 位數 PIN</span>}
+            </div>
+            {switchErr && <div style={{fontSize:11,color:"#d0552f",marginBottom:8,textAlign:"center"}}>{switchErr}</div>}
+
+            {/* 數字鍵盤 */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:12}}>
+              {[1,2,3,4,5,6,7,8,9].map(function(n){
+                return (
+                  <button key={n} onClick={function(){
+                    if (switchPin.length < 6) {
+                      var np = switchPin + String(n);
+                      setSwitchPin(np);
+                      setSwitchErr("");
+                      // 自動驗證（4 位數）
+                      if (np === pendingSwitchTo.pin) {
+                        setCurrentOperator(pendingSwitchTo);
+                        setPendingSwitchTo(null);
+                        setSwitchPin("");
+                        setSwitchErr("");
+                      } else if (np.length >= pendingSwitchTo.pin.length) {
+                        setSwitchErr("PIN 錯誤");
+                      }
+                    }
+                  }}
+                    style={{padding:"14px 0",borderRadius:8,border:"1px solid #d8d4cc",
+                      background:"#ffffff",fontSize:20,fontWeight:600,color:"#2a2520",cursor:"pointer"}}>
+                    {n}
+                  </button>
+                );
+              })}
+              <button onClick={function(){ setSwitchPin(""); setSwitchErr(""); }}
+                style={{padding:"14px 0",borderRadius:8,border:"1px solid #e8c4c4",
+                  background:"#fdf4f4",fontSize:12,fontWeight:600,color:"#d0552f",cursor:"pointer"}}>
+                清除
+              </button>
+              <button onClick={function(){
+                if (switchPin.length < 6) {
+                  var np = switchPin + "0";
+                  setSwitchPin(np);
+                  setSwitchErr("");
+                  if (np === pendingSwitchTo.pin) {
+                    setCurrentOperator(pendingSwitchTo);
+                    setPendingSwitchTo(null);
+                    setSwitchPin("");
+                    setSwitchErr("");
+                  } else if (np.length >= pendingSwitchTo.pin.length) {
+                    setSwitchErr("PIN 錯誤");
+                  }
+                }
+              }}
+                style={{padding:"14px 0",borderRadius:8,border:"1px solid #d8d4cc",
+                  background:"#ffffff",fontSize:20,fontWeight:600,color:"#2a2520",cursor:"pointer"}}>
+                0
+              </button>
+              <button onClick={function(){ setSwitchPin(switchPin.slice(0,-1)); setSwitchErr(""); }}
+                style={{padding:"14px 0",borderRadius:8,border:"1px solid #d8d4cc",
+                  background:"#f5f4f0",fontSize:18,fontWeight:600,color:"#7a7068",cursor:"pointer"}}>
+                ←
+              </button>
+            </div>
+
+            <button onClick={function(){ setPendingSwitchTo(null); setSwitchPin(""); setSwitchErr(""); }}
+              style={{width:"100%",padding:"10px 0",borderRadius:7,border:"1px solid #d8d4cc",
+                background:"#ffffff",color:"#7a7068",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+              取消
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
