@@ -218,7 +218,8 @@
                   try {
                     var fbPurchases = JSON.parse(newVal) || [];
                     var localPurchases = JSON.parse(oldVal || "[]") || [];
-                    var mergedP = mergeByUpdatedAt(fbPurchases, localPurchases, "id");
+                    // 採購單用 "no" 為識別（不是 "id"！）
+                    var mergedP = mergeByUpdatedAt(fbPurchases, localPurchases, "no");
                     var mergedPStr = JSON.stringify(mergedP);
                     localStorage.setItem("chocoolee-" + key, mergedPStr);
                     if (mergedP.length > fbPurchases.length) {
