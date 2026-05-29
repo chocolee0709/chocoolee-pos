@@ -415,11 +415,11 @@
 
   // iPad 螢幕喚醒或切回頁面時：重新整理 token 和 SSE（實際同步由 visibilitychange 處理）
 
-  // 網路重新連線時也強制同步
+  // 網路重新連線時：只重連 SSE，不主動推送（避免舊資料覆蓋）
   window.addEventListener("online", function(){
     fbToken = null;
     if (sseSource) startSSE();
-    window.syncLocalToFirebase(function(){ fetchAllFromFirebase(null); });
+    fetchAllFromFirebase(null);
   });
 
   // ── 本機推送到 Firebase（先推再拉）──
@@ -473,15 +473,13 @@
     });
   };
 
-  // iPad 螢幕喚醒或切回頁面時：先推本機，再拉 Firebase
+  // iPad 螢幕喚醒或切回頁面時：只拉取最新資料（不主動推送）
   document.addEventListener("visibilitychange", function(){
     if (document.visibilityState !== "visible") return;
     fbToken = null;
     if (sseSource) startSSE();
     setTimeout(function(){
-      window.syncLocalToFirebase(function(){
-        fetchAllFromFirebase(null);
-      });
+      fetchAllFromFirebase(null);
     }, 500);
   });
 
@@ -534,23 +532,20 @@
       var icon = document.getElementById("ptr-icon");
       var text = document.getElementById("ptr-text");
       ptrIndicator.style.height = "44px";
-      if (icon) icon.textContent = "⬆";
-      if (text) text.textContent = "上傳本機資料...";
+      if (icon) icon.textContent = "⬇";
+      if (text) text.textContent = "從雲端載入...";
       ptrIndicator.style.color = "#2a7080";
-      // 第一步：先把本機資料推到 Firebase
-      window.syncLocalToFirebase(function(pushOk){
-        if (text) text.textContent = pushOk ? "同步中..." : "上傳失敗，嘗試讀取...";
-        if (icon) icon.textContent = "⬇";
-        // 第二步：再從 Firebase 拉取最新資料
-        fetchAllFromFirebase(function(ok){
-          if (icon) icon.textContent = ok ? "✓" : "⚠";
-          if (text) text.textContent = ok ? "已更新" : "更新失敗";
-          ptrIndicator.style.color = ok ? "#3d9e32" : "#d0552f";
-          setTimeout(function(){
-            ptrIndicator.style.height = "0";
-            ptrDist = 0;
-          }, 1200);
-        });
+      fbToken = null;
+      // 只從 Firebase 拉取（不推送，避免本機舊資料覆蓋雲端較新資料）
+      // 本機未推送的資料會在 fetchAllFromFirebase 的 mergeByUpdatedAt 中保留並補推
+      fetchAllFromFirebase(function(ok){
+        if (icon) icon.textContent = ok ? "✓" : "⚠";
+        if (text) text.textContent = ok ? "已更新" : "更新失敗";
+        ptrIndicator.style.color = ok ? "#3d9e32" : "#d0552f";
+        setTimeout(function(){
+          ptrIndicator.style.height = "0";
+          ptrDist = 0;
+        }, 1200);
       });
     } else {
       ptrIndicator.style.height = "0";
@@ -1231,6 +1226,62 @@ function CatalogPanel(props) {
   var addSubOpts = CAT_STRUCT[newForm.main]||[];
   var skuDuplicate = newForm.sku ? products.some(function(p){ return p.sku === newForm.sku.trim(); }) : false;
   function setNF(k,v){ setNewForm(function(f){ var n=Object.assign({},f); n[k]=v; return n; }); }
+  // 自動產生貨號（同分類下找空缺號碼，保留前導零）
+  function autoGenSku() {
+    var mainCat = newForm.main, subCat = newForm.sub;
+    if (!subCat) { alert("請先選擇小分類"); return; }
+    var allSku = products.filter(function(p){
+      return p.main === mainCat && p.sub === subCat;
+    }).map(function(p){ return p.sku; });
+
+    function parseSku(s) {
+      s = String(s);
+      var startNum = -1, endNum = -1;
+      for (var i = 0; i < s.length; i++) {
+        var ch = s.charCodeAt(i);
+        var isDigit = ch >= 48 && ch <= 57;
+        if (isDigit && startNum === -1) startNum = i;
+        if (isDigit) endNum = i;
+        else if (startNum !== -1) break;
+      }
+      if (startNum === -1) return null;
+      var numLen = endNum - startNum + 1;
+      if (numLen < 3 || numLen > 4) return null;
+      return {
+        prefix: s.slice(0, startNum),
+        num: parseInt(s.slice(startNum, endNum+1)),
+        width: numLen,
+        suffix: s.slice(endNum+1)
+      };
+    }
+
+    var nums = [], prefix = "", suffix = "", width = 4;
+    allSku.forEach(function(s){
+      var p = parseSku(s);
+      if (p) {
+        if (!prefix && !suffix && nums.length === 0) {
+          prefix = p.prefix; suffix = p.suffix; width = p.width;
+        }
+        if (p.prefix === prefix && p.suffix === suffix) nums.push(p.num);
+      }
+    });
+
+    if (nums.length === 0) {
+      setNF("sku", "NEW" + String(Date.now()).slice(-6));
+      return;
+    }
+
+    nums.sort(function(a,b){return a-b;});
+    var nextNum = null;
+    for (var i = nums[0]; i <= nums[nums.length-1] + 1; i++) {
+      if (nums.indexOf(i) === -1) { nextNum = i; break; }
+    }
+    if (!nextNum) nextNum = nums[nums.length-1] + 1;
+    var numStr = String(nextNum);
+    while (numStr.length < width) numStr = "0" + numStr;
+    setNF("sku", prefix + numStr + suffix);
+  }
+
   function addProduct(){
     if (!newForm.name||!newForm.sku||skuDuplicate) return;
     var newP = Object.assign({},newForm,{
@@ -1239,6 +1290,15 @@ function CatalogPanel(props) {
       barcode:newForm.barcode||String(products.length+1001).padStart(9,"0"),
       updatedAt: new Date().toISOString()
     });
+    // 如果這個貨號之前被刪除過，從 deletedSkus 移除（讓它可以重新新增）
+    try {
+      var dskus = JSON.parse(localStorage.getItem("chocoolee-deletedskus") || "[]");
+      var idx = dskus.indexOf(newP.sku);
+      if (idx !== -1) {
+        dskus.splice(idx, 1);
+        saveData("deletedskus", dskus);
+      }
+    } catch(e) {}
     setProducts(function(prev){
       var next = prev.concat([newP]);
       next.sort(function(a,b){
@@ -1458,7 +1518,13 @@ function CatalogPanel(props) {
                 <input value={newForm.name} onChange={function(e){setNF("name",e.target.value);}} placeholder="輸入名稱" style={inp}/>
               </div>
               <div><label style={lbl}>貨號 *</label>
-                <input value={newForm.sku} onChange={function(e){setNF("sku",e.target.value);}} placeholder="SKU" style={inp}/>
+                <div style={{display:"flex",gap:4}}>
+                  <input value={newForm.sku} onChange={function(e){setNF("sku",e.target.value);}} placeholder="SKU" style={Object.assign({},inp,{flex:1})}/>
+                  <button type="button" onClick={autoGenSku} title="依分類自動產生空缺貨號"
+                    style={{padding:"0 10px",borderRadius:6,border:"1px solid #4a8ec0",background:"#e8f4ff",color:"#2a7080",fontSize:13,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>
+                    自動
+                  </button>
+                </div>
               </div>
               <div><label style={lbl}>售價 (NT$)</label>
                 <input type="number" value={newForm.price||""} onChange={function(e){setNF("price",e.target.value);}} placeholder="0" style={inp}/>
@@ -2885,8 +2951,15 @@ function PurchasePanel(props) {
           main: item.main || "生活選物", sub: item.sub || "生活小物",
           barcode: item.barcode || String(newId).slice(-9),
           image: item.image || "", stock: 0,
-          mainEdited: true  // 防止 mergeProducts 覆蓋分類
+          mainEdited: true,  // 防止 mergeProducts 覆蓋分類
+          updatedAt: new Date().toISOString()
         };
+        // 如果貨號之前被刪除過，從 deletedSkus 移除
+        try {
+          var dsk = JSON.parse(localStorage.getItem("chocoolee-deletedskus") || "[]");
+          var di = dsk.indexOf(item.sku);
+          if (di !== -1) { dsk.splice(di, 1); saveData("deletedskus", dsk); }
+        } catch(e) {}
         newProducts.push(newProd);
         stockAdds[newId] = goodQty;
         logs.push({
