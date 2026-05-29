@@ -3,23 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>採購單救援工具</title>
+<title>採購單救援工具 v2</title>
 <style>
 body { font-family: -apple-system,system-ui,sans-serif; padding: 20px; background: #faf9f7; color: #2a2520; }
 h1 { font-size: 20px; }
 .btn { background: #b8910a; color: #fff; padding: 14px 28px; border: none; border-radius: 8px; font-size: 16px; font-weight: 700; cursor: pointer; width: 100%; margin: 10px 0; }
 .btn-blue { background: #2a7080; }
 .btn-red { background: #d0552f; }
+.btn-orange { background: #e07020; }
 .log { background: #fff; padding: 14px; border-radius: 8px; margin: 10px 0; font-size: 13px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; font-family: monospace; border: 1px solid #e8e4de; }
 .ok { color: #3d9e32; }
 .err { color: #d0552f; }
 .warn { color: #b8910a; }
+.info { color: #2a7080; }
 </style>
 </head>
 <body>
-<h1>🔧 採購單救援工具</h1>
-<p>從 Firebase 拉資料回本機</p>
+<h1>🔧 採購單救援工具 v2</h1>
+<p><strong>iPad 空間滿了？先按「清理空間」</strong></p>
 
+<button class="btn btn-orange" onclick="clearImages()">🗑 清理空間（刪除本機圖片快取）</button>
 <button class="btn" onclick="syncPurchases()">📥 同步採購單到本機</button>
 <button class="btn btn-blue" onclick="syncAll()">🔄 同步所有資料</button>
 <button class="btn btn-red" onclick="checkOnly()">🔍 只檢查</button>
@@ -39,6 +42,30 @@ function log(msg, cls) {
   el.scrollTop = el.scrollHeight;
 }
 
+function getStorageSize() {
+  let total = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    total += (localStorage.getItem(k)||"").length;
+  }
+  return (total / 1024 / 1024).toFixed(2);
+}
+
+function clearImages() {
+  const before = getStorageSize();
+  const imgKeys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.indexOf("chocoolee-product-images/") === 0) imgKeys.push(k);
+  }
+  imgKeys.forEach(k => localStorage.removeItem(k));
+  const after = getStorageSize();
+  log("清理前：" + before + " MB", "warn");
+  log("清理後：" + after + " MB", "ok");
+  log("已刪除 " + imgKeys.length + " 張圖片快取", "ok");
+  log("（Firebase 仍保有所有圖片）", "info");
+}
+
 async function getToken() {
   log("登入 Firebase...");
   const r = await fetch("https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=" + API_KEY, {
@@ -54,6 +81,7 @@ async function getToken() {
 
 async function checkOnly() {
   try {
+    log("目前 localStorage 大小：" + getStorageSize() + " MB", "info");
     const token = await getToken();
     const r = await fetch(FB + "/chocoolee/purchases.json?auth=" + token);
     const d = await r.json();
@@ -70,15 +98,38 @@ async function checkOnly() {
 
 async function syncPurchases() {
   try {
+    log("目前 localStorage 大小：" + getStorageSize() + " MB", "info");
     const token = await getToken();
     log("下載採購單...");
     const r = await fetch(FB + "/chocoolee/purchases.json?auth=" + token);
     const d = await r.json();
     const arr = typeof d === "string" ? JSON.parse(d) : d;
     if (!arr || !arr.length) { log("Firebase 沒採購單", "warn"); return; }
-    log("Firebase 有 " + arr.length + " 筆", "ok");
-    localStorage.setItem("chocoolee-purchases", JSON.stringify(arr));
-    log("✓ 已同步到本機！", "ok");
+    log("Firebase 有 " + arr.length + " 筆採購單", "ok");
+
+    // 嘗試儲存
+    const json = JSON.stringify(arr);
+    try {
+      localStorage.setItem("chocoolee-purchases", json);
+      log("✓ 已同步到本機！", "ok");
+    } catch (e) {
+      // 空間不足，自動清理圖片再試
+      log("⚠ 空間不足，自動清理圖片快取...", "warn");
+      const imgKeys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.indexOf("chocoolee-product-images/") === 0) imgKeys.push(k);
+      }
+      imgKeys.forEach(k => localStorage.removeItem(k));
+      log("已刪除 " + imgKeys.length + " 張圖片快取", "ok");
+      try {
+        localStorage.setItem("chocoolee-purchases", json);
+        log("✓ 已同步到本機！", "ok");
+      } catch (e2) {
+        log("仍然失敗：" + e2.message, "err");
+        return;
+      }
+    }
     log("");
     log("回到 POS 重新整理：", "warn");
     log("https://chocolee0709.github.io/chocoolee-pos");
@@ -89,6 +140,15 @@ async function syncPurchases() {
 
 async function syncAll() {
   try {
+    log("先清理空間...", "info");
+    const imgKeys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.indexOf("chocoolee-product-images/") === 0) imgKeys.push(k);
+    }
+    imgKeys.forEach(k => localStorage.removeItem(k));
+    if (imgKeys.length > 0) log("已清理 " + imgKeys.length + " 張圖片", "ok");
+
     const token = await getToken();
     const keys = ["purchases", "members", "products", "stocks", "deletedskus"];
     for (const k of keys) {
@@ -96,11 +156,14 @@ async function syncAll() {
       const d = await r.json();
       const v = typeof d === "string" ? d : JSON.stringify(d);
       if (v && v !== "null") {
-        localStorage.setItem("chocoolee-" + k, v);
-        log("✓ " + k, "ok");
+        try {
+          localStorage.setItem("chocoolee-" + k, v);
+          log("✓ " + k, "ok");
+        } catch (e) {
+          log("✗ " + k + " 失敗：" + e.message, "err");
+        }
       }
     }
-    const d = new Date();
     for (let i = 0; i < 3; i++) {
       const d2 = new Date(); d2.setMonth(d2.getMonth() - i);
       const mk = "orders-" + d2.getFullYear() + "-" + String(d2.getMonth()+1).padStart(2,"0");
@@ -108,12 +171,16 @@ async function syncAll() {
       const d3 = await r2.json();
       const v2 = typeof d3 === "string" ? d3 : JSON.stringify(d3);
       if (v2 && v2 !== "null") {
-        localStorage.setItem("chocoolee-" + mk, v2);
-        log("✓ " + mk, "ok");
+        try {
+          localStorage.setItem("chocoolee-" + mk, v2);
+          log("✓ " + mk, "ok");
+        } catch (e) {
+          log("✗ " + mk + " 失敗", "err");
+        }
       }
     }
     log("");
-    log("✓ 全部同步完成！", "ok");
+    log("✓ 全部同步完成！localStorage：" + getStorageSize() + " MB", "ok");
     log("回到 POS：https://chocolee0709.github.io/chocoolee-pos", "warn");
   } catch (e) {
     log("錯誤：" + e.message, "err");
