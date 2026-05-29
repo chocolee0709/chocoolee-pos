@@ -154,24 +154,24 @@
                   var map = {};
                   // 先放 Firebase 的
                   fbArr.forEach(function(item){
-                    if (item && item[idField]) map[String(item[idField])] = item;
+                    if (!item || !item[idField]) return;
+                    var k = String(item[idField]);
+                    map[k] = item;
                   });
                   // 本機的：如果 Firebase 沒有，或本機比較新，就用本機的
                   localArr.forEach(function(item){
                     if (!item || !item[idField]) return;
-                    var key = String(item[idField]);
-                    var fbItem = map[key];
-                    if (!fbItem) {
-                      // Firebase 沒有這筆 → 保留本機
-                      map[key] = item;
+                    var k = String(item[idField]);
+                    var existing = map[k];
+                    if (!existing) {
+                      map[k] = item;
                     } else {
-                      // 比較 updatedAt，用比較新的
-                      var fbTime = fbItem.updatedAt || fbItem.date || "";
+                      var fbTime = existing.updatedAt || existing.date || "";
                       var localTime = item.updatedAt || item.date || "";
-                      if (localTime > fbTime) map[key] = item;
+                      if (localTime > fbTime) map[k] = item;
                     }
                   });
-                  return Object.values(map);
+                  return Object.keys(map).map(function(k){ return map[k]; });
                 }
 
                 // 訂單月份節點
@@ -362,6 +362,20 @@
       fetchAllFromFirebase(null);
     }, 30000);
   }
+
+  // 啟動時清理 localStorage 圖片快取（圖片以 Firebase 為主，localStorage 只是市集離線備用）
+  // 平時不存圖片在 localStorage，市集前才用「📥 下載圖片到本機」功能下載
+  (function cleanupLocalImages(){
+    var imgKeys = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (k && k.indexOf("chocoolee-product-images/") === 0) imgKeys.push(k);
+    }
+    // 超過 50 張就清理（市集下載的 500 張維持不動，平時維持 0）
+    if (imgKeys.length > 50 && imgKeys.length < 400) {
+      imgKeys.forEach(function(k){ localStorage.removeItem(k); });
+    }
+  })();
 
   window.firebaseReady = false;
   loadFromFirebase(function(ok){
@@ -1222,11 +1236,11 @@ function CatalogPanel(props) {
     var newP = Object.assign({},newForm,{
       id:Date.now(), price:Number(newForm.price)||0, cost:Number(newForm.cost)||0,
       stock:Number(newForm.stock)||0,
-      barcode:newForm.barcode||String(products.length+1001).padStart(9,"0")
+      barcode:newForm.barcode||String(products.length+1001).padStart(9,"0"),
+      updatedAt: new Date().toISOString()
     });
     setProducts(function(prev){
       var next = prev.concat([newP]);
-      // 依貨號排序（字母+數字自然排序）
       next.sort(function(a,b){
         var sa=String(a.sku||""), sb=String(b.sku||"");
         return sa.localeCompare(sb, "zh-TW", {numeric:true, sensitivity:"base"});
@@ -2081,43 +2095,53 @@ function OrdersDrawer(props) {
   allDates.sort(function(a,b){ return b>a?1:-1; });
 
   var dayOrders = orders.filter(function(o){ return o.date === viewDate; });
-  // 取消/退貨計入今日（以 cancelDate 為準）
+  // 取消/退貨：只列出當天結帳、當天取消的（用於明細顯示）
   var dayCancelOrders = orders.filter(function(o){
-    return o.cancelDate === viewDate && (o.status==="cancelled" || o.status==="refunded");
+    return o.cancelDate === viewDate &&
+           o.date === viewDate &&
+           (o.status==="cancelled" || o.status==="refunded");
   });
   var cancelTotal = dayCancelOrders.reduce(function(s,o){return s+o.total;},0);
   var dayPaid   = dayOrders.filter(function(o){ return o.status==="paid"; });
-  var dayTotal  = dayPaid.reduce(function(s,o){return s+o.total;},0) - cancelTotal;
+  // 業績 = 已付款訂單 o.total 加總（取消的訂單 status 已非 paid，自動排除，不需再扣）
+  var dayTotal  = dayPaid.reduce(function(s,o){return s+o.total;},0);
   var dayDisc   = dayPaid.reduce(function(s,o){return s+o.discAmt;},0);
   var dayQty    = dayPaid.reduce(function(s,o){return s+(o.qty||0);},0);
   var isToday   = viewDate === today;
 
-  // 各付款別合計（從每筆訂單的 payBreakdown 物件加總）
+  // 各付款別合計：以 o.total 為基準正規化（只算 dayPaid，取消的已排除）
   var payBreakdown = {};
   PAYMENTS.forEach(function(m){ payBreakdown[m] = 0; });
   dayPaid.forEach(function(o) {
     if (o.payBreakdown) {
-      // 有付款明細：直接加總
-      PAYMENTS.forEach(function(m) {
-        payBreakdown[m] += Number(o.payBreakdown[m]) || 0;
-      });
-      // 補差：如果 payBreakdown 加總 < total，把差額補到第一個有金額的付款別
-      var sumBd = PAYMENTS.reduce(function(s,m){return s+(Number(o.payBreakdown[m])||0);},0);
-      if (sumBd < o.total) {
-        var diff = o.total - sumBd;
-        var firstMethod = PAYMENTS.find(function(m){return (Number(o.payBreakdown[m])||0)>0;}) || "現金";
-        payBreakdown[firstMethod] += diff;
+      var bdSum = PAYMENTS.reduce(function(s,m){return s+(Number(o.payBreakdown[m])||0);},0);
+      if (bdSum > 0) {
+        // 按比例正規化，讓每筆訂單的付款別加總等於 o.total
+        var allocated = 0;
+        var lastMethod = null;
+        PAYMENTS.forEach(function(m){
+          var raw = Number(o.payBreakdown[m]) || 0;
+          if (raw > 0) {
+            var portion = Math.round(raw / bdSum * o.total);
+            payBreakdown[m] += portion;
+            allocated += portion;
+            lastMethod = m;
+          }
+        });
+        // 補四捨五入誤差到最後一個付款別
+        if (lastMethod && allocated !== o.total) {
+          payBreakdown[lastMethod] += (o.total - allocated);
+        }
+      } else {
+        payBreakdown["現金"] += o.total;
       }
     } else if (o.payment) {
-      // 舊版單一付款方式
       var matched = false;
-      PAYMENTS.forEach(function(m) {
+      PAYMENTS.forEach(function(m){
         if (o.payment === m) { payBreakdown[m] += o.total; matched = true; }
       });
-      // 無法 match（例如「現金+信用卡」這種字串）→ 預設算現金
       if (!matched) payBreakdown["現金"] += o.total;
     } else {
-      // 完全沒有付款資訊 → 預設現金
       payBreakdown["現金"] += o.total;
     }
   });
@@ -2251,9 +2275,9 @@ function OrdersDrawer(props) {
             <div style={{fontSize:9,color:"#9a968e",marginBottom:2}}>{isToday?"今日":"當日"}訂單</div>
             <div style={{fontSize:18,fontWeight:700,color:"#b8910a"}}>{dayOrders.length}<span style={{fontSize:10,fontWeight:400,color:"#7a7068"}}> 筆</span></div>
           </div>
-          <div style={{background:"#ffffff",borderRadius:8,padding:"8px 10px",border:"1px solid #2e2a22"}}>
-            <div style={{fontSize:9,color:"#9a968e",marginBottom:2}}>實收金額</div>
-            <div style={{fontSize:15,fontWeight:700,color:"#b8910a"}}>${dayTotal.toLocaleString()}</div>
+          <div style={{background:"#fffbf0",borderRadius:8,padding:"8px 10px",border:"2px solid #b8910a"}}>
+            <div style={{fontSize:9,color:"#9a968e",marginBottom:2}}>{isToday?"今日業績":"當日業績"}</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#b8910a"}}>${dayTotal.toLocaleString()}</div>
           </div>
           <div style={{background:"#ffffff",borderRadius:8,padding:"8px 10px",border:"1px solid #2e2a22"}}>
             <div style={{fontSize:9,color:"#9a968e",marginBottom:2}}>折扣合計</div>
@@ -2802,7 +2826,7 @@ function PurchasePanel(props) {
 
   function savePurchase() {
     if (!selPo.items || selPo.items.length === 0) { alert("請新增至少一筆商品"); return; }
-    var po = Object.assign({}, selPo, {status: "pending"});
+    var po = Object.assign({}, selPo, {status: "pending", updatedAt: new Date().toISOString()});
     setPurchases(function(prev){
       var ex = prev.find(function(p){ return p.no === po.no; });
       if (ex) return prev.map(function(p){ return p.no === po.no ? po : p; });
@@ -2822,7 +2846,8 @@ function PurchasePanel(props) {
     var po = Object.assign({}, selPo, {
       status: "review",
       receivedBy: currentStaff ? currentStaff.name : "—",
-      receivedAt: new Date().toISOString().slice(0,16).replace("T", " ")
+      receivedAt: new Date().toISOString().slice(0,16).replace("T", " "),
+      updatedAt: new Date().toISOString()
     });
     setPurchases(function(prev){ return prev.map(function(p){ return p.no === po.no ? po : p; }); });
     setMode("list"); setSelPo(null);
@@ -2835,7 +2860,8 @@ function PurchasePanel(props) {
     var po = Object.assign({}, selPo, {
       status: "completed",
       confirmedBy: currentStaff ? currentStaff.name : "—",
-      confirmedAt: new Date().toISOString().slice(0,16).replace("T", " ")
+      confirmedAt: new Date().toISOString().slice(0,16).replace("T", " "),
+      updatedAt: new Date().toISOString()
     });
 
     // 自動處理：新品加入商品庫存頁、庫存增加
@@ -5453,21 +5479,17 @@ function saveData(key, value) {
   try {
     var serialized = typeof value === "string" ? value : JSON.stringify(value);
 
-    // 如果是 products，把圖片分開存到獨立節點
     if (key === "products") {
       try {
         var prods = typeof value === "string" ? JSON.parse(value) : value;
-
         var prodsNoImage = prods.map(function(p) {
           if (!p) return p;
           if (p.image && p.image.startsWith("data:")) {
-            // 比對舊圖片（從獨立節點讀）
+            // 圖片只推 Firebase，不存 localStorage（避免 5MB 空間不足）
             var imgKey = "product-images/" + String(p.id);
             var oldImg = null;
             try { oldImg = localStorage.getItem("chocoolee-" + imgKey); } catch(e) {}
-            // 只在圖片真的有變化時才推送到 Firebase
             if (oldImg !== p.image) {
-              try { localStorage.setItem("chocoolee-" + imgKey, p.image); } catch(e) {}
               pushImageWithRetry(String(p.id), p.image);
             }
             return Object.assign({}, p, {image: "__img__"});
@@ -5478,10 +5500,26 @@ function saveData(key, value) {
       } catch(e) {}
     }
 
+    function trySetItem(k, v) {
+      try {
+        localStorage.setItem(k, v);
+        return true;
+      } catch(e) {
+        // localStorage 滿了：清理所有圖片快取騰出空間（Firebase 有備份）
+        var imgKeys = [];
+        for (var i = 0; i < localStorage.length; i++) {
+          var lk = localStorage.key(i);
+          if (lk && lk.indexOf("chocoolee-product-images/") === 0) imgKeys.push(lk);
+        }
+        imgKeys.forEach(function(dk){ localStorage.removeItem(dk); });
+        try { localStorage.setItem(k, v); return true; } catch(e2) { return false; }
+      }
+    }
+
     if (window.storage) {
       window.storage.set("chocoolee-"+key, serialized).catch(function(){});
     }
-    try { localStorage.setItem("chocoolee-"+key, serialized); } catch(e) {}
+    trySetItem("chocoolee-"+key, serialized);
     try {
       if (window.pushToFirebase) window.pushToFirebase(key, serialized);
     } catch(e) {}
@@ -5567,29 +5605,72 @@ function POSSystem() {
           });
         } catch(e) {}
       },
-      purchases:  setPurchases,
-      orders:     function(val) {
-        // 月份節點更新時合併到 orders state
+      purchases:  function(val) {
         try {
           var arr = typeof val === "string" ? JSON.parse(val) : val;
-          if (Array.isArray(arr)) {
-            // 內部 getOrderKey（避免 closure 問題）
+          if (!Array.isArray(arr)) return;
+          setPurchases(function(prev){
+            // 以 no 為 key 合併，updatedAt 較新的優先
+            var map = {};
+            arr.forEach(function(p){ if(p && p.no) map[p.no] = p; });
+            (prev||[]).forEach(function(p){
+              if (!p || !p.no) return;
+              var ex = map[p.no];
+              if (!ex) { map[p.no] = p; return; }
+              var exT = ex.updatedAt || "";
+              var pT = p.updatedAt || "";
+              if (pT > exT) map[p.no] = p;
+            });
+            return Object.keys(map).map(function(k){ return map[k]; });
+          });
+        } catch(e) {}
+      },
+      orders:     function(val) {
+        try {
+          var arr = typeof val === "string" ? JSON.parse(val) : val;
+          if (Array.isArray(arr) && arr.length > 0) {
             function _getKey(ds) {
               var d = ds ? new Date(ds) : new Date();
               return "orders-" + d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
             }
+            var monthKey = _getKey(arr[0].date);
             setOrders(function(prev){
-              if (arr.length === 0) return prev;
-              var monthKey = _getKey(arr[0].date);
-              var filtered = prev.filter(function(o){ return _getKey(o.date) !== monthKey; });
-              var combined = filtered.concat(arr);
+              // 該月份的本機訂單
+              var localMonth = prev.filter(function(o){ return _getKey(o.date) === monthKey; });
+              var otherMonths = prev.filter(function(o){ return _getKey(o.date) !== monthKey; });
+              // 以 no 為 key 合併該月份，updatedAt 較新的優先
+              var map = {};
+              arr.forEach(function(o){ if(o && o.no) map[o.no] = o; });
+              localMonth.forEach(function(o){
+                if (!o || !o.no) return;
+                var ex = map[o.no];
+                if (!ex) { map[o.no] = o; return; }
+                var exT = ex.updatedAt || ex.date || "";
+                var oT = o.updatedAt || o.date || "";
+                if (oT > exT) map[o.no] = o;
+              });
+              var mergedMonth = Object.keys(map).map(function(k){ return map[k]; });
+              var combined = otherMonths.concat(mergedMonth);
               combined.sort(function(a,b){ return (b.date+b.time).localeCompare(a.date+a.time); });
               return combined;
             });
           }
         } catch(e) {}
       },
-      stocks:     setSharedStocks,
+      stocks:     function(val) {
+        try {
+          var obj = typeof val === "string" ? JSON.parse(val) : val;
+          if (!obj || typeof obj !== "object") return;
+          setSharedStocks(function(prev){
+            // Firebase 為主，但保留本機有而 Firebase 沒有的庫存（新商品）
+            var merged = Object.assign({}, obj);
+            Object.keys(prev || {}).forEach(function(id){
+              if (merged[id] === undefined) merged[id] = prev[id];
+            });
+            return merged;
+          });
+        } catch(e) {}
+      },
       stocklog:   setSharedStockLog,
       shiftlog:   setShiftLog,
       staffrates: setStaffRates,
@@ -5606,9 +5687,13 @@ function POSSystem() {
           // 取得目前 React state 裡的圖片，避免被空資料覆蓋
           setSharedProducts(function(prev){
             var prevImgMap = {};
+            var prevById = {};
             (prev || []).forEach(function(p){
-              if (p && p.id && p.image && p.image.startsWith("data:")) {
-                prevImgMap[String(p.id)] = p.image;
+              if (p && p.id) {
+                prevById[String(p.id)] = p;
+                if (p.image && p.image.startsWith("data:")) {
+                  prevImgMap[String(p.id)] = p.image;
+                }
               }
             });
 
@@ -5632,7 +5717,6 @@ function POSSystem() {
                   }
                 } else {
                   img = s.image || "";
-                  // 沒帶圖片資料時，保留 React state 裡的圖
                   if (!img && prevImgMap[String(s.id)]) {
                     img = prevImgMap[String(s.id)];
                   }
@@ -5641,6 +5725,19 @@ function POSSystem() {
                 if (raw && !s.mainEdited) return Object.assign({},s,{main:raw.main,sub:raw.sub,image:img});
                 return Object.assign({},s,{image:img});
               });
+
+            // 保留本機剛新增、Firebase 還沒有的商品（避免新增商品閃一下就消失）
+            var savedIds = {};
+            saved.forEach(function(s){ if(s && s.id) savedIds[String(s.id)] = true; });
+            (prev || []).forEach(function(p){
+              if (!p || !p.id) return;
+              if (savedIds[String(p.id)]) return; // Firebase 已有
+              if (deletedSkusR.indexOf(p.sku) !== -1) return; // 已刪除
+              // Firebase 沒有但本機有 → 是剛新增還沒同步的，保留並補推
+              merged.push(p);
+              saveData("products", merged);
+            });
+
             PRODUCTS.forEach(function(p){
               if (p.main !== "業外收入") return;
               var already = merged.find(function(m){ return m.sku===p.sku; });
@@ -5820,23 +5917,31 @@ function POSSystem() {
   function saveOrders(updater) {
     setOrders(function(prev){
       var next = typeof updater==="function" ? updater(prev) : updater;
+      // 去重（以 no 為 key，保留最新的）
+      var map = {};
+      next.forEach(function(o){
+        if (!o || !o.no) return;
+        var ex = map[o.no];
+        if (!ex) { map[o.no] = o; return; }
+        var exTime = ex.updatedAt || ex.date || "";
+        var newTime = o.updatedAt || o.date || "";
+        if (newTime >= exTime) map[o.no] = o;
+      });
+      next = Object.keys(map).map(function(k){ return map[k]; });
       // 找出有變動的月份
       var prevKeys = {};
       prev.forEach(function(o){ prevKeys[o.no] = JSON.stringify(o); });
       var changedMonths = {};
       next.forEach(function(o){
-        // 比對整筆訂單，任何欄位變動都算
         if (prevKeys[o.no] !== JSON.stringify(o)) {
           changedMonths[getOrderKey(o.date)] = true;
         }
       });
-      // 被刪除的訂單也要更新該月份
       var nextKeys = {};
       next.forEach(function(o){ nextKeys[o.no] = true; });
       prev.forEach(function(o){
         if (!nextKeys[o.no]) changedMonths[getOrderKey(o.date)] = true;
       });
-      // 沒偵測到變動 → 預設存當月（新增訂單的情況）
       if (Object.keys(changedMonths).length === 0) {
         changedMonths[getOrderKey()] = true;
       }
@@ -6404,6 +6509,47 @@ function POSSystem() {
                   <div>
                     <div style={{fontSize:12,fontWeight:600,color:"#2a7040"}}>同步圖片到 Firebase</div>
                     <div style={{fontSize:10,color:"#9a968e"}}>強制把本機所有圖片上傳到雲端</div>
+                  </div>
+                </button>}
+
+                {/* 下載圖片到本機（市集離線用）— 限店長 */}
+                {isManager && <button onClick={function(){
+                  setMenuOpen(false);
+                  if (!window.getFirebaseToken) { alert("Firebase 未連線"); return; }
+                  window.getFirebaseToken(function(token){
+                    if (!token) { alert("無法取得 token"); return; }
+                    var msg = "正在從 Firebase 下載所有圖片到本機...\n\n⚠️ 這會佔用 localStorage 空間（約 4-5MB）\n\n下載完成後可離線使用（市集模式）\n\n繼續嗎？";
+                    if (!window.confirm(msg)) return;
+                    fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/product-images.json?auth="+token)
+                      .then(function(r){ return r.json(); })
+                      .then(function(imgs){
+                        if (!imgs) { alert("Firebase 沒有圖片資料"); return; }
+                        var ids = Object.keys(imgs);
+                        var saved = 0, failed = 0;
+                        ids.forEach(function(id){
+                          var img = imgs[id];
+                          if (!img || !img.startsWith || !img.startsWith("data:")) return;
+                          try {
+                            localStorage.setItem("chocoolee-product-images/"+id, img);
+                            saved++;
+                          } catch(e) {
+                            failed++;
+                          }
+                        });
+                        alert("✅ 下載完成！\n\n成功："+saved+" 張\n失敗："+failed+" 張（空間不足）\n\n現在可以離線使用圖片了！");
+                      })
+                      .catch(function(){ alert("下載失敗，請確認網路連線"); });
+                  });
+                }}
+                  style={{width:"100%",padding:"9px 14px",border:"none",background:"transparent",
+                    cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
+                    borderBottom:"1px solid #f0ede8",transition:"background 0.1s"}}
+                  onMouseEnter={function(e){e.currentTarget.style.background="#e8f4ff";}}
+                  onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
+                  <span style={{fontSize:16,width:24,textAlign:"center"}}>📥</span>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:600,color:"#2a7080"}}>下載圖片到本機</div>
+                    <div style={{fontSize:10,color:"#9a968e"}}>市集出門前按一次，離線也能看圖片</div>
                   </div>
                 </button>}
 
