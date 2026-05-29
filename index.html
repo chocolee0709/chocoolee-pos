@@ -269,8 +269,9 @@
   };
 
   window.pushToFirebase = function(key, value) {
-    // 採購單立即推送；訂單 300ms；其他 1.5 秒防抖
-    var delay = (key === "purchases" || key === "members") ? 0 : (key.indexOf("orders-") === 0) ? 300 : 1500;
+    // 所有資料立即推送（0ms）— 確保按下儲存後馬上同步到 Firebase
+    // saveData 只在使用者按下儲存/送出時呼叫，不會有 typing 時連續觸發的問題
+    var delay = 0;
     clearTimeout(syncTimers[key]);
     var snapshot = typeof value === "string" ? value : JSON.stringify(value);
     syncTimers[key] = setTimeout(function(){
@@ -5779,11 +5780,23 @@ function saveData(key, value) {
         var prodsNoImage = prods.map(function(p) {
           if (!p) return p;
           if (p.image && p.image.startsWith("data:")) {
-            // 圖片只推 Firebase，不存 localStorage（避免 5MB 空間不足）
             var imgKey = "product-images/" + String(p.id);
             var oldImg = null;
             try { oldImg = localStorage.getItem("chocoolee-" + imgKey); } catch(e) {}
+            // 圖片有變更時：本機+雲端都更新（本機先試，若空間不足則只推雲端）
             if (oldImg !== p.image) {
+              try {
+                localStorage.setItem("chocoolee-" + imgKey, p.image);
+              } catch(e) {
+                // localStorage 滿了 → 清理其他圖片快取後再試
+                var imgKeys = [];
+                for (var i = 0; i < localStorage.length; i++) {
+                  var lk = localStorage.key(i);
+                  if (lk && lk.indexOf("chocoolee-product-images/") === 0 && lk !== "chocoolee-" + imgKey) imgKeys.push(lk);
+                }
+                imgKeys.forEach(function(dk){ localStorage.removeItem(dk); });
+                try { localStorage.setItem("chocoolee-" + imgKey, p.image); } catch(e2) {}
+              }
               pushImageWithRetry(String(p.id), p.image);
             }
             return Object.assign({}, p, {image: "__img__"});
