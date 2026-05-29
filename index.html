@@ -124,25 +124,9 @@
             var changed = [];
             Object.keys(data).forEach(function(key){
               try {
-                // product-images 是物件，要展開每張獨立圖
-                if (key === "product-images" && data[key] && typeof data[key] === "object") {
-                  var imgs = data[key];
-                  Object.keys(imgs).forEach(function(imgId){
-                    var imgKey = "product-images/" + imgId;
-                    var fbImg = imgs[imgId];
-                    // 必須是有效的 base64 圖片
-                    if (!fbImg || typeof fbImg !== "string" || !fbImg.startsWith("data:")) return;
-                    var localImg = localStorage.getItem("chocoolee-" + imgKey);
-                    // 本機有圖片且 Firebase 版本不同時：
-                    // 如果本機圖片是「最近剛上傳的」（在 pendingImages 保護清單中），不覆蓋
-                    if (localImg && localImg !== fbImg) {
-                      if (window.__pendingImages && window.__pendingImages[imgId]) return;
-                    }
-                    if (fbImg !== localImg) {
-                      localStorage.setItem("chocoolee-" + imgKey, fbImg);
-                      changed.push(imgKey);
-                    }
-                  });
+                // product-images 不自動同步到 localStorage（避免空間爆滿）
+                // 圖片以 Firebase 為主，只在「下載圖片到本機」功能才存
+                if (key === "product-images") {
                   return;
                 }
                 var newVal = typeof data[key] === "string" ? data[key] : JSON.stringify(data[key]);
