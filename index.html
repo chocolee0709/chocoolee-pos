@@ -147,25 +147,42 @@
                 }
                 var newVal = typeof data[key] === "string" ? data[key] : JSON.stringify(data[key]);
                 var oldVal = localStorage.getItem("chocoolee-" + key);
-                if (newVal === oldVal) return; // 沒變動，跳過
+                if (newVal === oldVal) return;
 
-                // 訂單月份節點：合併兩邊，避免本機未推送的新訂單被覆蓋
+                // 通用合併函式：以 idField 為 key，updatedAt 較新的優先
+                function mergeByUpdatedAt(fbArr, localArr, idField) {
+                  var map = {};
+                  // 先放 Firebase 的
+                  fbArr.forEach(function(item){
+                    if (item && item[idField]) map[String(item[idField])] = item;
+                  });
+                  // 本機的：如果 Firebase 沒有，或本機比較新，就用本機的
+                  localArr.forEach(function(item){
+                    if (!item || !item[idField]) return;
+                    var key = String(item[idField]);
+                    var fbItem = map[key];
+                    if (!fbItem) {
+                      // Firebase 沒有這筆 → 保留本機
+                      map[key] = item;
+                    } else {
+                      // 比較 updatedAt，用比較新的
+                      var fbTime = fbItem.updatedAt || fbItem.date || "";
+                      var localTime = item.updatedAt || item.date || "";
+                      if (localTime > fbTime) map[key] = item;
+                    }
+                  });
+                  return Object.values(map);
+                }
+
+                // 訂單月份節點
                 if (key.indexOf("orders-") === 0) {
                   try {
                     var fbOrders = JSON.parse(newVal) || [];
                     var localOrders = JSON.parse(oldVal || "[]") || [];
-                    // 以 order.no 為 key 合併，Firebase 資料優先（較新的 status/cancelDate）
-                    // 但本機有而 Firebase 沒有的訂單要保留
-                    var fbMap = {};
-                    fbOrders.forEach(function(o){ if(o && o.no) fbMap[o.no] = o; });
-                    var merged = fbOrders.slice();
-                    localOrders.forEach(function(o){
-                      if (o && o.no && !fbMap[o.no]) merged.push(o); // 本機有但 Firebase 沒有 → 保留
-                    });
+                    var merged = mergeByUpdatedAt(fbOrders, localOrders, "no");
                     merged.sort(function(a,b){ return (b.date+b.time).localeCompare(a.date+a.time); });
                     var mergedStr = JSON.stringify(merged);
                     localStorage.setItem("chocoolee-" + key, mergedStr);
-                    // 如果本機有 Firebase 沒有的訂單，補推到 Firebase
                     if (merged.length > fbOrders.length) {
                       if (window.pushToFirebase) window.pushToFirebase(key, mergedStr);
                     }
@@ -177,17 +194,31 @@
                   return;
                 }
 
-                // 採購單：合併兩邊，以 id 為 key
+                // 會員
+                if (key === "members") {
+                  try {
+                    var fbMembers = JSON.parse(newVal) || [];
+                    var localMembers = JSON.parse(oldVal || "[]") || [];
+                    var mergedM = mergeByUpdatedAt(fbMembers, localMembers, "id");
+                    var mergedMStr = JSON.stringify(mergedM);
+                    localStorage.setItem("chocoolee-" + key, mergedMStr);
+                    if (mergedM.length > fbMembers.length) {
+                      if (window.pushToFirebase) window.pushToFirebase(key, mergedMStr);
+                    }
+                    changed.push(key);
+                  } catch(e) {
+                    localStorage.setItem("chocoolee-" + key, newVal);
+                    changed.push(key);
+                  }
+                  return;
+                }
+
+                // 採購單
                 if (key === "purchases") {
                   try {
                     var fbPurchases = JSON.parse(newVal) || [];
                     var localPurchases = JSON.parse(oldVal || "[]") || [];
-                    var fbPMap = {};
-                    fbPurchases.forEach(function(p){ if(p && p.id) fbPMap[p.id] = p; });
-                    var mergedP = fbPurchases.slice();
-                    localPurchases.forEach(function(p){
-                      if (p && p.id && !fbPMap[p.id]) mergedP.push(p);
-                    });
+                    var mergedP = mergeByUpdatedAt(fbPurchases, localPurchases, "id");
                     var mergedPStr = JSON.stringify(mergedP);
                     localStorage.setItem("chocoolee-" + key, mergedPStr);
                     if (mergedP.length > fbPurchases.length) {
@@ -254,7 +285,7 @@
 
   window.pushToFirebase = function(key, value) {
     // 採購單立即推送；訂單 300ms；其他 1.5 秒防抖
-    var delay = (key === "purchases") ? 0 : (key.indexOf("orders-") === 0) ? 300 : 1500;
+    var delay = (key === "purchases" || key === "members") ? 0 : (key.indexOf("orders-") === 0) ? 300 : 1500;
     clearTimeout(syncTimers[key]);
     var snapshot = typeof value === "string" ? value : JSON.stringify(value);
     syncTimers[key] = setTimeout(function(){
@@ -809,8 +840,11 @@ function CatalogPanel(props) {
   function saveEdit(){
     setProducts(function(prev){ return prev.map(function(p){
       if (p.id !== editId) return p;
-      var updated = Object.assign({},editForm,{price:Number(editForm.price)||0,cost:Number(editForm.cost)||0});
-      // 如果分類有變動，標記 mainEdited，防止 mergeProducts 覆蓋
+      var updated = Object.assign({},editForm,{
+        price:Number(editForm.price)||0,
+        cost:Number(editForm.cost)||0,
+        updatedAt: new Date().toISOString()
+      });
       var rawP = PRODUCTS.find(function(r){ return r.sku===editForm.sku; });
       if (rawP && (editForm.main !== rawP.main || editForm.sub !== rawP.sub)) {
         updated.mainEdited = true;
@@ -2030,7 +2064,8 @@ function OrdersDrawer(props) {
         return Object.assign({},o,{
           status: type==="cancel" ? "cancelled" : "refunded",
           cancelDate: today,
-          cancelType: type
+          cancelType: type,
+          updatedAt: new Date().toISOString()
         });
       });
     });
@@ -2436,10 +2471,11 @@ function MembersDrawer(props) {
     var highCount = Number(form.highCount)||0;
     var level = calcLevel(spent, highCount);
     var points = calcPoints(spent);
+    var now = new Date().toISOString();
     if (editId === "new") {
-      setMembers(function(prev){ return prev.concat([{id:Date.now(),name:form.name,phone:form.phone,email:form.email,spent:spent,highCount:highCount,level:level,points:points,note:form.note,joinDate:new Date().toISOString().slice(0,10)}]); });
+      setMembers(function(prev){ return prev.concat([{id:Date.now(),name:form.name,phone:form.phone,email:form.email,spent:spent,highCount:highCount,level:level,points:points,note:form.note,joinDate:new Date().toISOString().slice(0,10),updatedAt:now}]); });
     } else {
-      setMembers(function(prev){ return prev.map(function(m){ return m.id===editId ? Object.assign({},m,{name:form.name,phone:form.phone,email:form.email,spent:spent,highCount:highCount,level:level,points:points,note:form.note}) : m; }); });
+      setMembers(function(prev){ return prev.map(function(m){ return m.id===editId ? Object.assign({},m,{name:form.name,phone:form.phone,email:form.email,spent:spent,highCount:highCount,level:level,points:points,note:form.note,updatedAt:now}) : m; }); });
     }
     closeEdit();
   }
@@ -5514,7 +5550,23 @@ function POSSystem() {
 
     // 把 setters 註冊到 window，讓 Firebase SSE 即時更新 React state
     window.__reactSetters = {
-      members:    setMembers,
+      members: function(val) {
+        try {
+          var arr = typeof val === "string" ? JSON.parse(val) : val;
+          if (!Array.isArray(arr)) return;
+          setMembers(function(prev){
+            // 以 member.id 為 key 合併，Firebase 資料優先（較新的消費紀錄）
+            // 但本機有而 Firebase 沒有的會員要保留
+            var fbMap = {};
+            arr.forEach(function(m){ if(m && m.id) fbMap[String(m.id)] = m; });
+            var merged = arr.slice();
+            prev.forEach(function(m){
+              if (m && m.id && !fbMap[String(m.id)]) merged.push(m); // 本機有但 Firebase 沒有 → 保留
+            });
+            return merged;
+          });
+        } catch(e) {}
+      },
       purchases:  setPurchases,
       orders:     function(val) {
         // 月份節點更新時合併到 orders state
@@ -6048,7 +6100,7 @@ function POSSystem() {
       items: cart.length,
       qty: cart.reduce(function(s,i){return s+i.qty;},0),
       payment: splitSummary(),
-      payBreakdown: Object.assign({}, splitPay),  // 各付款方式金額快照
+      payBreakdown: Object.assign({}, splitPay),
       discount: discount,
       subtotal: subtotal,
       discAmt: discAmt,
@@ -6056,7 +6108,8 @@ function POSSystem() {
       total: total,
       status: "paid",
       detail: cart.map(function(i){return i.name+"×"+i.qty;}).join("、"),
-      cartSnapshot: cart.map(function(i){return {id:i.id,name:i.name,sku:i.sku,price:i.price,qty:i.qty,main:i.main,sub:i.sub};})
+      cartSnapshot: cart.map(function(i){return {id:i.id,name:i.name,sku:i.sku,price:i.price,qty:i.qty,main:i.main,sub:i.sub};}),
+      updatedAt: new Date().toISOString()
     };
     saveOrders(function(prev){ return [newOrder].concat(prev); });
     // Update member: add points, update lastVisit, update spent
