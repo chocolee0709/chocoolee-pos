@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>採購單救援工具</title>
+<style>
+body { font-family: -apple-system,system-ui,sans-serif; padding: 20px; background: #faf9f7; color: #2a2520; }
+h1 { font-size: 20px; }
+.btn { background: #b8910a; color: #fff; padding: 14px 28px; border: none; border-radius: 8px; font-size: 16px; font-weight: 700; cursor: pointer; width: 100%; margin: 10px 0; }
+.btn-blue { background: #2a7080; }
+.btn-red { background: #d0552f; }
+.log { background: #fff; padding: 14px; border-radius: 8px; margin: 10px 0; font-size: 13px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; font-family: monospace; border: 1px solid #e8e4de; }
+.ok { color: #3d9e32; }
+.err { color: #d0552f; }
+.warn { color: #b8910a; }
+</style>
+</head>
+<body>
+<h1>🔧 採購單救援工具</h1>
+<p>從 Firebase 拉資料回本機</p>
+
+<button class="btn" onclick="syncPurchases()">📥 同步採購單到本機</button>
+<button class="btn btn-blue" onclick="syncAll()">🔄 同步所有資料</button>
+<button class="btn btn-red" onclick="checkOnly()">🔍 只檢查</button>
+
+<div class="log" id="log">點擊上方按鈕開始...</div>
+
+<script>
+const FB = "https://chocoolee-pos-default-rtdb.firebaseio.com";
+const API_KEY = "AIzaSyDqJZiwefGVMiTVusd-Z1jTuQByaMS_i2w";
+const EMAIL = "chocolee0709@gmail.com";
+const PASSWORD = "love0501";
+
+function log(msg, cls) {
+  const el = document.getElementById("log");
+  const t = new Date().toTimeString().slice(0,8);
+  el.innerHTML += "\n[" + t + "] " + (cls ? '<span class="'+cls+'">'+msg+'</span>' : msg);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function getToken() {
+  log("登入 Firebase...");
+  const r = await fetch("https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=" + API_KEY, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({email: EMAIL, password: PASSWORD, returnSecureToken: true})
+  });
+  const d = await r.json();
+  if (!d.idToken) throw new Error("登入失敗");
+  log("✓ 登入成功", "ok");
+  return d.idToken;
+}
+
+async function checkOnly() {
+  try {
+    const token = await getToken();
+    const r = await fetch(FB + "/chocoolee/purchases.json?auth=" + token);
+    const d = await r.json();
+    const arr = typeof d === "string" ? JSON.parse(d) : d;
+    if (!arr || !arr.length) { log("Firebase 採購單：空", "warn"); return; }
+    log("Firebase 採購單：" + arr.length + " 筆", "ok");
+    arr.forEach(p => log("  " + p.no + " [" + p.status + "] " + (p.items||[]).length + " 項"));
+    const local = JSON.parse(localStorage.getItem("chocoolee-purchases") || "[]");
+    log("本機採購單：" + local.length + " 筆", local.length === arr.length ? "ok" : "err");
+  } catch (e) {
+    log("錯誤：" + e.message, "err");
+  }
+}
+
+async function syncPurchases() {
+  try {
+    const token = await getToken();
+    log("下載採購單...");
+    const r = await fetch(FB + "/chocoolee/purchases.json?auth=" + token);
+    const d = await r.json();
+    const arr = typeof d === "string" ? JSON.parse(d) : d;
+    if (!arr || !arr.length) { log("Firebase 沒採購單", "warn"); return; }
+    log("Firebase 有 " + arr.length + " 筆", "ok");
+    localStorage.setItem("chocoolee-purchases", JSON.stringify(arr));
+    log("✓ 已同步到本機！", "ok");
+    log("");
+    log("回到 POS 重新整理：", "warn");
+    log("https://chocolee0709.github.io/chocoolee-pos");
+  } catch (e) {
+    log("錯誤：" + e.message, "err");
+  }
+}
+
+async function syncAll() {
+  try {
+    const token = await getToken();
+    const keys = ["purchases", "members", "products", "stocks", "deletedskus"];
+    for (const k of keys) {
+      const r = await fetch(FB + "/chocoolee/" + k + ".json?auth=" + token);
+      const d = await r.json();
+      const v = typeof d === "string" ? d : JSON.stringify(d);
+      if (v && v !== "null") {
+        localStorage.setItem("chocoolee-" + k, v);
+        log("✓ " + k, "ok");
+      }
+    }
+    const d = new Date();
+    for (let i = 0; i < 3; i++) {
+      const d2 = new Date(); d2.setMonth(d2.getMonth() - i);
+      const mk = "orders-" + d2.getFullYear() + "-" + String(d2.getMonth()+1).padStart(2,"0");
+      const r2 = await fetch(FB + "/chocoolee/" + mk + ".json?auth=" + token);
+      const d3 = await r2.json();
+      const v2 = typeof d3 === "string" ? d3 : JSON.stringify(d3);
+      if (v2 && v2 !== "null") {
+        localStorage.setItem("chocoolee-" + mk, v2);
+        log("✓ " + mk, "ok");
+      }
+    }
+    log("");
+    log("✓ 全部同步完成！", "ok");
+    log("回到 POS：https://chocolee0709.github.io/chocoolee-pos", "warn");
+  } catch (e) {
+    log("錯誤：" + e.message, "err");
+  }
+}
+</script>
+</body>
+</html>
