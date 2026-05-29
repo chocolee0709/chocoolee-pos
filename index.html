@@ -124,9 +124,25 @@
             var changed = [];
             Object.keys(data).forEach(function(key){
               try {
-                // product-images 不自動同步到 localStorage（避免空間爆滿）
-                // 圖片以 Firebase 為主，只在「下載圖片到本機」功能才存
+                // product-images：不存 localStorage（圖片永遠從 Firebase 即時讀取）
+                // 這樣 localStorage 永遠不會滿，且圖片一定是最新的
                 if (key === "product-images") {
+                  // 把 Firebase 圖片暫存到記憶體（不存 localStorage）
+                  if (!window.__fbImages) window.__fbImages = {};
+                  if (data[key] && typeof data[key] === "object") {
+                    var imgs = data[key];
+                    Object.keys(imgs).forEach(function(imgId){
+                      var fbImg = imgs[imgId];
+                      if (fbImg && typeof fbImg === "string" && fbImg.startsWith("data:")) {
+                        window.__fbImages[imgId] = fbImg;
+                      }
+                    });
+                    // 觸發 products 重新渲染以顯示新圖
+                    if (window.__reactSetters && window.__reactSetters.products) {
+                      var pv = localStorage.getItem("chocoolee-products");
+                      if (pv) window.__reactSetters.products(pv);
+                    }
+                  }
                   return;
                 }
                 var newVal = typeof data[key] === "string" ? data[key] : JSON.stringify(data[key]);
@@ -188,6 +204,32 @@
                     localStorage.setItem("chocoolee-" + key, mergedMStr);
                     if (mergedM.length > fbMembers.length) {
                       if (window.pushToFirebase) window.pushToFirebase(key, mergedMStr);
+                    }
+                    changed.push(key);
+                  } catch(e) {
+                    localStorage.setItem("chocoolee-" + key, newVal);
+                    changed.push(key);
+                  }
+                  return;
+                }
+
+                // deletedskus：合併兩邊（聯集，永遠不縮減，避免重複新增已刪除商品）
+                if (key === "deletedskus") {
+                  try {
+                    var fbDel = JSON.parse(newVal) || [];
+                    var localDel = JSON.parse(oldVal || "[]") || [];
+                    if (!Array.isArray(fbDel)) fbDel = [];
+                    if (!Array.isArray(localDel)) localDel = [];
+                    // 聯集
+                    var union = fbDel.slice();
+                    localDel.forEach(function(s){
+                      if (union.indexOf(s) === -1) union.push(s);
+                    });
+                    var unionStr = JSON.stringify(union);
+                    localStorage.setItem("chocoolee-" + key, unionStr);
+                    // 如果本機有 Firebase 沒有的，補推回去
+                    if (union.length > fbDel.length) {
+                      if (window.pushToFirebase) window.pushToFirebase(key, unionStr);
                     }
                     changed.push(key);
                   } catch(e) {
@@ -349,18 +391,14 @@
     }, 30000);
   }
 
-  // 啟動時清理 localStorage 圖片快取（圖片以 Firebase 為主，localStorage 只是市集離線備用）
-  // 平時不存圖片在 localStorage，市集前才用「📥 下載圖片到本機」功能下載
+  // 啟動時清除 localStorage 圖片快取（圖片改為從 Firebase 即時讀取，存記憶體 __fbImages）
   (function cleanupLocalImages(){
     var imgKeys = [];
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i);
       if (k && k.indexOf("chocoolee-product-images/") === 0) imgKeys.push(k);
     }
-    // 超過 50 張就清理（市集下載的 500 張維持不動，平時維持 0）
-    if (imgKeys.length > 50 && imgKeys.length < 400) {
-      imgKeys.forEach(function(k){ localStorage.removeItem(k); });
-    }
+    imgKeys.forEach(function(k){ localStorage.removeItem(k); });
   })();
 
   window.firebaseReady = false;
@@ -5780,24 +5818,14 @@ function saveData(key, value) {
         var prodsNoImage = prods.map(function(p) {
           if (!p) return p;
           if (p.image && p.image.startsWith("data:")) {
-            var imgKey = "product-images/" + String(p.id);
-            var oldImg = null;
-            try { oldImg = localStorage.getItem("chocoolee-" + imgKey); } catch(e) {}
-            // 圖片有變更時：本機+雲端都更新（本機先試，若空間不足則只推雲端）
+            var imgId = String(p.id);
+            // 圖片：只推 Firebase，不存 localStorage（避免空間爆滿）
+            // 同時更新記憶體快取 __fbImages 讓畫面立刻顯示新圖
+            if (!window.__fbImages) window.__fbImages = {};
+            var oldImg = window.__fbImages[imgId];
             if (oldImg !== p.image) {
-              try {
-                localStorage.setItem("chocoolee-" + imgKey, p.image);
-              } catch(e) {
-                // localStorage 滿了 → 清理其他圖片快取後再試
-                var imgKeys = [];
-                for (var i = 0; i < localStorage.length; i++) {
-                  var lk = localStorage.key(i);
-                  if (lk && lk.indexOf("chocoolee-product-images/") === 0 && lk !== "chocoolee-" + imgKey) imgKeys.push(lk);
-                }
-                imgKeys.forEach(function(dk){ localStorage.removeItem(dk); });
-                try { localStorage.setItem("chocoolee-" + imgKey, p.image); } catch(e2) {}
-              }
-              pushImageWithRetry(String(p.id), p.image);
+              window.__fbImages[imgId] = p.image;
+              pushImageWithRetry(imgId, p.image);
             }
             return Object.assign({}, p, {image: "__img__"});
           }
@@ -6012,8 +6040,12 @@ function POSSystem() {
               .map(function(s){
                 var img = "";
                 if (s.image === "__img__" || s.image === "" || !s.image) {
-                  // 1. 先試獨立節點
-                  img = localStorage.getItem("chocoolee-product-images/" + String(s.id)) || "";
+                  // 0. 先試 Firebase 記憶體快取（即時更新最新圖片）
+                  if (window.__fbImages && window.__fbImages[String(s.id)]) {
+                    img = window.__fbImages[String(s.id)];
+                  }
+                  // 1. 再試本機獨立節點
+                  if (!img) img = localStorage.getItem("chocoolee-product-images/" + String(s.id)) || "";
                   // 2. 再試舊版整包
                   if (!img) {
                     try {
@@ -6167,8 +6199,12 @@ function POSSystem() {
             // 從獨立節點讀取圖片
             var img = "";
             if (s.image === "__img__" || s.image === "" || !s.image) {
-              // 先試獨立節點
-              img = localStorage.getItem("chocoolee-product-images/" + String(s.id)) || "";
+              // 先試 Firebase 記憶體快取
+              if (window.__fbImages && window.__fbImages[String(s.id)]) {
+                img = window.__fbImages[String(s.id)];
+              }
+              // 再試本機獨立節點
+              if (!img) img = localStorage.getItem("chocoolee-product-images/" + String(s.id)) || "";
               // 如果沒有，試舊版整包節點
               if (!img) {
                 try {
