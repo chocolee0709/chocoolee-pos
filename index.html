@@ -3328,7 +3328,7 @@ function PurchaseEditor(props) {
 
       {showAddItem && (
         <ItemPicker addingNew={addingNew} products={products}
-          existingSkus={(po.items||[]).map(function(i){return i.sku;})}
+          existingSkus={(po.items||[]).map(function(i){return i.sku;}).filter(function(s){return s && String(s).trim();})}
           onAdd={addItem} onCancel={function(){setShowAddItem(false);}}/>
       )}
 
@@ -3596,10 +3596,20 @@ function ItemPicker(props) {
       if (nums.indexOf(i) === -1) { nextNum = i; break; }
     }
     if (!nextNum) nextNum = nums[nums.length-1] + 1;
-    // 用 width 補齊前導零
-    var numStr = String(nextNum);
-    while (numStr.length < width) numStr = "0" + numStr;
-    var newSku = prefix + numStr + suffix;
+
+    // 防呆：產生的 SKU 如果還是重複，繼續往後找
+    function makeSku(n) {
+      var s = String(n);
+      while (s.length < width) s = "0" + s;
+      return prefix + s + suffix;
+    }
+    var newSku = makeSku(nextNum);
+    var safety = 0;
+    while (allSku.indexOf(newSku) !== -1 && safety < 1000) {
+      nextNum++;
+      newSku = makeSku(nextNum);
+      safety++;
+    }
     setNfField("sku", newSku);
   }
 
@@ -4149,7 +4159,7 @@ function ShiftLogin(props) {
 
         {/* 標題列 */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-          <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>🔄 換班</div>
+          <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>🔑 登入</div>
           <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,color:"#9a968e",cursor:"pointer"}}>×</button>
         </div>
 
@@ -4189,6 +4199,11 @@ function ShiftLogin(props) {
             </div>
           </div>
         )}
+
+        {/* 歡迎語 */}
+        <div style={{textAlign:"center",marginBottom:12,padding:"10px 12px",background:"linear-gradient(135deg,#fff8e0,#fff4d0)",borderRadius:9,border:"1px solid #f0e0a0"}}>
+          <div style={{fontSize:13,fontWeight:600,color:"#a87c00"}}>🌷 嗨～準備好開始上班了嗎？</div>
+        </div>
 
         {/* 人員選擇 */}
         <div style={{marginBottom:14}}>
