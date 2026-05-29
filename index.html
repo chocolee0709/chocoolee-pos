@@ -1009,6 +1009,11 @@ function CatalogPanel(props) {
     var mS = !filterSub  || p.sub===filterSub;
     return mQ && mM && mS;
   });
+  // 依貨號自然排序（保留前導零、數字+字母組合）
+  filtered.sort(function(a,b){
+    var sa = String(a.sku||""), sb = String(b.sku||"");
+    return sa.localeCompare(sb, "zh-TW", {numeric:true, sensitivity:"base"});
+  });
   var totalPages = Math.max(1, Math.ceil(filtered.length/PROD_PAGE_SIZE));
   var safePage   = Math.min(page, totalPages-1);
   var pageData   = filtered.slice(safePage*PROD_PAGE_SIZE, (safePage+1)*PROD_PAGE_SIZE);
@@ -6118,14 +6123,19 @@ function POSSystem() {
     : null;
 
   var filtered = useMemo(function() {
-    return sharedProducts.filter(function(p) {
-      // 業外收入分類預設不在「全部」顯示（避免誤刷）
+    var arr = sharedProducts.filter(function(p) {
       if (!activeMain && p.main === "業外收入") return false;
       var mM = !activeMain || p.main === activeMain;
       var mS = !activeSub  || p.sub  === activeSub;
       var mQ = !search || p.name.indexOf(search)>=0 || p.sku.indexOf(search)>=0;
       return mM && mS && mQ;
     });
+    // 依貨號自然排序
+    arr.sort(function(a,b){
+      var sa = String(a.sku||""), sb = String(b.sku||"");
+      return sa.localeCompare(sb, "zh-TW", {numeric:true, sensitivity:"base"});
+    });
+    return arr;
   }, [activeMain, activeSub, search, sharedProducts]);
 
   var subCats = activeMain ? (CAT_STRUCT[activeMain] || []) : [];
