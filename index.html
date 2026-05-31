@@ -66,6 +66,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 
   <script>
   var FB      = "https://chocoolee-pos-default-rtdb.firebaseio.com";
@@ -1156,9 +1157,8 @@ function CatalogPanel(props) {
   var kpiMargin = kpiRetail - kpiCost;
   var kpiLow    = filtered.filter(function(p){ var st=stocks[p.id]!==undefined?stocks[p.id]:p.stock; return st<=5; }).length;
 
-  // ── 匯出盤點表 ──
+  // ── 匯出盤點表（ExcelJS，含框線）──
   function exportInventory(){
-    var wb=XLSX.utils.book_new();
     var sorted=filtered.slice().sort(function(a,b){
       if(a.main<b.main)return -1;if(a.main>b.main)return 1;
       if((a.sub||"")<(b.sub||""))return -1;if((a.sub||"")>(b.sub||""))return 1;return 0;
@@ -1166,29 +1166,122 @@ function CatalogPanel(props) {
     var today=new Date().toISOString().slice(0,10);
     var catGroups={};
     sorted.forEach(function(p){var c=p.main||"其他";if(!catGroups[c])catGroups[c]=[];catGroups[c].push(p);});
+
+    var workbook=new ExcelJS.Workbook();
+
+    // 共用樣式
+    var thinBorder={top:{style:"thin",color:{argb:"FFB8B0A4"}},left:{style:"thin",color:{argb:"FFB8B0A4"}},bottom:{style:"thin",color:{argb:"FFB8B0A4"}},right:{style:"thin",color:{argb:"FFB8B0A4"}}};
+    function applyBorder(row, colCount){
+      for(var c=1;c<=colCount;c++){ row.getCell(c).border=thinBorder; }
+    }
+
+    // 各大分類分頁
     Object.keys(catGroups).forEach(function(cat){
       var rows=catGroups[cat];
-      var wsData=[["巧克莉莉選物店 — 庫存盤點表"],["大分類："+cat+"　盤點日期："+today],[],
-        ["貨號","商品名稱","小分類","零售價","系統庫存","實際盤點","差異","備註"]];
+      var rawName=cat.substring(0,28);
+      var sheetName="";
+      for(var ci=0;ci<rawName.length;ci++){
+        var ch=rawName.charAt(ci);
+        if(ch==="\\"||ch==="/"||ch==="?"||ch==="*"||ch==="["||ch==="]"||ch===":")continue;
+        sheetName+=ch;
+      }
+      if(!sheetName)sheetName="分類";
+      var ws=workbook.addWorksheet(sheetName);
+
+      // 標題列
+      ws.mergeCells("A1:H1");
+      ws.getCell("A1").value="巧克莉莉選物店 — 庫存盤點表";
+      ws.getCell("A1").font={bold:true,size:14};
+      ws.getCell("A1").alignment={horizontal:"center"};
+      ws.mergeCells("A2:H2");
+      ws.getCell("A2").value="大分類："+cat+"　盤點日期："+today;
+      ws.getCell("A2").alignment={horizontal:"center"};
+      ws.addRow([]);
+
+      // 表頭
+      var headerRow=ws.addRow(["貨號","商品名稱","小分類","零售價","系統庫存","實際盤點","差異","備註"]);
+      headerRow.eachCell(function(cell){
+        cell.font={bold:true};
+        cell.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF0EDE8"}};
+        cell.border=thinBorder;
+        cell.alignment={horizontal:"center"};
+      });
+
       var subH="";
       rows.forEach(function(p){
         var st=stocks[p.id]!==undefined?stocks[p.id]:p.stock;
-        if(p.sub!==subH){subH=p.sub||"";if(subH)wsData.push(["","── "+subH+" ──","","","","","",""]);}
-        wsData.push([p.sku,p.name,p.sub||"—",p.price,st,"","=F"+(wsData.length+1)+"-E"+(wsData.length+1),""]);
+        if(p.sub!==subH){
+          subH=p.sub||"";
+          if(subH){
+            var subRow=ws.addRow(["","── "+subH+" ──","","","","","",""]);
+            subRow.getCell(2).font={bold:true,color:{argb:"FF7A7068"}};
+            applyBorder(subRow,8);
+          }
+        }
+        var dataRow=ws.addRow([p.sku,p.name,p.sub||"—",p.price,st,null,null,""]);
+        var rn=dataRow.number;
+        // 差異 = 實際盤點(F) - 系統庫存(E)，真正的 Excel 公式
+        dataRow.getCell(7).value={formula:"F"+rn+"-E"+rn};
+        applyBorder(dataRow,8);
       });
-      wsData.push([]);
-      var ws=XLSX.utils.aoa_to_sheet(wsData);
-      ws["!cols"]=[{wch:12},{wch:30},{wch:14},{wch:10},{wch:10},{wch:10},{wch:8},{wch:16}];
-      ws["!merges"]=[{s:{r:0,c:0},e:{r:0,c:7}},{s:{r:1,c:0},e:{r:1,c:7}}];
-      XLSX.utils.book_append_sheet(wb,ws,cat.substring(0,28));
+
+      // 欄寬
+      ws.columns[0].width=14;
+      ws.columns[1].width=32;
+      ws.columns[2].width=16;
+      ws.columns[3].width=10;
+      ws.columns[4].width=10;
+      ws.columns[5].width=10;
+      ws.columns[6].width=8;
+      ws.columns[7].width=18;
     });
-    var allData=[["巧克莉莉選物店 — 盤點總表"],["盤點日期："+today],[],
-      ["貨號","商品名稱","大分類","小分類","零售價","系統庫存","實際盤點","差異","備註"]];
-    sorted.forEach(function(p){var st=stocks[p.id]!==undefined?stocks[p.id]:p.stock;allData.push([p.sku,p.name,p.main,p.sub||"—",p.price,st,"","",""]);});
-    var wsAll=XLSX.utils.aoa_to_sheet(allData);
-    wsAll['!cols']=[{wch:12},{wch:30},{wch:10},{wch:14},{wch:10},{wch:10},{wch:10},{wch:8},{wch:16}];
-    XLSX.utils.book_append_sheet(wb,wsAll,"全部");
-    XLSX.writeFile(wb,"盤點表_"+today+".xlsx");
+
+    // 全部總表
+    var wsAll=workbook.addWorksheet("全部");
+    wsAll.mergeCells("A1:I1");
+    wsAll.getCell("A1").value="巧克莉莉選物店 — 盤點總表";
+    wsAll.getCell("A1").font={bold:true,size:14};
+    wsAll.getCell("A1").alignment={horizontal:"center"};
+    wsAll.mergeCells("A2:I2");
+    wsAll.getCell("A2").value="盤點日期："+today;
+    wsAll.getCell("A2").alignment={horizontal:"center"};
+    wsAll.addRow([]);
+    var allHeader=wsAll.addRow(["貨號","商品名稱","大分類","小分類","零售價","系統庫存","實際盤點","差異","備註"]);
+    allHeader.eachCell(function(cell){
+      cell.font={bold:true};
+      cell.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF0EDE8"}};
+      cell.border=thinBorder;
+      cell.alignment={horizontal:"center"};
+    });
+    sorted.forEach(function(p){
+      var st=stocks[p.id]!==undefined?stocks[p.id]:p.stock;
+      var dataRow=wsAll.addRow([p.sku,p.name,p.main,p.sub||"—",p.price,st,null,null,""]);
+      var rn=dataRow.number;
+      dataRow.getCell(8).value={formula:"G"+rn+"-F"+rn};
+      for(var c=1;c<=9;c++){ dataRow.getCell(c).border=thinBorder; }
+    });
+    wsAll.columns[0].width=14;
+    wsAll.columns[1].width=32;
+    wsAll.columns[2].width=10;
+    wsAll.columns[3].width=16;
+    wsAll.columns[4].width=10;
+    wsAll.columns[5].width=10;
+    wsAll.columns[6].width=10;
+    wsAll.columns[7].width=8;
+    wsAll.columns[8].width=18;
+
+    // 下載
+    workbook.xlsx.writeBuffer().then(function(buffer){
+      var blob=new Blob([buffer],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement("a");
+      a.href=url;
+      a.download="盤點表_"+today+".xlsx";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
   }
 
   // ── 匯入盤點 ──
