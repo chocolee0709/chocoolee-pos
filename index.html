@@ -1366,7 +1366,13 @@ function CatalogPanel(props) {
   function autoGenSku() {
     var mainCat = newForm.main, subCat = newForm.sub;
     if (!subCat) { alert("請先選擇小分類"); return; }
-    var allSku = products.filter(function(p){
+
+    // 全店所有貨號（用於最終唯一性檢查）
+    var allSkuGlobal = {};
+    products.forEach(function(p){ if(p && p.sku) allSkuGlobal[p.sku] = true; });
+
+    // 同分類的貨號（用於找格式與號碼）
+    var sameCat = products.filter(function(p){
       return p.main === mainCat && p.sub === subCat;
     }).map(function(p){ return p.sku; });
 
@@ -1382,7 +1388,6 @@ function CatalogPanel(props) {
       }
       if (startNum === -1) return null;
       var numLen = endNum - startNum + 1;
-      if (numLen < 3 || numLen > 4) return null;
       return {
         prefix: s.slice(0, startNum),
         num: parseInt(s.slice(startNum, endNum+1)),
@@ -1391,31 +1396,57 @@ function CatalogPanel(props) {
       };
     }
 
-    var nums = [], prefix = "", suffix = "", width = 4;
-    allSku.forEach(function(s){
+    // 統計同分類各種「前綴+後綴」格式，取最常見的那組
+    var formatGroups = {};
+    sameCat.forEach(function(s){
       var p = parseSku(s);
-      if (p) {
-        if (!prefix && !suffix && nums.length === 0) {
-          prefix = p.prefix; suffix = p.suffix; width = p.width;
-        }
-        if (p.prefix === prefix && p.suffix === suffix) nums.push(p.num);
+      if (!p) return;
+      var fkey = p.prefix + "|" + p.suffix + "|" + p.width;
+      if (!formatGroups[fkey]) formatGroups[fkey] = {prefix:p.prefix, suffix:p.suffix, width:p.width, nums:[]};
+      formatGroups[fkey].nums.push(p.num);
+    });
+
+    // 選用「最多商品在用」的格式
+    var bestFmt = null, bestCount = 0;
+    Object.keys(formatGroups).forEach(function(k){
+      if (formatGroups[k].nums.length > bestCount) {
+        bestCount = formatGroups[k].nums.length;
+        bestFmt = formatGroups[k];
       }
     });
 
-    if (nums.length === 0) {
-      setNF("sku", "NEW" + String(Date.now()).slice(-6));
-      return;
+    function makeSku(fmt, n) {
+      var s = String(n);
+      while (s.length < fmt.width) s = "0" + s;
+      return fmt.prefix + s + fmt.suffix;
     }
 
-    nums.sort(function(a,b){return a-b;});
-    var nextNum = null;
-    for (var i = nums[0]; i <= nums[nums.length-1] + 1; i++) {
-      if (nums.indexOf(i) === -1) { nextNum = i; break; }
+    var newSku = "";
+    if (bestFmt) {
+      // 用該格式找下一個沒被用的號碼（同分類 + 全店都要避開）
+      bestFmt.nums.sort(function(a,b){ return a-b; });
+      var candidate = bestFmt.nums[0];
+      var safety = 0;
+      while (safety < 9999) {
+        var trySku = makeSku(bestFmt, candidate);
+        // 同分類沒用過 且 全店沒用過
+        if (bestFmt.nums.indexOf(candidate) === -1 && !allSkuGlobal[trySku]) {
+          newSku = trySku;
+          break;
+        }
+        candidate++;
+        safety++;
+      }
     }
-    if (!nextNum) nextNum = nums[nums.length-1] + 1;
-    var numStr = String(nextNum);
-    while (numStr.length < width) numStr = "0" + numStr;
-    setNF("sku", prefix + numStr + suffix);
+
+    // 無法用格式推算（分類沒有可解析的貨號）→ 用時間戳，並確保全店唯一
+    if (!newSku) {
+      do {
+        newSku = "NEW" + String(Date.now()).slice(-6) + Math.floor(Math.random()*10);
+      } while (allSkuGlobal[newSku]);
+    }
+
+    setNF("sku", newSku);
   }
 
   function addProduct(){
@@ -3760,17 +3791,16 @@ function ItemPicker(props) {
 
   // 自動產生貨號（同分類下找空缺號碼）
   function autoGenerateSku() {
-    // 商品庫存的同分類貨號
-    var allSku = products.filter(function(p){
+    // 全店所有貨號（最終唯一性檢查）
+    var allSkuGlobal = {};
+    products.forEach(function(p){ if(p && p.sku) allSkuGlobal[p.sku] = true; });
+    existingSkus.forEach(function(s){ if(s) allSkuGlobal[s] = true; });
+
+    // 同分類貨號（找格式與號碼）
+    var sameCat = products.filter(function(p){
       return p.main === nf.main && p.sub === nf.sub;
     }).map(function(p){ return p.sku; });
 
-    // 也排除採購單本次已選的貨號（避免重複）
-    existingSkus.forEach(function(s){
-      if (allSku.indexOf(s) === -1) allSku.push(s);
-    });
-
-    // 不用正則：手動解析「前綴 + 數字 + 後綴」
     function parseSku(s) {
       s = String(s);
       var startNum = -1, endNum = -1;
@@ -3783,56 +3813,56 @@ function ItemPicker(props) {
       }
       if (startNum === -1) return null;
       var numLen = endNum - startNum + 1;
-      if (numLen < 3 || numLen > 4) return null;
       return {
         prefix: s.slice(0, startNum),
         num: parseInt(s.slice(startNum, endNum+1)),
-        width: numLen,  // 保留原始數字寬度（包含前導零）
+        width: numLen,
         suffix: s.slice(endNum+1)
       };
     }
 
-    var nums = [];
-    var prefix = "";
-    var suffix = "";
-    var width = 4; // 預設 4 位
-    allSku.forEach(function(s){
+    // 統計同分類格式，取最常見的
+    var formatGroups = {};
+    sameCat.forEach(function(s){
       var p = parseSku(s);
-      if (p) {
-        if (!prefix && !suffix && nums.length === 0) {
-          prefix = p.prefix; suffix = p.suffix; width = p.width;
-        }
-        if (p.prefix === prefix && p.suffix === suffix) {
-          nums.push(p.num);
-        }
+      if (!p) return;
+      var fkey = p.prefix + "|" + p.suffix + "|" + p.width;
+      if (!formatGroups[fkey]) formatGroups[fkey] = {prefix:p.prefix, suffix:p.suffix, width:p.width, nums:[]};
+      formatGroups[fkey].nums.push(p.num);
+    });
+    var bestFmt = null, bestCount = 0;
+    Object.keys(formatGroups).forEach(function(k){
+      if (formatGroups[k].nums.length > bestCount) {
+        bestCount = formatGroups[k].nums.length;
+        bestFmt = formatGroups[k];
       }
     });
 
-    if (nums.length === 0) {
-      setNfField("sku", "NEW" + String(Date.now()).slice(-6));
-      return;
-    }
-
-    nums.sort(function(a,b){return a-b;});
-    // 找第一個空缺號碼（從最小號碼開始找）
-    var nextNum = null;
-    for (var i = nums[0]; i <= nums[nums.length-1] + 1; i++) {
-      if (nums.indexOf(i) === -1) { nextNum = i; break; }
-    }
-    if (!nextNum) nextNum = nums[nums.length-1] + 1;
-
-    // 防呆：產生的 SKU 如果還是重複，繼續往後找
-    function makeSku(n) {
+    function makeSku(fmt, n) {
       var s = String(n);
-      while (s.length < width) s = "0" + s;
-      return prefix + s + suffix;
+      while (s.length < fmt.width) s = "0" + s;
+      return fmt.prefix + s + fmt.suffix;
     }
-    var newSku = makeSku(nextNum);
-    var safety = 0;
-    while (allSku.indexOf(newSku) !== -1 && safety < 1000) {
-      nextNum++;
-      newSku = makeSku(nextNum);
-      safety++;
+
+    var newSku = "";
+    if (bestFmt) {
+      bestFmt.nums.sort(function(a,b){ return a-b; });
+      var candidate = bestFmt.nums[0];
+      var safety = 0;
+      while (safety < 9999) {
+        var trySku = makeSku(bestFmt, candidate);
+        if (bestFmt.nums.indexOf(candidate) === -1 && !allSkuGlobal[trySku]) {
+          newSku = trySku;
+          break;
+        }
+        candidate++;
+        safety++;
+      }
+    }
+    if (!newSku) {
+      do {
+        newSku = "NEW" + String(Date.now()).slice(-6) + Math.floor(Math.random()*10);
+      } while (allSkuGlobal[newSku]);
     }
     setNfField("sku", newSku);
   }
