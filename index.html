@@ -2181,6 +2181,8 @@ function OrdersDrawer(props) {
 
   var orders = props.orders;
   var setOrders = props.setOrders;
+  var setSharedStocks = props.setSharedStocks;
+  var sharedAddLog = props.sharedAddLog;
   var today = new Date().toISOString().slice(0,10);
 
   var ds = useState(today); var viewDate = ds[0], setViewDate = ds[1];
@@ -2191,8 +2193,38 @@ function OrdersDrawer(props) {
   var inp = {background:"#ffffff",border:"1px solid #2e2a22",borderRadius:6,padding:"6px 9px",color:"#2a2520",fontSize:12,outline:"none"};
 
   function doCancel(no, type) {
-    // 取消或退貨：把該訂單 status 改為 cancelled/refunded，並在今日新增一筆負數抵銷記錄
+    // 取消或退貨：把該訂單 status 改為 cancelled/refunded
     if (!setOrders) return;
+    // 找到該訂單，退回庫存
+    var theOrder = orders.find(function(o){ return o.no === no; });
+    if (theOrder && theOrder.cartSnapshot && setSharedStocks) {
+      setSharedStocks(function(prev){
+        var next = Object.assign({}, prev);
+        theOrder.cartSnapshot.forEach(function(it){
+          if (it.main === "業外收入") return;
+          var cur = next[it.id] !== undefined ? next[it.id] : 0;
+          next[it.id] = cur + it.qty; // 退回
+        });
+        return next;
+      });
+      // 記錄退回 log
+      if (sharedAddLog) {
+        var nowT = new Date();
+        var restoreLogs = [];
+        theOrder.cartSnapshot.forEach(function(it){
+          if (it.main === "業外收入") return;
+          restoreLogs.push({
+            id: Date.now() + Math.random(),
+            date: nowT.toISOString().slice(0,10), time: nowT.toTimeString().slice(0,5),
+            productId: it.id, sku: it.sku, name: it.name,
+            type: type==="cancel" ? "取消退回" : "退貨退回", change: it.qty,
+            note: (type==="cancel"?"取消":"退貨") + "訂單 " + no,
+            operator: "—"
+          });
+        });
+        if (restoreLogs.length) sharedAddLog(restoreLogs);
+      }
+    }
     setOrders(function(prev){
       return prev.map(function(o){
         if (o.no !== no) return o;
@@ -6317,24 +6349,11 @@ function POSSystem() {
         var key = "orders-"+d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
         loadOne(key, tryMerge);
       }
-      // 相容舊版 orders key
+      // 相容舊版 orders key：只清除，不推送（避免舊資料覆蓋 Firebase 新訂單）
       var oldOrders = localStorage.getItem("chocoolee-orders");
       if (oldOrders) {
-        try {
-          var old = JSON.parse(oldOrders);
-          if (Array.isArray(old) && old.length > 0) {
-            var byMonth = {};
-            old.forEach(function(o){
-              var key2 = getOrderKey(o.date);
-              if (!byMonth[key2]) byMonth[key2] = [];
-              byMonth[key2].push(o);
-            });
-            Object.keys(byMonth).forEach(function(key2){
-              saveData(key2, byMonth[key2]);
-            });
-            localStorage.removeItem("chocoolee-orders");
-          }
-        } catch(e) {}
+        // 直接移除舊 key，不做任何推送（新訂單以各月份 key 為準）
+        localStorage.removeItem("chocoolee-orders");
       }
     })();
     loadOne("stocks",     setSharedStocks);
@@ -6750,6 +6769,34 @@ function POSSystem() {
       updatedAt: new Date().toISOString()
     };
     saveOrders(function(prev){ return [newOrder].concat(prev); });
+
+    // 扣庫存：依購物車每項商品數量扣除（業外收入類不扣）
+    saveStocks(function(prev){
+      var next = Object.assign({}, prev);
+      cart.forEach(function(it){
+        if (it.main === "業外收入") return; // 業外收入不計庫存
+        var cur = next[it.id] !== undefined ? next[it.id] : 0;
+        next[it.id] = cur - it.qty;
+      });
+      return next;
+    });
+    // 記錄庫存異動
+    if (sharedAddLog) {
+      var saleLogs = [];
+      cart.forEach(function(it){
+        if (it.main === "業外收入") return;
+        saleLogs.push({
+          id: Date.now() + Math.random(),
+          date: dateStr, time: timeStr,
+          productId: it.id, sku: it.sku, name: it.name,
+          type: "銷售", change: -it.qty,
+          note: "訂單 " + orderNo,
+          operator: currentStaff ? currentStaff.name : "—"
+        });
+      });
+      if (saleLogs.length) sharedAddLog(saleLogs);
+    }
+
     // Update member: add points, update lastVisit, update spent
     if (foundMember) {
       var earnedPts = calcPoints(total);
@@ -7662,7 +7709,7 @@ function POSSystem() {
         {activeTab !== "pos" && (
           <div style={{flex:1,overflow:"hidden",padding:"16px 20px",display:"flex",flexDirection:"column"}}>
             {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={sharedStockLog} sharedAddLog={sharedAddLog}/>}
-            {activeTab==="orders"    && <OrdersDrawer orders={orders} setOrders={saveOrders}/>}
+            {activeTab==="orders"    && <OrdersDrawer orders={orders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedAddLog={sharedAddLog}/>}
             {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers}/>}
             {activeTab==="purchase"  && <PurchasePanel purchases={purchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
             {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={orders}/>}
