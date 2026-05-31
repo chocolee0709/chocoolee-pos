@@ -1854,6 +1854,7 @@ function CatalogPanel(props) {
               {isManager && <th style={{padding:"7px 8px 7px 0",borderBottom:"2px solid #d8d4cc",textAlign:"right",color:"#3d9e32"}}>毛利</th>}
               {isManager && <th style={{padding:"7px 8px 7px 0",borderBottom:"2px solid #d8d4cc",textAlign:"right",color:"#3d9e32"}}>毛利率</th>}
               <th style={{padding:"7px 8px 7px 0",borderBottom:"2px solid #d8d4cc",textAlign:"center"}}>庫存量</th>
+              {isManager && <th style={{padding:"7px 4px",borderBottom:"2px solid #d8d4cc",textAlign:"center",fontSize:11,color:"#d0552f"}}>刪除</th>}
               <th style={{padding:"7px 0",borderBottom:"2px solid #d8d4cc"}}></th>
             </tr>
           </thead>
@@ -1913,6 +1914,15 @@ function CatalogPanel(props) {
                       調整
                     </button>
                   </td>
+                  {isManager && (
+                    <td style={{padding:"7px 4px",textAlign:"center",borderBottom:"1px solid #f0ede8"}}>
+                      <button onClick={function(){ openEdit(p); setShowDeleteConfirm(true); }}
+                        title="刪除商品"
+                        style={{background:"none",border:"1px solid #f0c0b0",borderRadius:5,padding:"3px 8px",color:"#d0552f",fontSize:12,cursor:"pointer"}}>
+                        🗑
+                      </button>
+                    </td>
+                  )}
                   <td style={{padding:"7px 4px",textAlign:"center",borderBottom:"1px solid #f0ede8"}}>
                     <span style={{fontSize:10,color:"#c8c4bc",fontFamily:"monospace"}}>{p.barcode}</span>
                   </td>
@@ -1929,6 +1939,7 @@ function CatalogPanel(props) {
                 {isManager && <td style={{padding:"8px 8px",textAlign:"right",fontSize:12,fontWeight:800,color:"#b8910a"}}>${kpiRetail.toLocaleString()}</td>}
                 {isManager && <td></td>}
                 <td style={{padding:"8px",textAlign:"center",fontSize:12,fontWeight:800,color:"#2a2520"}}>{kpiStock.toLocaleString()} 件</td>
+                {isManager && <td></td>}
                 <td></td>
               </tr>
             </tfoot>
