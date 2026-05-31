@@ -177,9 +177,8 @@
 
                 // 【下載專用】fetchAllFromFirebase 只下載，絕不上傳
                 // 上傳只發生在使用者按儲存/送出/刪除時（saveData）
-                // __lastUpdate_xxx 的鍵：直接覆蓋本機
+                // 略過殘留的 __lastUpdate_xxx 舊鍵（已棄用）
                 if (key.indexOf("__lastUpdate_") === 0) {
-                  localStorage.setItem("chocoolee-" + key, newVal);
                   return;
                 }
 
@@ -474,6 +473,86 @@
     if (sseSource) startSSE();
     fetchAllFromFirebase(null);
   });
+
+  // ── 全域按鍵音（Web Audio 即時產生，不需音檔）──
+  (function setupClickSound(){
+    var audioCtx = null;
+    function ensureCtx(){
+      if (!audioCtx) {
+        try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+        catch(e) { audioCtx = null; }
+      }
+      // iOS 需在使用者互動時 resume
+      if (audioCtx && audioCtx.state === "suspended") {
+        try { audioCtx.resume(); } catch(e) {}
+      }
+      return audioCtx;
+    }
+    function beep(){
+      var ctx = ensureCtx();
+      if (!ctx) return;
+      try {
+        var osc = ctx.createOscillator();
+        var gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = 880; // 清脆高音「嗶」
+        gain.gain.value = 0.0001;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        var t = ctx.currentTime;
+        // 快速起音 + 快速衰減（短促清脆）
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.12, t + 0.005);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+        osc.start(t);
+        osc.stop(t + 0.09);
+      } catch(e) {}
+    }
+    // 捕捉所有點擊：button、role=button、label、可點的 div
+    document.addEventListener("click", function(e){
+      var el = e.target;
+      // 往上找最近的可點擊元素
+      var depth = 0;
+      while (el && depth < 5) {
+        var tag = (el.tagName || "").toLowerCase();
+        if (tag === "button" || tag === "label" ||
+            (el.getAttribute && el.getAttribute("role") === "button") ||
+            (el.style && el.style.cursor === "pointer")) {
+          beep();
+          return;
+        }
+        el = el.parentElement;
+        depth++;
+      }
+    }, true);
+
+    // 結帳完成音效（收銀機開錢箱「叮鈴」聲）
+    window.playCheckoutSound = function(){
+      var ctx = ensureCtx();
+      if (!ctx) return;
+      try {
+        // 兩段式：先「叮」再「鈴」，模擬收銀機開箱
+        function tone(freq, startT, dur, vol){
+          var osc = ctx.createOscillator();
+          var gain = ctx.createGain();
+          osc.type = "triangle";
+          osc.frequency.value = freq;
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          var t = ctx.currentTime + startT;
+          gain.gain.setValueAtTime(0.0001, t);
+          gain.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+          osc.start(t);
+          osc.stop(t + dur + 0.02);
+        }
+        // 經典收銀機「叮—鈴」雙音
+        tone(1318, 0,    0.12, 0.18); // E6 叮
+        tone(1760, 0.08, 0.35, 0.20); // A6 鈴（拖長）
+        tone(1318, 0.10, 0.30, 0.12); // 疊一層共鳴
+      } catch(e) {}
+    };
+  })();
 
   // ── 本機推送到 Firebase（先推再拉）──
   window.syncLocalToFirebase = function(callback) {
@@ -5964,14 +6043,6 @@ function isProductDeleted(product, deletedMap) {
 
 function saveData(key, value) {
   try {
-    // 統一的時間戳記：每次儲存記錄時間，合併時用這個判斷新舊
-    // 寫入 __lastUpdate_KEY 到 localStorage 和 Firebase
-    var saveTime = new Date().toISOString();
-    try { localStorage.setItem("chocoolee-__lastUpdate_" + key, saveTime); } catch(e) {}
-    if (window.pushToFirebase) {
-      try { window.pushToFirebase("__lastUpdate_" + key, saveTime); } catch(e) {}
-    }
-
     var serialized = typeof value === "string" ? value : JSON.stringify(value);
 
     if (key === "products") {
@@ -6737,6 +6808,7 @@ function POSSystem() {
     // 教育訓練模式：模擬結帳，不記錄真實資料
     if (trainingMode) {
       setOrderPlaced(true);
+      if (window.playCheckoutSound) { try { window.playCheckoutSound(); } catch(e) {} }
       setTimeout(function(){
         nextOrder();
       }, 2200);
@@ -6818,6 +6890,8 @@ function POSSystem() {
       });
     }
     setOrderPlaced(true);
+    // 播放收銀機開錢箱音效
+    if (window.playCheckoutSound) { try { window.playCheckoutSound(); } catch(e) {} }
     // orderPlaced 狀態保留，讓使用者可以列印收據，按「下一筆」才清空
   }
 
