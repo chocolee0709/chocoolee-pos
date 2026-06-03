@@ -858,8 +858,8 @@ function PrintModal(props) {
       rows.push([
         p.name,
         p.sku,
-        "NT$ "+p.price.toLocaleString(),
-        p.barcode,
+        "NT$" + p.price,           // 不用 toLocaleString，避免千分位逗號破壞 CSV 欄位
+        "\t" + (p.barcode || ""),   // 條碼前加 Tab，強制當文字（避免前導零消失/科學記號）
         n
       ]);
     });
@@ -1117,13 +1117,15 @@ function CatalogPanel(props) {
     var now = new Date();
     var dateStr = now.toISOString().slice(0,10);
     var timeStr = now.toTimeString().slice(0,5);
+    // 「直接設為」模式用「盤點調整」當原因（除非使用者另選原因）；增減模式用所選原因
+    var logReason = adjustMode === "set" ? "盤點調整" : reason;
     setStocks(function(s){ var n=Object.assign({},s); n[adjustId]=after; return n; });
     if (prod) {
       addLog([{
         id: Date.now(), date: dateStr, time: timeStr,
         productId: prod.id, sku: prod.sku, name: prod.name,
         main: prod.main, sub: prod.sub,
-        reason: reason, change: after - before, before: before, after: after,
+        reason: logReason, change: after - before, before: before, after: after,
         operator: currentStaff ? currentStaff.name : "—"
       }]);
     }
@@ -2259,6 +2261,24 @@ function LedgerContent(props) {
   var totalIn  = logs.filter(function(l){return l.change>0;}).reduce(function(s,l){return s+l.change;},0);
   var totalOut = logs.filter(function(l){return l.change<0;}).reduce(function(s,l){return s+l.change;},0);
 
+  // 判斷是否為銷售類記錄
+  function isSaleLog(l){ return l.reason && l.reason.indexOf("銷售")===0; }
+  // 銷售總數量（負數，取絕對值）
+  var totalSold = logs.filter(isSaleLog).reduce(function(s,l){return s+Math.abs(l.change);},0);
+
+  // 品項銷售彙總（依貨號，只算銷售類）
+  var salesByProduct = {};
+  logs.forEach(function(l){
+    if (!isSaleLog(l)) return;
+    var k = l.sku || l.name;
+    if (!salesByProduct[k]) salesByProduct[k] = {sku:l.sku, name:l.name, qty:0};
+    salesByProduct[k].qty += Math.abs(l.change);
+  });
+  var salesList = Object.keys(salesByProduct).map(function(k){ return salesByProduct[k]; })
+    .sort(function(a,b){ return b.qty - a.qty; });
+
+  var sps = useState(false); var showSalesSummary = sps[0], setShowSalesSummary = sps[1];
+
   function exportExcel() {
     var wb = XLSX.utils.book_new();
     var rows = [["日期","時間","貨號","商品名稱","分類","原因","操作人員","異動前","異動量","結餘"]];
@@ -2278,6 +2298,11 @@ function LedgerContent(props) {
         <span style={{fontSize:12,color:"#9a968e"}}>共 <b style={{color:"#2a2520"}}>{logs.length}</b> 筆</span>
         <span style={{fontSize:12,color:"#3d9e32",fontWeight:700}}>入庫 +{totalIn} 件</span>
         <span style={{fontSize:12,color:"#d0552f",fontWeight:700}}>出庫 {totalOut} 件</span>
+        <span style={{fontSize:12,color:"#c06a1a",fontWeight:700}}>銷售 {totalSold} 件</span>
+        <button onClick={function(){setShowSalesSummary(function(v){return !v;});}}
+          style={{background:showSalesSummary?"#c06a1a":"none",border:"1px solid #c06a1a",borderRadius:6,padding:"4px 10px",color:showSalesSummary?"#fff":"#c06a1a",fontSize:11,cursor:"pointer",fontWeight:600}}>
+          {showSalesSummary?"看明細":"品項銷售統計"}
+        </button>
         <div style={{marginLeft:"auto"}}>
           <button onClick={exportExcel}
             style={{background:"#1a7a3a",border:"none",borderRadius:7,padding:"6px 14px",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>
@@ -2287,6 +2312,30 @@ function LedgerContent(props) {
       </div>
       {/* 表格 — 獨立捲動 */}
       <div style={{overflowY:"auto",overflowX:"auto",flexShrink:1,flexGrow:1}}>
+        {showSalesSummary ? (
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:400}}>
+            <thead>
+              <tr style={{background:"#fff0e0",position:"sticky",top:0,zIndex:1}}>
+                <th style={{padding:"8px 10px",textAlign:"left",borderBottom:"2px solid #f0d8c0",fontSize:11,color:"#c06a1a",fontWeight:700}}>貨號</th>
+                <th style={{padding:"8px 10px",textAlign:"left",borderBottom:"2px solid #f0d8c0",fontSize:11,color:"#c06a1a",fontWeight:700}}>商品名稱</th>
+                <th style={{padding:"8px 10px",textAlign:"center",borderBottom:"2px solid #f0d8c0",fontSize:11,color:"#c06a1a",fontWeight:700}}>銷售數量</th>
+              </tr>
+            </thead>
+            <tbody>
+              {salesList.length===0 ? (
+                <tr><td colSpan={3} style={{textAlign:"center",color:"#c8c4bc",padding:"30px 0"}}>此時段查無銷售記錄</td></tr>
+              ) : salesList.map(function(s,i){
+                return (
+                  <tr key={s.sku||i} style={{background:i%2===0?"#ffffff":"#fffaf5"}}>
+                    <td style={{padding:"7px 10px",fontFamily:"monospace",fontSize:11,color:"#9a968e",borderBottom:"1px solid #f5ece2"}}>{s.sku}</td>
+                    <td style={{padding:"7px 10px",color:"#2a2520",fontWeight:500,borderBottom:"1px solid #f5ece2"}}>{s.name}</td>
+                    <td style={{padding:"7px 10px",textAlign:"center",fontWeight:800,fontSize:14,color:"#c06a1a",borderBottom:"1px solid #f5ece2"}}>{s.qty}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : (
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:680}}>
           <thead>
             <tr style={{background:"#f5f4f0",position:"sticky",top:0,zIndex:1}}>
@@ -2311,8 +2360,8 @@ function LedgerContent(props) {
                   </td>
                   <td style={{padding:"7px 10px",borderBottom:"1px solid #f0ede8"}}>
                     <span style={{padding:"2px 8px",borderRadius:20,fontSize:10,fontWeight:600,
-                      background:isIn?"#e8f8e8":l.change===0?"#f5f4f0":"#fdecea",
-                      color:isIn?"#2a7a2a":l.change===0?"#9a968e":"#c0302a",whiteSpace:"nowrap"}}>
+                      background:isSaleLog(l)?"#fff0e0":isIn?"#e8f8e8":l.change===0?"#f5f4f0":"#fdecea",
+                      color:isSaleLog(l)?"#c06a1a":isIn?"#2a7a2a":l.change===0?"#9a968e":"#c0302a",whiteSpace:"nowrap"}}>
                       {l.reason||"—"}
                     </span>
                   </td>
@@ -2328,6 +2377,7 @@ function LedgerContent(props) {
             })}
           </tbody>
         </table>
+        )}
       </div>
     </div>
   );
@@ -2397,6 +2447,7 @@ function OrdersDrawer(props) {
   var orders = props.orders;
   var setOrders = props.setOrders;
   var setSharedStocks = props.setSharedStocks;
+  var stocks = props.sharedStocks || {};
   var sharedAddLog = props.sharedAddLog;
   var today = new Date().toISOString().slice(0,10);
 
@@ -2422,18 +2473,21 @@ function OrdersDrawer(props) {
         });
         return next;
       });
-      // 記錄退回 log
+      // 記錄退回 log（用 reason 欄位，跟其他異動統一）
       if (sharedAddLog) {
         var nowT = new Date();
         var restoreLogs = [];
+        var curStocks = stocks || {};
         theOrder.cartSnapshot.forEach(function(it){
           if (it.main === "業外收入") return;
+          var cur = curStocks[it.id] !== undefined ? curStocks[it.id] : 0;
           restoreLogs.push({
             id: Date.now() + Math.random(),
             date: nowT.toISOString().slice(0,10), time: nowT.toTimeString().slice(0,5),
             productId: it.id, sku: it.sku, name: it.name,
-            type: type==="cancel" ? "取消退回" : "退貨退回", change: it.qty,
-            note: (type==="cancel"?"取消":"退貨") + "訂單 " + no,
+            main: it.main, sub: it.sub,
+            reason: (type==="cancel"?"取消退回":"退貨退回") + "（訂單 " + no + "）",
+            change: it.qty, before: cur, after: cur + it.qty,
             operator: "—"
           });
         });
@@ -6978,31 +7032,29 @@ function POSSystem() {
     saveOrders(function(prev){ return [newOrder].concat(prev); });
 
     // 扣庫存：依購物車每項商品數量扣除（業外收入類不扣）
+    var saleLogs = [];
     saveStocks(function(prev){
       var next = Object.assign({}, prev);
       cart.forEach(function(it){
         if (it.main === "業外收入") return; // 業外收入不計庫存
         var cur = next[it.id] !== undefined ? next[it.id] : 0;
-        next[it.id] = cur - it.qty;
-      });
-      return next;
-    });
-    // 記錄庫存異動
-    if (sharedAddLog) {
-      var saleLogs = [];
-      cart.forEach(function(it){
-        if (it.main === "業外收入") return;
+        var after = cur - it.qty;
+        next[it.id] = after;
+        // 同時記錄異動 log（用 reason 欄位，跟其他異動統一格式）
         saleLogs.push({
           id: Date.now() + Math.random(),
           date: dateStr, time: timeStr,
           productId: it.id, sku: it.sku, name: it.name,
-          type: "銷售", change: -it.qty,
-          note: "訂單 " + orderNo,
+          main: it.main, sub: it.sub,
+          reason: "銷售（訂單 " + orderNo + "）",
+          change: -it.qty, before: cur, after: after,
           operator: currentStaff ? currentStaff.name : "—"
         });
       });
-      if (saleLogs.length) sharedAddLog(saleLogs);
-    }
+      return next;
+    });
+    // 寫入庫存異動明細
+    if (sharedAddLog && saleLogs.length) sharedAddLog(saleLogs);
 
     // Update member: add points, update lastVisit, update spent
     if (foundMember) {
@@ -7918,7 +7970,7 @@ function POSSystem() {
         {activeTab !== "pos" && (
           <div style={{flex:1,overflow:"hidden",padding:"16px 20px",display:"flex",flexDirection:"column"}}>
             {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={sharedStockLog} sharedAddLog={sharedAddLog}/>}
-            {activeTab==="orders"    && <OrdersDrawer orders={orders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedAddLog={sharedAddLog}/>}
+            {activeTab==="orders"    && <OrdersDrawer orders={orders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedStocks={sharedStocks} sharedAddLog={sharedAddLog}/>}
             {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers}/>}
             {activeTab==="purchase"  && <PurchasePanel purchases={purchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
             {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={orders}/>}
@@ -8107,6 +8159,7 @@ function POSSystem() {
 
 
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(POSSystem));
-  </script>
+  
+</script>
 </body>
 </html>
