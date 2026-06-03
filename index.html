@@ -377,6 +377,64 @@
     }, delay);
   };
 
+  // 訂單專用：先讀 Firebase 該月份既有訂單，合併本機後再推（避免兩台互相覆蓋）
+  window.pushOrdersMerged = function(key, localArr) {
+    function doMergePush(retry) {
+      getToken(function(token){
+        if (!token) {
+          if (retry > 0) setTimeout(function(){ doMergePush(retry-1); }, 3000);
+          else showToast("⚠️ 訂單推送失敗（無 token）", true);
+          return;
+        }
+        // 1. 先 GET Firebase 現有
+        fetch(FB + "/chocoolee/" + key + ".json?auth=" + token)
+          .then(function(r){ return r.json(); })
+          .then(function(fbData){
+            var fbArr = [];
+            try {
+              var parsed = typeof fbData === "string" ? JSON.parse(fbData) : fbData;
+              if (Array.isArray(parsed)) fbArr = parsed;
+            } catch(e) {}
+            // 2. 合併：以 no 為 key，updatedAt/date 較新者優先
+            var map = {};
+            fbArr.forEach(function(o){ if(o && o.no) map[o.no] = o; });
+            (localArr || []).forEach(function(o){
+              if (!o || !o.no) return;
+              var ex = map[o.no];
+              if (!ex) { map[o.no] = o; return; }
+              var exT = ex.updatedAt || ex.date || "";
+              var newT = o.updatedAt || o.date || "";
+              if (newT >= exT) map[o.no] = o;
+            });
+            var merged = Object.keys(map).map(function(k){ return map[k]; });
+            merged.sort(function(a,b){ return (b.date+(b.time||"")).localeCompare(a.date+(a.time||"")); });
+            // 同步更新本機（讓本機也有完整合併結果）
+            try { localStorage.setItem("chocoolee-" + key, JSON.stringify(merged)); } catch(e) {}
+            // 3. PUT 合併後的完整結果
+            return fetch(FB + "/chocoolee/" + key + ".json?auth=" + token, {
+              method:"PUT",
+              headers:{"Content-Type":"application/json"},
+              body: JSON.stringify(merged)
+            });
+          })
+          .then(function(r){
+            if (r && r.ok) { showToast("☁️ 訂單已同步"); }
+            else if (r && r.status === 401) {
+              fbToken = null;
+              if (retry > 0) setTimeout(function(){ doMergePush(retry-1); }, 1000);
+            } else if (r) {
+              showToast("⚠️ 訂單同步失敗 ("+r.status+")", true);
+            }
+          })
+          .catch(function(){
+            if (retry > 0) setTimeout(function(){ doMergePush(retry-1); }, 3000);
+            else showToast("⚠️ 訂單推送失敗", true);
+          });
+      });
+    }
+    doMergePush(3);
+  };
+
   function startSSE() {
     if (sseSource) { sseSource.close(); sseSource = null; }
     clearTimeout(sseReconnectTimer);
@@ -6585,34 +6643,25 @@ function POSSystem() {
     });
     loadOne("members",    setMembers);
     loadOne("purchases",  setPurchases);
-    // 載入訂單：最近 6 個月
+    // 載入訂單：最近 6 個月（直接讀 localStorage，避免 loadOne 的雙重 parse 與計數問題）
     (function(){
       var now = new Date();
       var combined = [];
-      var loaded = 0;
-      var total = 6;
-      function tryMerge(v) {
-        if (v) {
+      for (var mi = 0; mi < 6; mi++) {
+        var d = new Date(now.getFullYear(), now.getMonth()-mi, 1);
+        var key = "orders-"+d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
+        var raw = localStorage.getItem("chocoolee-"+key);
+        if (raw) {
           try {
-            var arr = JSON.parse(v);
+            var arr = JSON.parse(raw);
             if (Array.isArray(arr)) combined = combined.concat(arr);
           } catch(e) {}
         }
-        loaded++;
-        if (loaded === total) {
-          combined.sort(function(a,b){ return (b.date+b.time).localeCompare(a.date+a.time); });
-          setOrders(combined);
-        }
       }
-      for (var mi = 0; mi < total; mi++) {
-        var d = new Date(now.getFullYear(), now.getMonth()-mi, 1);
-        var key = "orders-"+d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
-        loadOne(key, tryMerge);
-      }
-      // 相容舊版 orders key：只清除，不推送（避免舊資料覆蓋 Firebase 新訂單）
-      var oldOrders = localStorage.getItem("chocoolee-orders");
-      if (oldOrders) {
-        // 直接移除舊 key，不做任何推送（新訂單以各月份 key 為準）
+      combined.sort(function(a,b){ return (b.date+(b.time||"")).localeCompare(a.date+(a.time||"")); });
+      setOrders(combined);
+      // 相容舊版 orders key：只清除，不推送
+      if (localStorage.getItem("chocoolee-orders")) {
         localStorage.removeItem("chocoolee-orders");
       }
     })();
@@ -6754,7 +6803,14 @@ function POSSystem() {
       }
       Object.keys(changedMonths).forEach(function(key){
         var monthOrders = next.filter(function(o){ return getOrderKey(o.date) === key; });
-        saveData(key, monthOrders);
+        // 先存本機
+        try { localStorage.setItem("chocoolee-" + key, JSON.stringify(monthOrders)); } catch(e) {}
+        // 用「合併推送」避免兩台裝置互相覆蓋（先讀 Firebase 既有再合併）
+        if (window.pushOrdersMerged) {
+          window.pushOrdersMerged(key, monthOrders);
+        } else {
+          saveData(key, monthOrders);
+        }
       });
       return next;
     });
