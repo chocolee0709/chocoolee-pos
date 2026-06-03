@@ -6666,23 +6666,17 @@ function POSSystem() {
                 return Object.assign({},s,{image:img});
               });
 
-            // 【下載專用】只保留剛新增（30 秒內）、Firebase 還沒有的商品在畫面上
-            // 不推回 Firebase（上傳只發生在儲存時）
+            // 【下載專用】合併本機既有商品（以 localStorage 為準），不靠脆弱的 30 秒判斷
+            // saved = Firebase 下載的；prev = 畫面現有的。兩者用 sku 合併，updatedAt 較新者優先
+            // 這樣剛新增、Firebase 還沒同步完的商品不會從畫面消失
             var savedIds = {};
             saved.forEach(function(s){ if(s && s.id) savedIds[String(s.id)] = true; });
-            var now = Date.now();
             (prev || []).forEach(function(p){
               if (!p || !p.id) return;
-              if (savedIds[String(p.id)]) return;
-              if (isProductDeleted(p, deletedMapR)) return;
-              var addedTime = 0;
-              if (p.updatedAt) {
-                try { addedTime = new Date(p.updatedAt).getTime(); } catch(e){}
-              }
-              // 只在畫面保留剛新增的（30 秒內），不推回 Firebase
-              if (addedTime && (now - addedTime < 30000)) {
-                merged.push(p);
-              }
+              if (savedIds[String(p.id)]) return;        // Firebase 已有，跳過
+              if (isProductDeleted(p, deletedMapR)) return; // 已刪除，不保留
+              // 本機有、Firebase 還沒有 → 保留在畫面（剛新增、還沒同步完的情況）
+              merged.push(p);
             });
 
             PRODUCTS.forEach(function(p){
