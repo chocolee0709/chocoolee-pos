@@ -1620,6 +1620,7 @@ function CatalogPanel(props) {
       id:Date.now(), price:Number(newForm.price)||0, cost:Number(newForm.cost)||0,
       stock:Number(newForm.stock)||0,
       barcode:newForm.barcode||String(products.length+1001).padStart(9,"0"),
+      mainEdited: true,
       updatedAt: new Date().toISOString()
     });
     // 新商品的 updatedAt 是現在時間，會自動比刪除時間新而顯示
@@ -6618,7 +6619,7 @@ function POSSystem() {
           var saved = typeof val === "string" ? JSON.parse(val) : val;
           if (!saved || saved.length === 0) return;
           var rawSkus = {};
-          PRODUCTS.forEach(function(p){ rawSkus[p.sku]=p; });
+          PRODUCTS.forEach(function(p){ rawSkus[String(p.id)]=p; });
 
           // 取得目前 React state 裡的圖片，避免被空資料覆蓋
           setSharedProducts(function(prev){
@@ -6661,7 +6662,7 @@ function POSSystem() {
                     img = prevImgMap[String(s.id)];
                   }
                 }
-                var raw = rawSkus[s.sku];
+                var raw = rawSkus[String(s.id)];
                 if (raw && !s.mainEdited) return Object.assign({},s,{main:raw.main,sub:raw.sub,image:img});
                 return Object.assign({},s,{image:img});
               });
@@ -6799,7 +6800,7 @@ function POSSystem() {
         if (!saved || saved.length === 0) return;
 
         var rawSkus = {};
-        PRODUCTS.forEach(function(p){ rawSkus[p.sku]=p; });
+        PRODUCTS.forEach(function(p){ rawSkus[String(p.id)]=p; });
 
         var merged = saved
           .filter(function(s){ return !isProductDeleted(s, deletedMap2); })
@@ -6823,7 +6824,7 @@ function POSSystem() {
             } else {
               img = s.image || "";
             }
-            var raw = rawSkus[s.sku];
+            var raw = rawSkus[String(s.id)];
             if (raw && !s.mainEdited) {
               return Object.assign({},s,{main:raw.main, sub:raw.sub, image:img});
             }
