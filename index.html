@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -489,6 +492,58 @@
     imgKeys.forEach(function(k){ localStorage.removeItem(k); });
   })();
 
+  // ── 自動偵測新版：定期比對線上 index.html 的內容，有更新就提示重新整理 ──
+  (function setupUpdateCheck(){
+    var INDEX_URL = "index.html";
+    var currentHash = null;
+    function simpleHash(str){
+      // 簡單雜湊（不用密碼學等級，只要能偵測變化）
+      var h = 0;
+      for (var i = 0; i < str.length; i++) {
+        h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+      }
+      return h;
+    }
+    function checkUpdate(){
+      // 加時間戳避免快取，抓最新的線上版本
+      fetch(INDEX_URL + "?_t=" + Date.now(), {cache:"no-store"})
+        .then(function(r){ return r.text(); })
+        .then(function(html){
+          var h = simpleHash(html);
+          if (currentHash === null) {
+            currentHash = h; // 第一次：記錄目前版本
+          } else if (h !== currentHash) {
+            // 偵測到線上版本變了 → 提示
+            showUpdateBanner();
+          }
+        })
+        .catch(function(){});
+    }
+    function showUpdateBanner(){
+      if (document.getElementById("update-banner")) return; // 已顯示過
+      var bar = document.createElement("div");
+      bar.id = "update-banner";
+      bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#b8910a;color:#fff;padding:12px 16px;display:flex;align-items:center;justify-content:center;gap:14px;font-size:14px;box-shadow:0 -2px 10px rgba(0,0,0,0.2)";
+      var msg = document.createElement("span");
+      msg.textContent = "🎉 有新版本可用";
+      var btn = document.createElement("button");
+      btn.textContent = "立即更新";
+      btn.style.cssText = "background:#fff;color:#b8910a;border:none;border-radius:8px;padding:6px 16px;font-size:13px;font-weight:700;cursor:pointer";
+      btn.onclick = function(){ location.reload(true); };
+      var later = document.createElement("button");
+      later.textContent = "稍後";
+      later.style.cssText = "background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.6);border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer";
+      later.onclick = function(){ bar.style.display = "none"; };
+      bar.appendChild(msg);
+      bar.appendChild(btn);
+      bar.appendChild(later);
+      document.body.appendChild(bar);
+    }
+    // 開頁 3 秒後記錄目前版本，之後每 5 分鐘檢查一次
+    setTimeout(checkUpdate, 3000);
+    setInterval(checkUpdate, 5 * 60 * 1000);
+  })();
+
   window.firebaseReady = false;
   loadFromFirebase(function(ok){
     window.firebaseReady = true;
@@ -615,54 +670,11 @@
   })();
 
   // ── 本機推送到 Firebase（先推再拉）──
+  // ⚠️ 已停用：整批 PUT 覆蓋是資料遺失的根源，絕對禁止。
+  // 上傳只能透過 saveData（單一 key）或 pushOrdersMerged（訂單合併），且只在使用者按儲存時。
   window.syncLocalToFirebase = function(callback) {
-    getToken(function(token){
-      if (!token) { if (callback) callback(false); return; }
-      var pushList = [];
-      // 一般資料
-      var keys = ["products","stocks","members","purchases","stocklog","addlog"];
-      keys.forEach(function(k){
-        var val = localStorage.getItem("chocoolee-" + k);
-        if (val) pushList.push({key: k, body: val});
-      });
-      // 訂單月份節點（最近 6 個月）
-      for (var i = 0; i < 6; i++) {
-        var d = new Date();
-        d.setMonth(d.getMonth() - i);
-        var mk = "orders-" + d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
-        var mv = localStorage.getItem("chocoolee-" + mk);
-        if (mv) pushList.push({key: mk, body: mv});
-      }
-      // 圖片（逐一推送）
-      var imgPushList = [];
-      for (var si = 0; si < localStorage.length; si++) {
-        var sk = localStorage.key(si);
-        if (sk && sk.indexOf("chocoolee-product-images/") === 0) {
-          var imgId = sk.replace("chocoolee-product-images/","");
-          var imgVal = localStorage.getItem(sk);
-          if (imgVal && imgVal.startsWith("data:")) imgPushList.push({id: imgId, data: imgVal});
-        }
-      }
-
-      var total = pushList.length + imgPushList.length;
-      if (total === 0) { if (callback) callback(true); return; }
-      var done = 0;
-      function onDone() { done++; if (done >= total && callback) callback(true); }
-
-      // 推送一般資料
-      pushList.forEach(function(item){
-        fetch(FB + "/chocoolee/" + item.key + ".json?auth=" + token, {
-          method: "PUT", headers: {"Content-Type":"application/json"}, body: item.body
-        }).then(onDone).catch(onDone);
-      });
-
-      // 推送圖片（只推 pendingImages 或比 Firebase 新的）
-      imgPushList.forEach(function(item){
-        fetch(FB + "/chocoolee/product-images/" + item.id + ".json?auth=" + token, {
-          method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(item.data)
-        }).then(onDone).catch(onDone);
-      });
-    });
+    console.warn("syncLocalToFirebase 已停用：禁止整批覆蓋 Firebase。上傳請走 saveData / pushOrdersMerged。");
+    if (callback) callback(false);
   };
 
   // iPad 螢幕喚醒或切回頁面時：只拉取最新資料（不主動推送）
@@ -4743,20 +4755,60 @@ function AnalyticsDrawer(props) {
 
   var orders = props.orders;
 
+  // 模式：period(快速期間) / month(指定月份) / year(年度總覽)
+  var ms = useState("month"); var viewMode = ms[0], setViewMode = ms[1];
   var ps = useState("30"); var period = ps[0], setPeriod = ps[1];
-
-
-  // Period selector
+  var now0 = new Date();
+  var sm = useState(now0.getFullYear()+"-"+String(now0.getMonth()+1).padStart(2,"0"));
+  var selMonth = sm[0], setSelMonth = sm[1]; // "2026-06"
+  var sy = useState(String(now0.getFullYear()));
+  var selYear = sy[0], setSelYear = sy[1];
 
   var today = new Date();
-  var cutoff = new Date(today);
-  if (period === "7")  cutoff.setDate(today.getDate()-7);
-  else if (period === "30") cutoff.setDate(today.getDate()-30);
-  else if (period === "90") cutoff.setDate(today.getDate()-90);
-  else cutoff = new Date("2000-01-01"); // all
 
-  var cutoffStr = cutoff.toISOString().slice(0,10);
-  var paid = orders.filter(function(o){ return o.status==="paid" && o.date >= cutoffStr; });
+  // 依模式決定要分析的訂單
+  var paid;
+  if (viewMode === "month") {
+    paid = orders.filter(function(o){ return o.status==="paid" && o.date && o.date.slice(0,7)===selMonth; });
+  } else if (viewMode === "year") {
+    paid = orders.filter(function(o){ return o.status==="paid" && o.date && o.date.slice(0,4)===selYear; });
+  } else {
+    var cutoff = new Date(today);
+    if (period === "7")  cutoff.setDate(today.getDate()-7);
+    else if (period === "30") cutoff.setDate(today.getDate()-30);
+    else if (period === "90") cutoff.setDate(today.getDate()-90);
+    else cutoff = new Date("2000-01-01");
+    var cutoffStr = cutoff.toISOString().slice(0,10);
+    paid = orders.filter(function(o){ return o.status==="paid" && o.date >= cutoffStr; });
+  }
+
+  // ── 年度每月營業額（給年度總覽用）──
+  var yearMonths = [];
+  (function(){
+    for (var mth=1; mth<=12; mth++) {
+      var mk = selYear + "-" + String(mth).padStart(2,"0");
+      var monthOrders = orders.filter(function(o){ return o.status==="paid" && o.date && o.date.slice(0,7)===mk; });
+      var rev = monthOrders.reduce(function(s,o){return s+o.total;},0);
+      var cnt = monthOrders.length;
+      var qty = monthOrders.reduce(function(s,o){return s+(o.qty||0);},0);
+      yearMonths.push({month:mth, mk:mk, rev:rev, cnt:cnt, qty:qty});
+    }
+  })();
+  var yearTotal = yearMonths.reduce(function(s,m){return s+m.rev;},0);
+  var yearMaxRev = yearMonths.reduce(function(s,m){return Math.max(s,m.rev);},1);
+  // 可選的年份清單（從訂單推算）
+  var availYears = {};
+  orders.forEach(function(o){ if(o.date) availYears[o.date.slice(0,4)]=true; });
+  var yearList = Object.keys(availYears).sort().reverse();
+  if (yearList.indexOf(String(now0.getFullYear()))<0) yearList.unshift(String(now0.getFullYear()));
+  // 可選的月份清單（近 12 個月）
+  var monthList = [];
+  (function(){
+    for (var i=0;i<12;i++){
+      var d = new Date(now0.getFullYear(), now0.getMonth()-i, 1);
+      monthList.push(d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"));
+    }
+  })();
 
   // ── 整體指標 ──
   var totalRev   = paid.reduce(function(s,o){return s+o.total;},0);
@@ -4843,28 +4895,84 @@ function AnalyticsDrawer(props) {
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
 
-      {/* 期間選擇 */}
-      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexShrink:0}}>
-        <span style={{fontSize:12,color:"#7a7068",fontWeight:600}}>分析期間</span>
-        {[["7","近 7 天"],["30","近 30 天"],["90","近 90 天"],["all","全部"]].map(function(x){
+      {/* 模式切換 + 月份/年份選擇 */}
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexShrink:0,flexWrap:"wrap"}}>
+        {[["month","指定月份"],["year","年度總覽"],["period","快速期間"]].map(function(x){
+          var isA = viewMode===x[0];
+          return (
+            <button key={x[0]} onClick={function(){setViewMode(x[0]);}}
+              style={{padding:"5px 14px",borderRadius:20,border:isA?"none":"1px solid #d8d4cc",
+                background:isA?"#b8910a":"transparent",color:isA?"#ffffff":"#7a7068",
+                fontSize:12,fontWeight:isA?700:500,cursor:"pointer"}}>
+              {x[1]}
+            </button>
+          );
+        })}
+
+        {viewMode==="month" && (
+          <select value={selMonth} onChange={function(e){setSelMonth(e.target.value);}}
+            style={{padding:"5px 10px",borderRadius:8,border:"1px solid #d8d4cc",fontSize:12,color:"#2a2520",background:"#fff"}}>
+            {monthList.map(function(mk){
+              var parts = mk.split("-");
+              return <option key={mk} value={mk}>{parts[0]} 年 {parseInt(parts[1])} 月</option>;
+            })}
+          </select>
+        )}
+
+        {viewMode==="year" && (
+          <select value={selYear} onChange={function(e){setSelYear(e.target.value);}}
+            style={{padding:"5px 10px",borderRadius:8,border:"1px solid #d8d4cc",fontSize:12,color:"#2a2520",background:"#fff"}}>
+            {yearList.map(function(y){ return <option key={y} value={y}>{y} 年</option>; })}
+          </select>
+        )}
+
+        {viewMode==="period" && [["7","近 7 天"],["30","近 30 天"],["90","近 90 天"],["all","全部"]].map(function(x){
           var isA = period===x[0];
           return (
             <button key={x[0]} onClick={function(){setPeriod(x[0]);}}
               style={{padding:"4px 12px",borderRadius:20,border:isA?"none":"1px solid #d8d4cc",
-                background:isA?"#b8910a":"transparent",color:isA?"#ffffff":"#7a7068",
+                background:isA?"#8a6d08":"transparent",color:isA?"#ffffff":"#7a7068",
                 fontSize:11,fontWeight:isA?700:500,cursor:"pointer"}}>
               {x[1]}
             </button>
           );
         })}
+
         <span style={{marginLeft:"auto",fontSize:10,color:"#aaA69e"}}>{totalOrders} 筆訂單</span>
       </div>
 
       <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:0}}>
 
+        {/* ── 年度總覽：每月營業額列表 ── */}
+        {viewMode==="year" && (
+          <div style={Object.assign({},section)}>
+            <div style={sTitle}>▲ {selYear} 年度業績總覽　<span style={{color:"#b8910a"}}>全年 ${yearTotal.toLocaleString()}</span></div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {yearMonths.map(function(m){
+                var pct = Math.round(m.rev/yearMaxRev*100);
+                return (
+                  <div key={m.mk} style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}
+                    onClick={function(){ setSelMonth(m.mk); setViewMode("month"); }}
+                    title="點擊查看當月詳細">
+                    <span style={{width:42,fontSize:12,color:"#7a7068",fontWeight:600,flexShrink:0}}>{m.month} 月</span>
+                    <div style={{flex:1,background:"#f0ede8",borderRadius:6,height:24,position:"relative",overflow:"hidden"}}>
+                      <div style={{position:"absolute",left:0,top:0,bottom:0,width:pct+"%",background:m.rev>0?"linear-gradient(90deg,#d9b84a,#b8910a)":"transparent",borderRadius:6,transition:"width 0.3s"}}></div>
+                      <span style={{position:"absolute",left:8,top:0,bottom:0,display:"flex",alignItems:"center",fontSize:11,fontWeight:700,color:m.rev>0?"#5a4a08":"#c8c4bc"}}>
+                        ${m.rev.toLocaleString()}
+                      </span>
+                    </div>
+                    <span style={{width:60,fontSize:10,color:"#aaa69e",textAlign:"right",flexShrink:0}}>{m.cnt} 筆 / {m.qty} 件</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{marginTop:10,fontSize:10,color:"#aaa69e",textAlign:"center"}}>點任一月份可查看當月詳細分析</div>
+          </div>
+        )}
+
         {/* ── 整體 KPI 卡片 ── */}
         <div style={Object.assign({},section)}>
-          <div style={sTitle}>▲ 整體業績</div>
+          <div style={sTitle}>▲ {viewMode==="month" ? (selMonth.split("-")[0]+" 年 "+parseInt(selMonth.split("-")[1])+" 月業績") : viewMode==="year" ? (selYear+" 年度業績") : "整體業績"}</div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
             {[
               {label:"總營業額",value:"$"+totalRev.toLocaleString(),color:"#b8910a"},
@@ -4887,7 +4995,8 @@ function AnalyticsDrawer(props) {
           )}
         </div>
 
-        {/* ── 每日銷售趨勢 ── */}
+        {/* ── 每日銷售趨勢（年度模式不顯示，改用上方每月列表）── */}
+        {viewMode!=="year" && (
         <div style={Object.assign({},section)}>
           <div style={sTitle}>▲ 每日銷售趨勢</div>
           {dailyData.length === 0 ? (
@@ -4914,6 +5023,7 @@ function AnalyticsDrawer(props) {
             </div>
           )}
         </div>
+        )}
 
         {/* ── 大分類銷售佔比 ── */}
         <div style={Object.assign({},section)}>
@@ -6660,10 +6770,24 @@ function POSSystem() {
       }
       combined.sort(function(a,b){ return (b.date+(b.time||"")).localeCompare(a.date+(a.time||"")); });
       setOrders(combined);
-      // 相容舊版 orders key：只清除，不推送
-      if (localStorage.getItem("chocoolee-orders")) {
-        localStorage.removeItem("chocoolee-orders");
-      }
+      // 徹底根除舊版無月份 orders key（資料遺失元兇）：本機刪除 + Firebase 節點刪除
+      try { localStorage.removeItem("chocoolee-orders"); } catch(e) {}
+      try { if (window.storage) window.storage.delete("chocoolee-orders").catch(function(){}); } catch(e) {}
+      // 啟動時把 Firebase 殘留的舊 orders 節點刪掉（只刪這個已棄用節點，不碰月份節點）
+      try {
+        if (window.getFirebaseToken) {
+          window.getFirebaseToken(function(token){
+            if (!token) return;
+            fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/orders.json?auth="+token)
+              .then(function(r){ return r.json(); })
+              .then(function(d){
+                if (d) { // 有殘留才刪
+                  fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/orders.json?auth="+token, {method:"DELETE"});
+                }
+              }).catch(function(){});
+          });
+        }
+      } catch(e) {}
     })();
     loadOne("stocks",     setSharedStocks);
     loadOne("stocklog",   setSharedStockLog);
