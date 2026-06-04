@@ -3597,13 +3597,17 @@ function PurchasePanel(props) {
                             <th style={{padding:"4px 6px",textAlign:"left"}}>商品</th>
                             <th style={{padding:"4px 6px",textAlign:"left",width:70}}>貨號</th>
                             <th style={{padding:"4px 6px",textAlign:"center",width:50}}>數量</th>
-                            {isManager && <th style={{padding:"4px 6px",textAlign:"right",width:65}}>單價</th>}
+                            <th style={{padding:"4px 6px",textAlign:"right",width:70,color:"#3d9e32"}}>售價</th>
+                            {isManager && <th style={{padding:"4px 6px",textAlign:"right",width:65}}>進價</th>}
                             {isManager && <th style={{padding:"4px 6px",textAlign:"right",width:75}}>小計</th>}
                           </tr>
                         </thead>
                         <tbody>
                           {(po.items||[]).map(function(item,ii){
                             var subtotal = (Number(item.qty)||0) * (Number(item.cost)||0);
+                            // 售價：優先用商品清單最新售價，其次採購單存的 price
+                            var prodMatch = products.find(function(pp){ return pp.sku === item.sku; });
+                            var retailPrice = prodMatch ? prodMatch.price : (item.price || 0);
                             return (
                               <tr key={ii} style={{borderBottom:"1px solid #f0ede8"}}>
                                 <td style={{padding:"4px 6px"}}>
@@ -3619,6 +3623,7 @@ function PurchasePanel(props) {
                                 </td>
                                 <td style={{padding:"4px 6px",color:"#7a7068",fontSize:10}}>{item.sku}</td>
                                 <td style={{padding:"4px 6px",textAlign:"center",color:"#2a2520",fontWeight:600}}>{item.qty}</td>
+                                <td style={{padding:"4px 6px",textAlign:"right",color:"#3d9e32",fontWeight:700}}>{retailPrice>0?"$"+retailPrice.toLocaleString():"—"}</td>
                                 {isManager && <td style={{padding:"4px 6px",textAlign:"right",color:"#7a7068"}}>${(item.cost||0).toLocaleString()}</td>}
                                 {isManager && <td style={{padding:"4px 6px",textAlign:"right",color:"#b8910a",fontWeight:600}}>${subtotal.toLocaleString()}</td>}
                               </tr>
