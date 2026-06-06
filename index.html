@@ -280,9 +280,28 @@
                       if (!dt) return true;
                       var pt = 0;
                       if (p.updatedAt) { try { pt = new Date(p.updatedAt).getTime(); } catch(e){} }
-                      return pt > dt; // 商品比刪除時間新才保留
+                      return pt > dt;
                     });
-                    var filteredStr = JSON.stringify(filtered);
+                    // 同 id 比較 updatedAt：本機較新則保留本機版本（避免覆蓋剛編輯的修改）
+                    var localProds = [];
+                    try { localProds = JSON.parse(localStorage.getItem("chocoolee-products") || "[]"); } catch(e) {}
+                    var localById = {};
+                    localProds.forEach(function(p){ if(p && p.id) localById[String(p.id)] = p; });
+                    var fbIds = {};
+                    filtered.forEach(function(p){ if(p && p.id) fbIds[String(p.id)] = true; });
+                    var mergedProds = filtered.map(function(fp){
+                      if (!fp || !fp.id) return fp;
+                      var lp = localById[String(fp.id)];
+                      if (!lp) return fp;
+                      var tL = lp.updatedAt ? new Date(lp.updatedAt).getTime() : 0;
+                      var tF = fp.updatedAt ? new Date(fp.updatedAt).getTime() : 0;
+                      return tL > tF ? lp : fp; // 本機較新就用本機
+                    });
+                    // 本機獨有（Firebase 還沒有）的也保留
+                    localProds.forEach(function(lp){
+                      if (lp && lp.id && !fbIds[String(lp.id)]) mergedProds.push(lp);
+                    });
+                    var filteredStr = JSON.stringify(mergedProds);
                     localStorage.setItem("chocoolee-" + key, filteredStr);
                     changed.push(key);
                   } catch(e) {
@@ -438,48 +457,14 @@
     doMergePush(3);
   };
 
+  // ⚠️ 已停用 SSE 自動下載：資料只在「開啟/重新整理頁面」時下載，避免覆蓋使用者剛儲存的修改
   function startSSE() {
-    if (sseSource) { sseSource.close(); sseSource = null; }
-    clearTimeout(sseReconnectTimer);
-    getToken(function(token){
-      if (!token) { sseReconnectTimer = setTimeout(startSSE, 60000); return; }
-      var url = FB + "/chocoolee.json?auth=" + token + "&timeout=55s";
-      try {
-        sseSource = new EventSource(url);
-        sseSource.addEventListener("put", function(e) {
-          var now = Date.now();
-          if (now - lastLoadTime < 1500) return;
-          lastLoadTime = now;
-          try {
-            var payload = JSON.parse(e.data);
-            var path = payload.path || "";
-            // 只有圖片更新時不需要重新 fetch 全部
-            if (path.indexOf("/product-images/") === 0) return;
-          } catch(ex) {}
-          showToast("🔄 偵測到資料更新，同步中...");
-          fetchAllFromFirebase(function(ok){ if (ok) showToast("✅ 資料已同步最新"); });
-        });
-        sseSource.addEventListener("patch", function(e) {
-          var now = Date.now();
-          if (now - lastLoadTime < 1500) return;
-          lastLoadTime = now;
-          fetchAllFromFirebase(null);
-        });
-        sseSource.onerror = function() {
-          sseSource.close(); sseSource = null;
-          sseReconnectTimer = setTimeout(startSSE, 30000);
-        };
-      } catch(e) { startPolling(); }
-    });
+    // 不啟動 SSE，不自動下載資料
   }
 
   var pollingTimer = null;
   function startPolling() {
-    clearInterval(pollingTimer);
-    pollingTimer = setInterval(function(){
-      if (Date.now() - lastLoadTime < 5000) return;
-      fetchAllFromFirebase(null);
-    }, 30000);
+    // 已停用定時輪詢下載
   }
 
   // 啟動時清除 localStorage 圖片快取（圖片改為從 Firebase 即時讀取，存記憶體 __fbImages）
@@ -582,11 +567,9 @@
 
   // iPad 螢幕喚醒或切回頁面時：重新整理 token 和 SSE（實際同步由 visibilitychange 處理）
 
-  // 網路重新連線時：只重連 SSE，不主動推送（避免舊資料覆蓋）
+  // 網路重新連線時：只刷新 token，不自動下載資料（資料只在開啟/重新整理時下載）
   window.addEventListener("online", function(){
     fbToken = null;
-    if (sseSource) startSSE();
-    fetchAllFromFirebase(null);
   });
 
   // ── 全域按鍵音（Web Audio 即時產生，不需音檔）──
@@ -680,11 +663,8 @@
   // iPad 螢幕喚醒或切回頁面時：只拉取最新資料（不主動推送）
   document.addEventListener("visibilitychange", function(){
     if (document.visibilityState !== "visible") return;
+    // 只刷新 token，不自動下載資料（資料只在開啟/重新整理/下拉更新時下載）
     fbToken = null;
-    if (sseSource) startSSE();
-    setTimeout(function(){
-      fetchAllFromFirebase(null);
-    }, 500);
   });
 
   // ── 下拉更新（Pull to Refresh）──
@@ -1055,12 +1035,9 @@ function CatalogPanel(props) {
       var updated = Object.assign({},editForm,{
         price:Number(editForm.price)||0,
         cost:Number(editForm.cost)||0,
+        mainEdited: true,
         updatedAt: new Date().toISOString()
       });
-      var rawP = PRODUCTS.find(function(r){ return r.sku===editForm.sku; });
-      if (rawP && (editForm.main !== rawP.main || editForm.sub !== rawP.sub)) {
-        updated.mainEdited = true;
-      }
       return updated;
     }); });
     setEditId(null); setEditForm(null);
@@ -6672,17 +6649,32 @@ function POSSystem() {
                 return Object.assign({},s,{image:img});
               });
 
-            // 【下載專用】合併本機既有商品（以 localStorage 為準），不靠脆弱的 30 秒判斷
-            // saved = Firebase 下載的；prev = 畫面現有的。兩者用 sku 合併，updatedAt 較新者優先
-            // 這樣剛新增、Firebase 還沒同步完的商品不會從畫面消失
-            var savedIds = {};
-            saved.forEach(function(s){ if(s && s.id) savedIds[String(s.id)] = true; });
+            // 【下載專用】合併本機既有商品。同 id 商品比較 updatedAt，本機較新則保留本機
+            // （避免「剛編輯完、Firebase 推送還沒完成時，下載到舊資料覆蓋新修改」）
+            var savedMap = {};
+            saved.forEach(function(s){ if(s && s.id) savedMap[String(s.id)] = s; });
             (prev || []).forEach(function(p){
               if (!p || !p.id) return;
-              if (savedIds[String(p.id)]) return;        // Firebase 已有，跳過
               if (isProductDeleted(p, deletedMapR)) return; // 已刪除，不保留
-              // 本機有、Firebase 還沒有 → 保留在畫面（剛新增、還沒同步完的情況）
-              merged.push(p);
+              var sv = savedMap[String(p.id)];
+              if (!sv) {
+                // Firebase 沒有 → 本機獨有（剛新增、還沒同步完）→ 保留
+                merged.push(p);
+              } else {
+                // 兩邊都有同 id：比 updatedAt，本機較新就用本機覆蓋 saved 版本
+                var tLocal = p.updatedAt ? new Date(p.updatedAt).getTime() : 0;
+                var tSaved = sv.updatedAt ? new Date(sv.updatedAt).getTime() : 0;
+                if (tLocal > tSaved) {
+                  // 用本機版本取代 merged 裡的 saved 版本
+                  for (var mi=0; mi<merged.length; mi++) {
+                    if (String(merged[mi].id) === String(p.id)) {
+                      // 保留圖片處理結果，只覆蓋資料欄位
+                      merged[mi] = Object.assign({}, p, {image: merged[mi].image || p.image});
+                      break;
+                    }
+                  }
+                }
+              }
             });
 
             PRODUCTS.forEach(function(p){
