@@ -782,6 +782,7 @@ const MANAGER_TABS = [
   {key:"analytics", label:"銷售分析",icon:"▲"},
   {key:"smart",     label:"智能分析",icon:"✦"},
   {key:"consign",   label:"寄售結算",icon:"❋"},
+  {key:"attendance",label:"出勤打卡記錄",icon:"⏱"},
 ];
 const PAYMENTS = ["現金","信用卡","Line Pay","轉帳"];
 
@@ -4624,8 +4625,10 @@ function ShiftLogin(props) {
 
         {/* 標題列 */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-          <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>🔑 登入</div>
-          <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,color:"#9a968e",cursor:"pointer"}}>×</button>
+          <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>🔑 上班打卡</div>
+          {onlineStaff.length > 0 && (
+            <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,color:"#9a968e",cursor:"pointer"}}>×</button>
+          )}
         </div>
 
         {/* 隱藏打卡 tab，員工登入即可 */}
@@ -5830,6 +5833,8 @@ function AttendanceReport(props) {
   var setStaffRates = props.setStaffRates || function(){};
   var schedule = props.schedule || {};
   var setSchedule = props.setSchedule || function(){};
+  var isManager = props.isManager;
+  var viewerStaff = props.currentStaff;
 
   var today = new Date();
   var ys = useState(String(today.getFullYear()));  var selYear  = ys[0], setSelYear  = ys[1];
@@ -5889,7 +5894,9 @@ function AttendanceReport(props) {
   });
 
   var staffArr = Object.values(staffMap).filter(function(s){
-    if (selStaff!=="全部" && s.name!==selStaff) return false;
+    // 店員只看自己的出勤；店長可看全部或篩選
+    if (!isManager && viewerStaff && s.name !== viewerStaff.name) return false;
+    if (isManager && selStaff!=="全部" && s.name!==selStaff) return false;
     return s.shifts.length>0;
   });
 
@@ -5989,10 +5996,12 @@ function AttendanceReport(props) {
 
       {/* 區段切換 Tab */}
       <div style={{display:"flex",gap:4,flexShrink:0,background:"#f0ede8",borderRadius:9,padding:4}}>
-        {[
+        {(isManager ? [
           {key:"attendance",label:"⏱ 出勤與薪資結算"},
           {key:"rates",     label:"💰 時薪設定"},
-        ].map(function(t){
+        ] : [
+          {key:"attendance",label:"⏱ 出勤打卡記錄"},
+        ]).map(function(t){
           var isA = section===t.key;
           return (
             <button key={t.key} onClick={function(){setSection(t.key);}}
@@ -6011,14 +6020,16 @@ function AttendanceReport(props) {
           <div style={{background:"#ffffff",border:"1px solid #e8e4de",borderRadius:11,padding:"12px 16px",flexShrink:0}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
               <div>
-                <div style={{fontSize:14,fontWeight:700,color:"#2a2520"}}>⏱ 出勤記錄與薪資結算</div>
-                <div style={{fontSize:11,color:"#9a968e",marginTop:2}}>員工登入即視為打上班卡，下班時手動按「打下班卡」</div>
+                <div style={{fontSize:14,fontWeight:700,color:"#2a2520"}}>{isManager ? "⏱ 出勤記錄與薪資結算" : "⏱ 我的出勤打卡記錄"}</div>
+                <div style={{fontSize:11,color:"#9a968e",marginTop:2}}>選擇上班人員打卡即記錄上班時間，下班按「登出（下班）」</div>
               </div>
-              <button onClick={exportPayroll} disabled={staffArr.length===0}
-                style={{background:staffArr.length>0?"#3d9e32":"#e0dcd6",border:"none",borderRadius:7,padding:"8px 18px",
-                  color:"#ffffff",fontSize:12,fontWeight:700,cursor:staffArr.length>0?"pointer":"default"}}>
-                ↓ 匯出薪資表
-              </button>
+              {isManager && (
+                <button onClick={exportPayroll} disabled={staffArr.length===0}
+                  style={{background:staffArr.length>0?"#3d9e32":"#e0dcd6",border:"none",borderRadius:7,padding:"8px 18px",
+                    color:"#ffffff",fontSize:12,fontWeight:700,cursor:staffArr.length>0?"pointer":"default"}}>
+                  ↓ 匯出薪資表
+                </button>
+              )}
             </div>
             <div style={{display:"flex",gap:10,alignItems:"flex-end",flexWrap:"wrap"}}>
               <div>
@@ -6033,21 +6044,25 @@ function AttendanceReport(props) {
                   {[1,2,3,4,5,6,7,8,9,10,11,12].map(function(m){return <option key={m} value={m}>{m}月</option>;})}
                 </select>
               </div>
-              <div>
-                <div style={{fontSize:10,color:"#9a968e",marginBottom:3}}>員工篩選</div>
-                <select value={selStaff} onChange={function(e){setSelStaff(e.target.value);}} style={Object.assign({},inp,{width:120})}>
-                  <option value="全部">全部員工</option>
-                  {STAFF_LIST.map(function(s){return <option key={s.name} value={s.name}>{s.name}</option>;})}
-                </select>
-              </div>
+              {isManager && (
+                <div>
+                  <div style={{fontSize:10,color:"#9a968e",marginBottom:3}}>員工篩選</div>
+                  <select value={selStaff} onChange={function(e){setSelStaff(e.target.value);}} style={Object.assign({},inp,{width:120})}>
+                    <option value="全部">全部員工</option>
+                    {STAFF_LIST.map(function(s){return <option key={s.name} value={s.name}>{s.name}</option>;})}
+                  </select>
+                </div>
+              )}
               <div style={{marginLeft:"auto",textAlign:"right"}}>
                 <div style={{fontSize:10,color:"#9a968e"}}>本月總工時</div>
                 <div style={{fontSize:20,fontWeight:800,color:"#4a8ec0"}}>{grandHours.toFixed(1)} 小時</div>
               </div>
-              <div style={{textAlign:"right"}}>
-                <div style={{fontSize:10,color:"#9a968e"}}>應發薪資</div>
-                <div style={{fontSize:20,fontWeight:800,color:"#b8910a"}}>${grandPay.toLocaleString()}</div>
-              </div>
+              {isManager && (
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:10,color:"#9a968e"}}>應發薪資</div>
+                  <div style={{fontSize:20,fontWeight:800,color:"#b8910a"}}>${grandPay.toLocaleString()}</div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -6071,7 +6086,7 @@ function AttendanceReport(props) {
                     <span style={{fontSize:16}}>👤</span>
                     <div style={{flex:1}}>
                       <div style={{fontSize:13,fontWeight:700,color:"#2a2520"}}>{s.name}</div>
-                      <div style={{fontSize:10,color:"#9a968e"}}>{s.role} · 時薪 ${s.hourlyRate}</div>
+                      <div style={{fontSize:10,color:"#9a968e"}}>{s.role}{isManager ? " · 時薪 $"+s.hourlyRate : ""}</div>
                     </div>
                     <div style={{display:"flex",gap:16,alignItems:"center"}}>
                       <div style={{textAlign:"right"}}>
@@ -6082,10 +6097,12 @@ function AttendanceReport(props) {
                         <div style={{fontSize:9,color:"#9a968e"}}>總工時</div>
                         <div style={{fontSize:13,fontWeight:700,color:"#3d9e32"}}>{s.totalHours.toFixed(1)} 小時</div>
                       </div>
-                      <div style={{textAlign:"right",minWidth:75}}>
-                        <div style={{fontSize:9,color:"#9a968e"}}>應發薪資</div>
-                        <div style={{fontSize:15,fontWeight:800,color:"#b8910a"}}>${s.totalPay.toLocaleString()}</div>
-                      </div>
+                      {isManager && (
+                        <div style={{textAlign:"right",minWidth:75}}>
+                          <div style={{fontSize:9,color:"#9a968e"}}>應發薪資</div>
+                          <div style={{fontSize:15,fontWeight:800,color:"#b8910a"}}>${s.totalPay.toLocaleString()}</div>
+                        </div>
+                      )}
                       <span style={{fontSize:13,color:"#c8c4bc"}}>{isOpen?"▲":"▼"}</span>
                     </div>
                   </div>
@@ -6100,7 +6117,7 @@ function AttendanceReport(props) {
                             <th style={{padding:"6px 12px",textAlign:"center",borderBottom:"1px solid #e8e4de"}}>下班</th>
                             <th style={{padding:"6px 12px",textAlign:"center",borderBottom:"1px solid #e8e4de"}}>狀態</th>
                             <th style={{padding:"6px 12px",textAlign:"center",borderBottom:"1px solid #e8e4de"}}>工時</th>
-                            <th style={{padding:"6px 12px",textAlign:"right",borderBottom:"1px solid #e8e4de"}}>當班薪資</th>
+                            {isManager && <th style={{padding:"6px 12px",textAlign:"right",borderBottom:"1px solid #e8e4de"}}>當班薪資</th>}
                           </tr>
                         </thead>
                         <tbody>
@@ -6122,7 +6139,7 @@ function AttendanceReport(props) {
                                   <span style={{fontSize:10,color:statusColor,fontWeight:600}}>{statusIcon} {sh.status}</span>
                                 </td>
                                 <td style={{padding:"6px 12px",textAlign:"center",fontWeight:700,color:"#2a2520",borderBottom:"1px solid #f0ede8"}}>{sh.hours.toFixed(2)} 小時</td>
-                                <td style={{padding:"6px 12px",textAlign:"right",fontWeight:700,color:"#b8910a",borderBottom:"1px solid #f0ede8"}}>${sh.pay.toLocaleString()}</td>
+                                {isManager && <td style={{padding:"6px 12px",textAlign:"right",fontWeight:700,color:"#b8910a",borderBottom:"1px solid #f0ede8"}}>${sh.pay.toLocaleString()}</td>}
                               </tr>
                             );
                           })}
@@ -6131,7 +6148,7 @@ function AttendanceReport(props) {
                           <tr style={{background:"#f0ede8",fontWeight:700}}>
                             <td colSpan={4} style={{padding:"7px 12px",fontSize:11,color:"#7a7068"}}>合計（共 {s.shifts.length} 班）</td>
                             <td style={{padding:"7px 12px",textAlign:"center",color:"#3d9e32",fontSize:13}}>{s.totalHours.toFixed(2)} 小時</td>
-                            <td style={{padding:"7px 12px",textAlign:"right",color:"#b8910a",fontSize:14}}>${s.totalPay.toLocaleString()}</td>
+                            {isManager && <td style={{padding:"7px 12px",textAlign:"right",color:"#b8910a",fontSize:14}}>${s.totalPay.toLocaleString()}</td>}
                           </tr>
                         </tfoot>
                       </table>
@@ -6979,7 +6996,7 @@ function POSSystem() {
     var alreadyOnline = onlineStaff.some(function(s){return s.id===staff.id;});
     if (!alreadyOnline) {
       setOnlineStaff(function(prev){ return prev.concat([staff]); });
-      setShiftLog(function(prev){
+      saveShiftLog(function(prev){
         return prev.concat([{
           name:staff.name, role:staff.role,
           loginTime:nowDisplay, loginAt:nowISO,
@@ -6995,12 +7012,12 @@ function POSSystem() {
     setIsLocked(false);
   }
 
-  // 打下班卡：只登出指定人員，不影響其他人
+  // 打下班卡：記錄下班時間，回到登入頁
   function handleClockOut(staff) {
     var now = new Date();
     var nowISO = now.toISOString();
     var nowDisplay = now.toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit"});
-    setShiftLog(function(prev){
+    saveShiftLog(function(prev){
       // 找最後一筆該人員未打卡的紀錄
       var lastIdx = -1;
       prev.forEach(function(s,i){ if(s.name===staff.name && !s.logoutTime) lastIdx=i; });
@@ -7009,12 +7026,17 @@ function POSSystem() {
       });
     });
     setOnlineStaff(function(prev){ return prev.filter(function(s){return s.id!==staff.id;}); });
-    // 若登出的是目前操作者，切換到其他在班人員或 null
+    // 若登出的是目前操作者，切換到其他在班人員或回登入頁
     if (currentOperator && currentOperator.id===staff.id) {
       var remaining = onlineStaff.filter(function(s){return s.id!==staff.id;});
-      setCurrentOperator(remaining.length>0 ? remaining[0] : null);
+      if (remaining.length > 0) {
+        setCurrentOperator(remaining[0]);
+      } else {
+        setCurrentOperator(null);
+        setShowLogin(true); // 沒人在班 → 回到登入頁
+      }
     }
-    setShowLogin(false);
+    setShowLogin(true); // 下班後回到選擇上班人員頁面
   }
 
   // Lookup member by phone (match last 8+ digits, ignoring dashes)
@@ -7317,22 +7339,6 @@ function POSSystem() {
                 </div>
               </div>
 
-              {/* 螢幕鎖定 */}
-              {onlineStaff.length > 0 && (
-                <button onClick={function(){setIsLocked(true);setShowMenu(false);}}
-                  style={{width:"100%",padding:"11px 14px",border:"none",background:"transparent",
-                    cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
-                    borderBottom:"1px solid #f0ede8",transition:"background 0.1s"}}
-                  onMouseEnter={function(e){e.currentTarget.style.background="#f0f0ff";}}
-                  onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
-                  <span style={{fontSize:18,width:24,textAlign:"center"}}>🔒</span>
-                  <div>
-                    <div style={{fontSize:12,fontWeight:600,color:"#5050c0"}}>鎖定螢幕</div>
-                    <div style={{fontSize:10,color:"#9a968e"}}>離開時防止外人操作</div>
-                  </div>
-                </button>
-              )}
-
               {/* 教育訓練 */}
               <button onClick={function(){setTrainingMode(function(t){return !t;});setShowMenu(false);}}
                 style={{width:"100%",padding:"11px 14px",border:"none",
@@ -7381,10 +7387,21 @@ function POSSystem() {
                   })}
                 </div>
               ) : currentStaff ? (
-                <div style={{padding:"10px 14px",borderTop:"1px solid #f0ede8",
-                  display:"flex",alignItems:"center",gap:6}}>
-                  <span style={{fontSize:12}}>🔒</span>
-                  <span style={{fontSize:10,color:"#9a968e"}}>進階報表需店長登入</span>
+                <div>
+                  {/* 店員可查看自己的出勤記錄 */}
+                  <button onClick={function(){setActiveTab("attendance");setShowMenu(false);}}
+                    style={{width:"100%",padding:"9px 14px",border:"none",
+                      background:activeTab==="attendance"?"#fff8eb":"transparent",
+                      cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
+                      borderTop:"1px solid #f0ede8",borderBottom:"1px solid #f0ede8"}}>
+                    <span style={{fontSize:15,width:24,textAlign:"center",color:"#b8910a"}}>⏱</span>
+                    <div style={{fontSize:12,fontWeight:600,color:"#2a2520"}}>出勤打卡記錄</div>
+                  </button>
+                  <div style={{padding:"10px 14px",borderTop:"1px solid #f0ede8",
+                    display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:12}}>🔒</span>
+                    <span style={{fontSize:10,color:"#9a968e"}}>銷售分析需店長登入</span>
+                  </div>
                 </div>
               ) : null}
 
@@ -7697,12 +7714,12 @@ function POSSystem() {
               <span style={{fontSize:9,color:"#b8910a"}}>{currentOperator.role}</span>
             </div>
           )}
-          {onlineStaff.length > 0 && (
-            <button onClick={function(){setIsLocked(true);}}
-              title="鎖定螢幕"
-              style={{display:"flex",alignItems:"center",gap:4,padding:"4px 10px",borderRadius:20,border:"1px solid #d8d4cc",
-                background:"#f5f4f0",cursor:"pointer",fontSize:11,color:"#5050c0",fontWeight:600}}>
-              🔒 鎖定
+          {currentOperator && (
+            <button onClick={function(){ handleClockOut(currentOperator); }}
+              title="下班登出"
+              style={{display:"flex",alignItems:"center",gap:4,padding:"4px 12px",borderRadius:20,border:"1px solid #d8956f",
+                background:"#fdf0e8",cursor:"pointer",fontSize:11,color:"#c0552a",fontWeight:700}}>
+              ↩ 登出（下班）
             </button>
           )}
           <span style={{fontSize:11,color:"#b8910a",fontWeight:600}}>{new Date().toLocaleDateString("zh-TW",{month:"long",day:"numeric",weekday:"short"})}</span>
@@ -8148,8 +8165,8 @@ function POSSystem() {
             {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={orders}/>}
             {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={orders} products={sharedProducts} stocks={sharedStocks}/>}
             {activeTab==="consign"   && isManager && <ConsignSettlement orders={orders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
-            {activeTab==="attendance"&& isManager && <AttendanceReport shiftLog={shiftLog} staffRates={staffRates} setStaffRates={setStaffRates} schedule={schedule} setSchedule={setSchedule}/>}
-            {(activeTab==="analytics"||activeTab==="smart"||activeTab==="consign"||activeTab==="attendance") && !isManager && (
+            {activeTab==="attendance"&& <AttendanceReport shiftLog={shiftLog} staffRates={staffRates} setStaffRates={setStaffRates} schedule={schedule} setSchedule={setSchedule} isManager={isManager} currentStaff={currentStaff}/>}
+            {(activeTab==="analytics"||activeTab==="smart"||activeTab==="consign") && !isManager && (
               <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,color:"#c8c4bc"}}>
                 <div style={{fontSize:40}}>🔒</div>
                 <div style={{fontSize:15,fontWeight:600,color:"#9a968e"}}>此頁面需店長權限</div>
