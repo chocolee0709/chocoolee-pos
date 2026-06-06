@@ -754,6 +754,20 @@ const PRODUCTS = RAW.map(function(r){
     stock: Math.floor(Math.random()*30)+2 };
 });
 
+// 取台灣本地日期 YYYY-MM-DD（避免 toISOString 的 UTC 時差問題）
+function localDate(d) {
+  var dt = d ? new Date(d) : new Date();
+  var y = dt.getFullYear();
+  var m = String(dt.getMonth()+1).padStart(2,"0");
+  var day = String(dt.getDate()).padStart(2,"0");
+  return y + "-" + m + "-" + day;
+}
+// 取台灣本地時間 HH:MM
+function localTime(d) {
+  var dt = d ? new Date(d) : new Date();
+  return String(dt.getHours()).padStart(2,"0") + ":" + String(dt.getMinutes()).padStart(2,"0");
+}
+
 const CAT_STRUCT = {
   "居家香氛":["旅行蠟燭","經典蠟燭","噴霧","擴香","精油","香氛週邊","禮盒","擴香石"],
   "生活選物":["生活小物","餐具系列","擦手巾","不鏽鋼","藤編商品","清潔用具","擺件","腳踏墊","傢俱傢電","寵物用品","亞鉛製品","年節商品","塔羅牌","植物盆器"],
@@ -933,7 +947,7 @@ function PrintModal(props) {
     var url  = URL.createObjectURL(blob);
     var a    = document.createElement("a");
     a.href = url;
-    a.download = "標籤檔_"+new Date().toISOString().slice(0,10)+".csv";
+    a.download = "標籤檔_"+localDate()+".csv";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1110,7 +1124,7 @@ function CatalogPanel(props) {
     var curStock = stocks[editId]!==undefined ? stocks[editId] : 0;
     if (curStock > 0) {
       addLog([{
-        id:Date.now(), date:now.toISOString().slice(0,10), time:now.toTimeString().slice(0,5),
+        id:Date.now(), date:localDate(now), time:localTime(now),
         productId:editId, sku:editForm.sku, name:editForm.name,
         main:editForm.main, sub:editForm.sub,
         reason:"商品下架", change:-curStock, before:curStock, after:0,
@@ -1163,8 +1177,8 @@ function CatalogPanel(props) {
       after = Math.max(0, before + d);
     }
     var now = new Date();
-    var dateStr = now.toISOString().slice(0,10);
-    var timeStr = now.toTimeString().slice(0,5);
+    var dateStr = localDate(now);
+    var timeStr = localTime(now);
     // 「直接設為」模式用「盤點調整」當原因（除非使用者另選原因）；增減模式用所選原因
     var logReason = adjustMode === "set" ? "盤點調整" : reason;
     setStocks(function(s){ var n=Object.assign({},s); n[adjustId]=after; return n; });
@@ -1213,7 +1227,7 @@ function CatalogPanel(props) {
       if(a.main<b.main)return -1;if(a.main>b.main)return 1;
       if((a.sub||"")<(b.sub||""))return -1;if((a.sub||"")>(b.sub||""))return 1;return 0;
     });
-    var today=new Date().toISOString().slice(0,10);
+    var today=localDate();
     var catGroups={};
     sorted.forEach(function(p){var c=p.main||"其他";if(!catGroups[c])catGroups[c]=[];catGroups[c].push(p);});
 
@@ -1373,8 +1387,8 @@ function CatalogPanel(props) {
   }
   function applyImport(){
     var now = new Date();
-    var dateStr = now.toISOString().slice(0,10);
-    var timeStr = now.toTimeString().slice(0,5);
+    var dateStr = localDate(now);
+    var timeStr = localTime(now);
     var operator = currentStaff ? currentStaff.name : "—";
     var entries = importPreview.map(function(r){
       return {
@@ -1475,8 +1489,8 @@ function CatalogPanel(props) {
   }
   function applyBatchNew(){
     var now = new Date();
-    var dateStr = now.toISOString().slice(0,10);
-    var timeStr = now.toTimeString().slice(0,5);
+    var dateStr = localDate(now);
+    var timeStr = localTime(now);
     var operator = currentStaff ? currentStaff.name : "—";
     var newProds = batchPreview.map(function(p,i){
       return Object.assign({},EMPTY_PRODUCT,p,{id:Date.now()+i,barcode:String(products.length+1001+i).padStart(9,"0")});
@@ -1621,7 +1635,7 @@ function CatalogPanel(props) {
     setStocks(function(prev){var n=Object.assign({},prev);n[newP.id]=newP.stock;return n;});
     if(newP.stock>0){
       var now=new Date();
-      addLog([{id:Date.now(),date:now.toISOString().slice(0,10),time:now.toTimeString().slice(0,5),
+      addLog([{id:Date.now(),date:localDate(now),time:localTime(now),
         productId:newP.id,sku:newP.sku,name:newP.name,main:newP.main,sub:newP.sub,
         reason:"新品上架",change:newP.stock,before:0,after:newP.stock,
         operator:currentStaff?currentStaff.name:"—"}]);
@@ -2337,7 +2351,7 @@ function LedgerContent(props) {
     var ws = XLSX.utils.aoa_to_sheet(rows);
     ws["!cols"]=[{wch:12},{wch:8},{wch:8},{wch:24},{wch:16},{wch:10},{wch:10},{wch:8},{wch:8},{wch:8}];
     XLSX.utils.book_append_sheet(wb, ws, "庫存異動");
-    XLSX.writeFile(wb, "庫存異動明細_"+new Date().toISOString().slice(0,10)+".xlsx");
+    XLSX.writeFile(wb, "庫存異動明細_"+localDate()+".xlsx");
   }
 
   return (
@@ -2498,7 +2512,7 @@ function OrdersDrawer(props) {
   var setSharedStocks = props.setSharedStocks;
   var stocks = props.sharedStocks || {};
   var sharedAddLog = props.sharedAddLog;
-  var today = new Date().toISOString().slice(0,10);
+  var today = localDate();
 
   var ds = useState(today); var viewDate = ds[0], setViewDate = ds[1];
   var exs = useState(null); var expandNo = exs[0], setExpandNo = exs[1];
@@ -2532,7 +2546,7 @@ function OrdersDrawer(props) {
           var cur = curStocks[it.id] !== undefined ? curStocks[it.id] : 0;
           restoreLogs.push({
             id: Date.now() + Math.random(),
-            date: nowT.toISOString().slice(0,10), time: nowT.toTimeString().slice(0,5),
+            date: localDate(nowT), time: localTime(nowT),
             productId: it.id, sku: it.sku, name: it.name,
             main: it.main, sub: it.sub,
             reason: (type==="cancel"?"取消退回":"退貨退回") + "（訂單 " + no + "）",
@@ -2967,7 +2981,7 @@ function MembersDrawer(props) {
     var blob = new Blob([json], {type: "application/json"});
     var url = URL.createObjectURL(blob);
     var a = document.createElement("a");
-    var today = new Date().toISOString().slice(0,10);
+    var today = localDate();
     a.href = url;
     a.download = "巧克莉莉會員備份_" + today + ".json";
     document.body.appendChild(a);
@@ -3022,7 +3036,7 @@ function MembersDrawer(props) {
     var points = calcPoints(spent);
     var now = new Date().toISOString();
     if (editId === "new") {
-      setMembers(function(prev){ return prev.concat([{id:Date.now(),name:form.name,phone:form.phone,email:form.email,spent:spent,highCount:highCount,level:level,points:points,note:form.note,joinDate:new Date().toISOString().slice(0,10),updatedAt:now}]); });
+      setMembers(function(prev){ return prev.concat([{id:Date.now(),name:form.name,phone:form.phone,email:form.email,spent:spent,highCount:highCount,level:level,points:points,note:form.note,joinDate:localDate(),updatedAt:now}]); });
     } else {
       setMembers(function(prev){ return prev.map(function(m){ return m.id===editId ? Object.assign({},m,{name:form.name,phone:form.phone,email:form.email,spent:spent,highCount:highCount,level:level,points:points,note:form.note,updatedAt:now}) : m; }); });
     }
@@ -3042,7 +3056,7 @@ function MembersDrawer(props) {
 
   // ── 會員總覽計算 ──────────────────────────────────────────────────
   var today = new Date();
-  var todayStr = today.toISOString().slice(0,10);
+  var todayStr = localDate(today);
 
   // 等級分佈
   var lvlCount = {general:0, silver:0, gold:0, vip:0};
@@ -3079,7 +3093,7 @@ function MembersDrawer(props) {
     if (!m.lastVisit) return false;
     // 近 6 個月內有來店
     var sixMonthsAgo = new Date(today.getFullYear(), today.getMonth()-5, 1);
-    return m.lastVisit >= sixMonthsAgo.toISOString().slice(0,10);
+    return m.lastVisit >= localDate(sixMonthsAgo);
   }).length;
   // 活動率（近半年有來店的會員 / 總會員）
   var activeRate = totalMembers > 0 ? Math.round(activeMembers/totalMembers*100) : 0;
@@ -3347,8 +3361,8 @@ function PurchasePanel(props) {
 
   function newPurchase() {
     setSelPo({
-      no: "PO-" + new Date().toISOString().slice(0,10).split("-").join("") + "-" + String(purchases.length+1).padStart(3,"0"),
-      date: new Date().toISOString().slice(0,10),
+      no: "PO-" + localDate().split("-").join("") + "-" + String(purchases.length+1).padStart(3,"0"),
+      date: localDate(),
       eta: "",
       items: [],
       note: "",
@@ -3403,8 +3417,8 @@ function PurchasePanel(props) {
     var stockAdds = {};
     var logs = [];
     var now = new Date();
-    var dateStr = now.toISOString().slice(0,10);
-    var timeStr = now.toTimeString().slice(0,5);
+    var dateStr = localDate(now);
+    var timeStr = localTime(now);
 
     po.items.forEach(function(item) {
       var goodQty = (item.receivedQty || 0) - (item.damagedQty || 0);
@@ -4586,7 +4600,7 @@ function ShiftLogin(props) {
   var ers = useState(""); var err = ers[0], setErr = ers[1];
   var tab = useState("clockin"); var activeTab = tab[0], setActiveTab = tab[1]; // "clockin" | "clockout"
 
-  var today = new Date().toISOString().slice(0,10);
+  var today = localDate();
 
   // 已在班的人員 ID set
   var onlineIds = {};
@@ -4764,7 +4778,7 @@ function AnalyticsDrawer(props) {
     else if (period === "30") cutoff.setDate(today.getDate()-30);
     else if (period === "90") cutoff.setDate(today.getDate()-90);
     else cutoff = new Date("2000-01-01");
-    var cutoffStr = cutoff.toISOString().slice(0,10);
+    var cutoffStr = localDate(cutoff);
     paid = orders.filter(function(o){ return o.status==="paid" && o.date >= cutoffStr; });
   }
 
@@ -5171,7 +5185,7 @@ function SmartAnalysisDrawer(props) {
       var today = new Date();
       var cutoff = new Date(today);
       cutoff.setMonth(today.getMonth() - Number(months));
-      var cutoffStr = cutoff.toISOString().slice(0,10);
+      var cutoffStr = localDate(cutoff);
 
       // 期間訂單
       var periodOrders = orders.filter(function(o){
@@ -7198,8 +7212,8 @@ function POSSystem() {
       return;
     }
     var now = new Date();
-    var dateStr = now.toISOString().slice(0,10);
-    var timeStr = now.toTimeString().slice(0,5);
+    var dateStr = localDate(now);
+    var timeStr = localTime(now);
     var orderNo = "ORD-"+dateStr.split("-").join("")+"-"+String(orders.length+1).padStart(4,"0");
     // Build order record
     var newOrder = {
@@ -7592,7 +7606,7 @@ function POSSystem() {
                         var url = URL.createObjectURL(blob);
                         var a = document.createElement("a");
                         var now = new Date();
-                        var dateStr = now.toISOString().slice(0,10);
+                        var dateStr = localDate(now);
                         a.href = url; a.download = "chocoolee-backup-"+dateStr+".json";
                         document.body.appendChild(a); a.click();
                         document.body.removeChild(a); URL.revokeObjectURL(url);
