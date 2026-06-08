@@ -3355,7 +3355,7 @@ function PurchasePanel(props) {
   var sm = useState("list"); var mode = sm[0], setMode = sm[1]; // list / create / edit / receive / verify
   var ep = useState(null); var expandedPo = ep[0], setExpandedPo = ep[1];
   var sel = useState(null);  var selPo = sel[0], setSelPo = sel[1];
-  var sf  = useState("all"); var filter = sf[0], setFilter = sf[1];
+  var sf  = useState("pending"); var filter = sf[0], setFilter = sf[1];
 
   // 店長視角：列出全部；店員：待收貨 + 待確認
   var visiblePurchases = purchases.filter(function(p){
@@ -3409,6 +3409,17 @@ function PurchasePanel(props) {
     alert("✓ 已送出驗收結果，等待店長覆驗");
   }
 
+  // 暫存驗收進度（商品還沒點完，先存，狀態維持「待收貨」，不送出）
+  function saveReceiveProgress() {
+    var po = Object.assign({}, selPo, {
+      status: "pending", // 維持待收貨
+      updatedAt: new Date().toISOString()
+    });
+    setPurchases(function(prev){ return prev.map(function(p){ return p.no === po.no ? po : p; }); });
+    setMode("list"); setSelPo(null);
+    alert("✓ 已暫存驗收進度，等全數到貨再送出");
+  }
+
   // 店長覆驗：確認入庫
   function confirmPurchase() {
     if (!confirm("確認完成？將自動入庫並建立新品")) return;
@@ -3429,11 +3440,26 @@ function PurchasePanel(props) {
 
     // 貨號撞號保護：收集現有所有貨號（商品清單 + 本批已建立的新品）
     var usedSkus = {};
-    products.forEach(function(p){ if(p && p.sku) usedSkus[String(p.sku).trim()] = true; });
+    // 從 localStorage 讀「最新」商品清單（而非可能過時的 props），確保跨採購單也能抓到剛建立的貨號
+    var latestProducts = products;
+    try {
+      var lpRaw = localStorage.getItem("chocoolee-products");
+      if (lpRaw) {
+        var lpArr = JSON.parse(lpRaw);
+        if (Array.isArray(lpArr) && lpArr.length > 0) latestProducts = lpArr;
+      }
+    } catch(e) {}
+    latestProducts.forEach(function(p){ if(p && p.sku) usedSkus[String(p.sku).trim()] = true; });
     var dupWarnings = [];
+    var idCounter = 0; // 確保同批新品 id 不碰撞
+    function genId() {
+      idCounter += 1;
+      return Date.now() + idCounter * 1000 + Math.floor(Math.random()*100);
+    }
     // 產生不重複貨號：若撞號則加 @@（再撞就 @@@@…）
     function safeSkU(sku) {
       var s = String(sku||"").trim();
+      if (!s) return s;
       if (!usedSkus[s]) { usedSkus[s] = true; return s; }
       // 撞號 → 加 @@ 直到不重複
       var newSku = s;
@@ -3449,7 +3475,7 @@ function PurchasePanel(props) {
 
       if (item.isNew) {
         // 新品：建立商品 + 入庫（貨號撞號自動改 @@，避免覆蓋既有資料）
-        var newId = Date.now() + Math.floor(Math.random()*1000);
+        var newId = genId();
         var finalSku = safeSkU(item.sku);
         var newProd = {
           id: newId, sku: finalSku, name: item.name,
@@ -3490,7 +3516,23 @@ function PurchasePanel(props) {
 
     // 套用變更
     if (newProducts.length > 0 && setSharedProducts) {
-      setSharedProducts(function(prev){ return prev.concat(newProducts); });
+      setSharedProducts(function(prev){
+        // 防呆：以 prev 既有的貨號為準，新品若貨號已存在則再次加 @@（雙重保險，避免並存重複）
+        var prevSkus = {};
+        (prev||[]).forEach(function(p){ if(p && p.sku) prevSkus[String(p.sku).trim()]=true; });
+        var safeNew = newProducts.map(function(np){
+          var s = String(np.sku||"").trim();
+          if (s && prevSkus[s]) {
+            var ns = s;
+            while (prevSkus[ns]) { ns = ns + "@@"; }
+            prevSkus[ns] = true;
+            return Object.assign({}, np, {sku: ns});
+          }
+          if (s) prevSkus[s] = true;
+          return np;
+        });
+        return prev.concat(safeNew);
+      });
     }
     if (Object.keys(stockAdds).length > 0 && setSharedStocks) {
       setSharedStocks(function(prev){
@@ -3577,11 +3619,21 @@ function PurchasePanel(props) {
             var totalQty = (po.items||[]).reduce(function(s,i){return s+(Number(i.qty)||0);},0);
             var totalCost = (po.items||[]).reduce(function(s,i){return s+(Number(i.cost)||0)*(Number(i.qty)||0);},0);
             var isExpanded = expandedPo === po.no;
+            // 內容概覽：統計這單的小分類（去重），讓店員一眼知道內容
+            var catSet = {};
+            (po.items||[]).forEach(function(i){
+              var c = i.sub || i.main;
+              if (c) catSet[c] = (catSet[c]||0) + (Number(i.qty)||0);
+            });
+            var catList = Object.keys(catSet);
+            var overviewText = catList.length > 0
+              ? catList.map(function(c){ return c + "×" + catSet[c]; }).join("、")
+              : "";
             return (
               <div key={po.no} style={{borderBottom:"1px solid #f0ede8"}}>
                 <div style={{padding:"10px 14px",display:"flex",alignItems:"center",gap:12}}>
                   <div onClick={function(){setExpandedPo(isExpanded?null:po.no);}}
-                    style={{flex:1,cursor:"pointer"}}>
+                    style={{flexShrink:0,cursor:"pointer",minWidth:0}}>
                     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
                       <span style={{fontSize:11,color:"#9a968e",transform:isExpanded?"rotate(90deg)":"none",transition:"transform 0.15s",display:"inline-block"}}>▶</span>
                       <span style={{fontSize:13,fontWeight:700,color:"#2a2520"}}>{po.no}</span>
@@ -3592,6 +3644,15 @@ function PurchasePanel(props) {
                       {isManager && " · 成本 $" + totalCost.toLocaleString()}
                     </div>
                   </div>
+                  {/* 中間：內容概覽 */}
+                  {overviewText && (
+                    <div onClick={function(){setExpandedPo(isExpanded?null:po.no);}}
+                      style={{flex:1,minWidth:0,cursor:"pointer",fontSize:11,color:"#b8910a",fontWeight:600,
+                        lineHeight:1.4,overflow:"hidden"}}>
+                      📦 {overviewText}
+                    </div>
+                  )}
+                  {!overviewText && <div style={{flex:1}}></div>}
                   <button onClick={function(e){
                     e.stopPropagation();
                     setSelPo(po);
@@ -3599,7 +3660,7 @@ function PurchasePanel(props) {
                     else if (po.status === "review") setMode(isManager ? "verify" : "receive");
                     else setMode("view");
                   }}
-                    style={{background:"#b8910a",border:"none",borderRadius:6,padding:"5px 12px",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+                    style={{background:"#b8910a",border:"none",borderRadius:6,padding:"5px 12px",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",flexShrink:0}}>
                     開啟
                   </button>
                 </div>
@@ -3674,6 +3735,7 @@ function PurchasePanel(props) {
     return <PurchaseReceiver po={selPo} setPo={setSelPo}
       readOnly={selPo.status === "review" && !isManager}
       onSubmit={submitReceive}
+      onSaveProgress={saveReceiveProgress}
       onEdit={isManager && selPo.status === "pending" ? function(){setMode("create");} : null}
       onCancel={function(){setMode("list");setSelPo(null);}}/>;
   }
@@ -4378,6 +4440,12 @@ function PurchaseReceiver(props) {
         <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexShrink:0}}>
           <button onClick={props.onCancel}
             style={{background:"none",border:"1px solid #d8d4cc",borderRadius:6,padding:"7px 16px",color:"#7a7068",fontSize:12,cursor:"pointer"}}>取消</button>
+          {props.onSaveProgress && (
+            <button onClick={props.onSaveProgress}
+              style={{background:"#fff",border:"1px solid #b8910a",borderRadius:6,padding:"7px 18px",color:"#b8910a",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+              💾 儲存（暫存進度）
+            </button>
+          )}
           <button onClick={props.onSubmit}
             style={{background:"#d0552f",border:"none",borderRadius:6,padding:"7px 20px",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>
             送出驗收給店長確認
