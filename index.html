@@ -3427,15 +3427,32 @@ function PurchasePanel(props) {
     var dateStr = localDate(now);
     var timeStr = localTime(now);
 
+    // 貨號撞號保護：收集現有所有貨號（商品清單 + 本批已建立的新品）
+    var usedSkus = {};
+    products.forEach(function(p){ if(p && p.sku) usedSkus[String(p.sku).trim()] = true; });
+    var dupWarnings = [];
+    // 產生不重複貨號：若撞號則加 @@（再撞就 @@@@…）
+    function safeSkU(sku) {
+      var s = String(sku||"").trim();
+      if (!usedSkus[s]) { usedSkus[s] = true; return s; }
+      // 撞號 → 加 @@ 直到不重複
+      var newSku = s;
+      while (usedSkus[newSku]) { newSku = newSku + "@@"; }
+      usedSkus[newSku] = true;
+      dupWarnings.push(s + " → " + newSku);
+      return newSku;
+    }
+
     po.items.forEach(function(item) {
       var goodQty = (item.receivedQty || 0) - (item.damagedQty || 0);
       if (goodQty <= 0) return;
 
       if (item.isNew) {
-        // 新品：建立商品 + 入庫
+        // 新品：建立商品 + 入庫（貨號撞號自動改 @@，避免覆蓋既有資料）
         var newId = Date.now() + Math.floor(Math.random()*1000);
+        var finalSku = safeSkU(item.sku);
         var newProd = {
-          id: newId, sku: item.sku, name: item.name,
+          id: newId, sku: finalSku, name: item.name,
           price: item.price || 0, cost: item.cost || 0,
           main: item.main || "生活選物", sub: item.sub || "生活小物",
           barcode: item.barcode || String(newId).slice(-9),
@@ -3443,16 +3460,16 @@ function PurchasePanel(props) {
           mainEdited: true,  // 防止 mergeProducts 覆蓋分類
           updatedAt: new Date().toISOString()
         };
-        // 從黑名單 map 移除此貨號（新品 updatedAt 也會自動處理）
+        // 從黑名單 map 移除此貨號
         try {
           var dsk = readDeletedMap();
-          if (dsk[item.sku]) { delete dsk[item.sku]; saveData("deletedskus", JSON.stringify(dsk)); }
+          if (dsk[finalSku]) { delete dsk[finalSku]; saveData("deletedskus", JSON.stringify(dsk)); }
         } catch(e) {}
         newProducts.push(newProd);
         stockAdds[newId] = goodQty;
         logs.push({
           id: Date.now()+Math.random(), date: dateStr, time: timeStr,
-          productId: newId, sku: item.sku, name: item.name,
+          productId: newId, sku: finalSku, name: item.name,
           main: newProd.main, sub: newProd.sub,
           reason: "採購入庫（新品）", change: goodQty, before: 0, after: goodQty,
           operator: currentStaff ? currentStaff.name : "—"
@@ -3488,7 +3505,11 @@ function PurchasePanel(props) {
 
     setPurchases(function(prev){ return prev.map(function(p){ return p.no === po.no ? po : p; }); });
     setMode("list"); setSelPo(null);
-    alert("✓ 採購單已完成，庫存已更新");
+    if (dupWarnings.length > 0) {
+      alert("✓ 採購單已完成，庫存已更新\n\n⚠️ 偵測到重複貨號，已自動改號避免覆蓋資料：\n" + dupWarnings.join("\n") + "\n\n請到商品庫存確認並調整這些貨號。");
+    } else {
+      alert("✓ 採購單已完成，庫存已更新");
+    }
   }
 
   function rejectPurchase() {
@@ -3913,7 +3934,15 @@ function PurchaseEditor(props) {
                   <div>
                     <label style={lbl}>大分類{!item.isNew && " 🔒"}</label>
                     <select value={item.main||""} disabled={!item.isNew}
-                      onChange={function(e){setF("main", e.target.value); setF("sub", "");}}
+                      onChange={function(e){
+                        var newMain = e.target.value;
+                        var subs = CAT_STRUCT[newMain] || [];
+                        // 大分類改變時，同時更新小分類為新分類的第一個（一次更新避免閉包不同步）
+                        var nextItems = (po.items||[]).map(function(it,i){
+                          return i===editingIdx ? Object.assign({},it,{main:newMain, sub:subs[0]||""}) : it;
+                        });
+                        setPo(Object.assign({},po,{items:nextItems}));
+                      }}
                       style={Object.assign({},inp,{cursor:item.isNew?"pointer":"not-allowed",background:item.isNew?"#fff":"#f5f4f0"})}>
                       {MAIN_CATS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
                     </select>
@@ -4112,7 +4141,10 @@ function ItemPicker(props) {
   }).slice(0, 50);
 
   // 檢查貨號重複
-  var skuDup = nf.sku && products.some(function(p){ return p.sku === nf.sku.trim(); });
+  var skuDup = nf.sku && (
+    products.some(function(p){ return p.sku === nf.sku.trim(); }) ||
+    existingSkus.indexOf(nf.sku.trim()) !== -1
+  );
 
   var lbl = {fontSize:10,color:"#7a7068",marginBottom:3,display:"block"};
   var inp = {width:"100%",padding:"6px 8px",border:"1px solid #d8d4cc",borderRadius:5,fontSize:12,outline:"none",color:"#2a2520",background:"#fff"};
@@ -6018,12 +6050,18 @@ function AttendanceReport(props) {
     if (s.logoutAt) {
       logoutAt = new Date(s.logoutAt);
       status = s.logoutType || "已下班";
-    } else {
-      // 未下班 → 進行中
-      return {hours:(new Date() - login)/3600000, status:"進行中"};
+      var hours = Math.max(0, (logoutAt - login)/3600000);
+      return {hours:hours, status:status};
     }
-    var hours = Math.max(0, (logoutAt - login)/3600000);
-    return {hours:hours, status:status};
+    // 未下班：判斷是否跨日
+    var loginDay = localDate(login);
+    var todayStr = localDate();
+    if (loginDay !== todayStr) {
+      // 跨日仍未登出 → 註記「未打下班卡」，工時不計（避免灌過長時數）
+      return {hours:0, status:"未打下班卡", noLogout:true};
+    }
+    // 當日進行中
+    return {hours:(new Date() - login)/3600000, status:"進行中"};
   }
 
   // 篩選當月有 loginAt 的記錄
@@ -6669,6 +6707,29 @@ function POSSystem() {
   var exj=useState(""); var exportJson=exj[0],setExportJson=exj[1];
   // ── 資料載入（只在 mount 時執行一次）──
   var didLoad = useRef(false);
+  // ── 閒置 1 小時自動鎖定（要 PIN 解鎖，不算下班）──
+  var idleTimerRef = useRef(null);
+  useEffect(function(){
+    // 只在有人在班、且未鎖定、未顯示登入時才偵測閒置
+    function resetIdle(){
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = setTimeout(function(){
+        // 1 小時無操作 → 鎖定（前提：有人在班且目前沒在登入頁）
+        if (onlineStaff.length > 0 && !showLogin) {
+          setIsLocked(true);
+        }
+      }, 60 * 60 * 1000); // 1 小時
+    }
+    // 監聽各種操作事件
+    var events = ["mousedown","keydown","touchstart","scroll"];
+    events.forEach(function(ev){ document.addEventListener(ev, resetIdle, true); });
+    resetIdle(); // 啟動計時
+    return function(){
+      events.forEach(function(ev){ document.removeEventListener(ev, resetIdle, true); });
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    };
+  }, [onlineStaff.length, showLogin]);
+
   useEffect(function(){
     if (didLoad.current) return;
     didLoad.current = true;
