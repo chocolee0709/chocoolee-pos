@@ -4861,6 +4861,7 @@ function ShiftLogin(props) {
 function AnalyticsDrawer(props) {
 
   var orders = props.orders;
+  var products = props.products || [];
 
   // 模式：period(快速期間) / month(指定月份) / year(年度總覽)
   var ms = useState("month"); var viewMode = ms[0], setViewMode = ms[1];
@@ -4923,6 +4924,22 @@ function AnalyticsDrawer(props) {
   var totalQty   = paid.reduce(function(s,o){return s+(o.qty||0);},0);
   var totalDisc  = paid.reduce(function(s,o){return s+(o.discAmt||0);},0);
   var avgOrder   = totalOrders>0 ? Math.round(totalRev/totalOrders) : 0;
+  // 成本與毛利（cartSnapshot 若無 cost，用商品清單最新成本補；業外收入無成本）
+  // 建立貨號→成本對照表
+  var costBySku = {};
+  (products||[]).forEach(function(p){ if(p && p.sku) costBySku[p.sku] = Number(p.cost)||0; });
+  var totalCost  = 0;
+  paid.forEach(function(o){
+    if (!o.cartSnapshot) return;
+    o.cartSnapshot.forEach(function(it){
+      if (it.main === "業外收入") return;
+      // 優先用明細存的 cost，沒有就查商品清單
+      var c = (it.cost!==undefined && it.cost!==null) ? Number(it.cost) : (costBySku[it.sku]||0);
+      totalCost += c * (Number(it.qty)||0);
+    });
+  });
+  var totalProfit = totalRev - totalCost;
+  var profitRate  = totalRev>0 ? Math.round(totalProfit/totalRev*100) : 0;
 
   // ── 日期趨勢（每日加總）──
   var dayMap = {};
@@ -5101,9 +5118,11 @@ function AnalyticsDrawer(props) {
         {/* ── 整體 KPI 卡片 ── */}
         <div style={Object.assign({},section)}>
           <div style={sTitle}>▲ {viewMode==="month" ? (selMonth.split("-")[0]+" 年 "+parseInt(selMonth.split("-")[1])+" 月業績") : viewMode==="year" ? (selYear+" 年度業績") : "整體業績"}</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
             {[
               {label:"總營業額",value:"$"+totalRev.toLocaleString(),color:"#b8910a"},
+              {label:"總成本",value:"$"+totalCost.toLocaleString(),color:"#c0552a"},
+              {label:"毛利額",value:"$"+totalProfit.toLocaleString(),color:"#2a7a2a",sub:"毛利率 "+profitRate+"%"},
               {label:"訂單筆數",value:totalOrders+"筆",color:"#2a2520"},
               {label:"售出件數",value:totalQty+"件",color:"#3d9e32"},
               {label:"平均客單價",value:"$"+avgOrder.toLocaleString(),color:"#4a8ec0"},
@@ -5111,7 +5130,8 @@ function AnalyticsDrawer(props) {
               return (
                 <div key={k.label} style={Object.assign({},card,{textAlign:"center"})}>
                   <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>{k.label}</div>
-                  <div style={{fontSize:18,fontWeight:800,color:k.color}}>{k.value}</div>
+                  <div style={{fontSize:17,fontWeight:800,color:k.color}}>{k.value}</div>
+                  {k.sub && <div style={{fontSize:9,color:"#7a7068",marginTop:2}}>{k.sub}</div>}
                 </div>
               );
             })}
@@ -5345,345 +5365,196 @@ function AnalyticsDrawer(props) {
 // ── Smart Analysis Drawer ───────────────────────────────────────────
 function SmartAnalysisDrawer(props) {
 
-  var orders   = props.orders;
-  var products = props.products;
-  var stocks   = props.stocks; // {id: qty}
+  var orders   = props.orders || [];
+  var products = props.products || [];
+  var stocks   = props.stocks || {};
 
-  var ms = useState("3");  var months = ms[0], setMonths = ms[1];
-  var mf = useState("");   var filterMain = mf[0], setFilterMain = mf[1];
-  var gn = useState(false); var generating = gn[0], setGenerating = gn[1];
-  var rs = useState(null);  var results = rs[0], setResults = rs[1];
-  var at = useState("all"); var activeType = at[0], setActiveType = at[1];
+  var pm = useState("3"); var period = pm[0], setPeriod = pm[1]; // 分析期間（月）
 
+  // 計算分析資料
+  var today = new Date();
+  var cutoff = new Date(today);
+  cutoff.setMonth(today.getMonth() - Number(period));
+  var cutoffStr = localDate(cutoff);
+  // 上一個同等期間（用於比較成長）
+  var prevCutoff = new Date(today);
+  prevCutoff.setMonth(today.getMonth() - Number(period)*2);
+  var prevCutoffStr = localDate(prevCutoff);
 
-  // ── 篩選設定 ──
+  var costBySku = {};
+  products.forEach(function(p){ if(p && p.sku) costBySku[p.sku] = Number(p.cost)||0; });
 
-  // ── 計算分析資料 ──
-  function runAnalysis() {
-    setGenerating(true);
-    setResults(null);
-    setActiveType("all");
-
-    setTimeout(function() {
-      var today = new Date();
-      var cutoff = new Date(today);
-      cutoff.setMonth(today.getMonth() - Number(months));
-      var cutoffStr = localDate(cutoff);
-
-      // 期間訂單
-      var periodOrders = orders.filter(function(o){
-        return o.status==="paid" && o.date >= cutoffStr && o.cartSnapshot;
+  // 本期 / 上期 數據
+  function calcPeriod(fromStr, toStr) {
+    var rev=0, cost=0, qty=0, cnt=0;
+    var catRev={};
+    orders.forEach(function(o){
+      if (o.status!=="paid" || !o.date || o.date<fromStr || o.date>=toStr || !o.cartSnapshot) return;
+      rev += o.total; cnt += 1;
+      o.cartSnapshot.forEach(function(it){
+        qty += Number(it.qty)||0;
+        if (it.main !== "業外收入") {
+          var c = (it.cost!==undefined&&it.cost!==null)?Number(it.cost):(costBySku[it.sku]||0);
+          cost += c * (Number(it.qty)||0);
+        }
+        var cat = it.main || "其他";
+        catRev[cat] = (catRev[cat]||0) + (Number(it.price)||0)*(Number(it.qty)||0);
       });
+    });
+    return {rev:rev, cost:cost, profit:rev-cost, qty:qty, cnt:cnt, avg:cnt>0?Math.round(rev/cnt):0, catRev:catRev};
+  }
+  var todayStr = localDate(today);
+  // 本期需 +1 天涵蓋今天
+  var tomorrow = new Date(today); tomorrow.setDate(today.getDate()+1);
+  var cur = calcPeriod(cutoffStr, localDate(tomorrow));
+  var prev = calcPeriod(prevCutoffStr, cutoffStr);
 
-      // 以 SKU 為單位彙整銷售資料
-      var skuMap = {};
-      products.forEach(function(p) {
-        if (filterMain && p.main !== filterMain) return;
-        var st = (stocks && stocks[p.id] !== undefined) ? stocks[p.id] : p.stock;
-        skuMap[p.sku] = {
-          id: p.id, sku: p.sku, name: p.name,
-          main: p.main, sub: p.sub,
-          price: p.price,
-          cost: p.cost || Math.round(p.price * 0.6),
-          stock: st,
-          soldQty: 0, soldRev: 0, soldProfit: 0,
-          orderCount: 0,
-        };
-      });
+  // 成長率
+  function growth(c, p){ if(!p) return c>0?100:0; return Math.round((c-p)/p*100); }
+  var revGrowth = growth(cur.rev, prev.rev);
+  var profitRate = cur.rev>0 ? Math.round(cur.profit/cur.rev*100) : 0;
+  var prevProfitRate = prev.rev>0 ? Math.round(prev.profit/prev.rev*100) : 0;
 
-      periodOrders.forEach(function(o) {
-        o.cartSnapshot.forEach(function(item) {
-          if (!skuMap[item.sku]) return;
-          skuMap[item.sku].soldQty    += item.qty;
-          skuMap[item.sku].soldRev    += item.price * item.qty;
-          skuMap[item.sku].soldProfit += (item.price - skuMap[item.sku].cost) * item.qty;
-          skuMap[item.sku].orderCount += 1;
-        });
-      });
+  // 庫存健康度
+  var totalStock = 0, zeroStockCount = 0, highStockCount = 0;
+  products.forEach(function(p){
+    var st = stocks[p.id]!==undefined?stocks[p.id]:p.stock;
+    totalStock += st;
+    if (st <= 0) zeroStockCount += 1;
+    if (st >= 30) highStockCount += 1;
+  });
 
-      // 計算指標
-      var items = Object.values(skuMap).map(function(p) {
-        var grossMarginRate = p.soldRev > 0 ? p.soldProfit / p.soldRev : 0;
-        // 週轉率 = 售出量 / 期末庫存（無庫存記無限）
-        var turnover = p.stock > 0 ? p.soldQty / p.stock : (p.soldQty > 0 ? 99 : 0);
-        // 月均銷售
-        var mo = Number(months);
-        var avgMonthlySales = p.soldQty / mo;
-        // 庫存天數（以月均銷售估算）
-        var stockDays = avgMonthlySales > 0 ? Math.round(p.stock / (avgMonthlySales / 30)) : 9999;
-        return Object.assign({}, p, {
-          grossMarginRate: grossMarginRate,
-          turnover: turnover,
-          avgMonthlySales: avgMonthlySales,
-          stockDays: stockDays,
-        });
-      });
+  // 分類營收排行（本期）
+  var catList = Object.keys(cur.catRev).map(function(k){return {name:k, rev:cur.catRev[k]};}).sort(function(a,b){return b.rev-a.rev;});
+  var topCat = catList[0];
 
-      // ── 智能分類規則 ──
-      var tagged = items.map(function(p) {
-        var tags = [];
-        var suggestion = "";
-        var priority = 3; // 1=最高
-
-        // 🌱 成長品：週轉率高 + 毛利率佳 + 庫存偏低
-        if (p.turnover >= 2 && p.grossMarginRate >= 0.25 && p.stock <= 10 && p.soldQty > 0) {
-          tags.push("growth");
-          suggestion = "熱銷成長品，建議加速補貨，庫存目前偏低（"+p.stock+"件），可考慮提高安全庫存量。";
-          priority = 1;
-        }
-        // ⚠️ 補貨警示：近期銷售穩定但庫存天數 < 30天
-        else if (p.soldQty > 0 && p.stockDays < 30 && p.stockDays >= 0) {
-          tags.push("restock");
-          suggestion = "庫存僅剩約 "+p.stockDays+" 天銷售量（"+p.stock+"件），以月均銷售 "+p.avgMonthlySales.toFixed(1)+" 件估算，建議立即安排補貨。";
-          priority = 1;
-        }
-        // 🗑️ 淘汰候選：庫存高但銷售極低 + 低毛利
-        else if (p.stock >= 10 && p.soldQty === 0) {
-          tags.push("eliminate");
-          suggestion = "期間內零銷售，庫存壓貨 "+p.stock+" 件，佔用資金 $"+(p.cost*p.stock).toLocaleString()+"，建議考慮促銷消化或停止進貨。";
-          priority = 1;
-        }
-        else if (p.stock >= 15 && p.turnover < 0.5 && p.grossMarginRate < 0.2) {
-          tags.push("eliminate");
-          suggestion = "週轉率低（"+p.turnover.toFixed(2)+"），毛利率僅 "+(p.grossMarginRate*100).toFixed(0)+"%，庫存天數約 "+p.stockDays+" 天，建議檢討進貨策略或清倉促銷。";
-          priority = 2;
-        }
-        // 📦 庫存過剩：銷售尚可但庫存天數過長
-        else if (p.stockDays > 90 && p.soldQty > 0) {
-          tags.push("overstock");
-          suggestion = "庫存過多，按目前銷售速度需約 "+p.stockDays+" 天才能消化，建議暫停進貨並考慮搭配銷售。";
-          priority = 2;
-        }
-        // ✅ 健康
-        else if (p.soldQty > 0 && p.turnover >= 0.5 && p.grossMarginRate >= 0.2) {
-          tags.push("healthy");
-          suggestion = "銷售健康，週轉率 "+p.turnover.toFixed(2)+"，毛利率 "+(p.grossMarginRate*100).toFixed(0)+"%，維持現有進貨節奏。";
-          priority = 3;
-        }
-        // 🔍 待觀察：新品或資料不足
-        else {
-          tags.push("watch");
-          suggestion = p.soldQty === 0
-            ? "期間無銷售記錄，可能為新品或滯銷，建議主動陳列推廣或確認商品狀態。"
-            : "數據尚不充分，建議持續觀察 1-2 個月後再做決策。";
-          priority = 4;
-        }
-
-        return Object.assign({}, p, {tag: tags[0], suggestion: suggestion, priority: priority});
-      });
-
-      // 以 priority + soldRev 排序
-      tagged.sort(function(a,b){
-        if (a.priority !== b.priority) return a.priority - b.priority;
-        return b.soldRev - a.soldRev;
-      });
-
-      // 統計
-      var summary = {growth:0, restock:0, eliminate:0, overstock:0, healthy:0, watch:0};
-      tagged.forEach(function(p){ if(summary[p.tag]!==undefined) summary[p.tag]++; });
-
-      setResults({items: tagged, summary: summary});
-      setGenerating(false);
-    }, 600);
+  // ── 產生大方向經營建議 ──
+  var advices = [];
+  // 1. 營收趨勢
+  if (revGrowth >= 15) {
+    advices.push({icon:"📈", color:"#2a7a2a", title:"營收成長強勁", text:"本期營業額較前期成長 "+revGrowth+"%，營運動能良好。可考慮加碼熱銷品類備貨、擴大行銷投入趁勢衝刺。"});
+  } else if (revGrowth <= -15) {
+    advices.push({icon:"📉", color:"#c0302a", title:"營收下滑需注意", text:"本期營業額較前期下滑 "+Math.abs(revGrowth)+"%。建議檢視來客數與客單價、規劃促銷活動或新品上架帶動買氣。"});
+  } else {
+    advices.push({icon:"➡️", color:"#7a7068", title:"營收持平", text:"本期營業額與前期相近（"+(revGrowth>=0?"+":"")+revGrowth+"%）。可嘗試新品類或會員活動尋找成長點。"});
+  }
+  // 2. 毛利
+  if (profitRate < 30 && cur.rev>0) {
+    advices.push({icon:"⚠️", color:"#c0552a", title:"毛利率偏低", text:"本期毛利率約 "+profitRate+"%，偏低。建議檢視進貨成本、調整低毛利商品售價，或主推高毛利品類。"});
+  } else if (profitRate >= 50) {
+    advices.push({icon:"💰", color:"#2a7a2a", title:"毛利結構健康", text:"本期毛利率約 "+profitRate+"%，獲利結構良好。維持現有定價與品項策略即可。"});
+  }
+  // 3. 客單價
+  if (prev.avg>0 && cur.avg < prev.avg*0.9) {
+    advices.push({icon:"🛒", color:"#b8910a", title:"客單價下降", text:"平均客單價從 $"+prev.avg+" 降至 $"+cur.avg+"。可透過組合銷售、滿額贈、推薦搭配商品來提升每單金額。"});
+  }
+  // 4. 庫存
+  if (zeroStockCount > 0) {
+    advices.push({icon:"📦", color:"#c0302a", title:zeroStockCount+" 項商品已無庫存", text:"有 "+zeroStockCount+" 項商品庫存歸零，可能錯失銷售機會。建議檢視是否需補貨或下架。"});
+  }
+  if (highStockCount > 0) {
+    advices.push({icon:"🏷️", color:"#b8910a", title:highStockCount+" 項商品庫存偏高", text:"有 "+highStockCount+" 項商品庫存達 30 件以上，佔用資金。可考慮促銷出清或調整進貨節奏。"});
+  }
+  // 5. 主力品類
+  if (topCat) {
+    advices.push({icon:"⭐", color:"#4a8ec0", title:"主力品類：" + topCat.name, text:topCat.name+"是本期營收貢獻最高的品類（$"+topCat.rev.toLocaleString()+"）。可深耕此品類、擴充品項或加強陳列。"});
   }
 
-  // ── Tag 設定 ──
-  var TAG_CONFIG = {
-    growth:    {label:"🌱 成長品",    color:"#3d9e32", bg:"#e8f8e8", desc:"高週轉 × 低庫存"},
-    restock:   {label:"⚠️ 需補貨",    color:"#b8910a", bg:"#fffbeb", desc:"即將斷貨"},
-    eliminate: {label:"🗑️ 淘汰候選",  color:"#d0552f", bg:"#fdecea", desc:"滯銷或高庫存"},
-    overstock: {label:"📦 庫存過剩",  color:"#7055c0", bg:"#f0ecff", desc:"庫存天數過長"},
-    healthy:   {label:"✅ 健康正常",  color:"#4a8ec0", bg:"#e8f4fd", desc:"銷售穩定"},
-    watch:     {label:"🔍 待觀察",    color:"#9a968e", bg:"#f5f4f0", desc:"資料不足"},
-  };
-
-  var TYPE_FILTERS = [
-    {key:"all",       label:"全部"},
-    {key:"growth",    label:"🌱 成長"},
-    {key:"restock",   label:"⚠️ 補貨"},
-    {key:"eliminate", label:"🗑️ 淘汰"},
-    {key:"overstock", label:"📦 過剩"},
-    {key:"healthy",   label:"✅ 健康"},
-    {key:"watch",     label:"🔍 觀察"},
-  ];
-
-  var displayItems = results
-    ? (activeType === "all" ? results.items : results.items.filter(function(p){return p.tag===activeType;}))
-    : [];
+  var section = {marginBottom:18};
+  var sTitle = {fontSize:13,fontWeight:700,color:"#2a2520",marginBottom:10,letterSpacing:"0.06em",paddingBottom:6,borderBottom:"2px solid #e0dcd6"};
+  var card = {background:"#ffffff",borderRadius:10,padding:"12px 16px",border:"1px solid #e8e4de",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"};
 
   return (
-    <div style={{display:"flex",flexDirection:"column",gap:12,height:"100%",overflow:"hidden"}}>
+    <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexShrink:0}}>
+        <span style={{fontSize:12,color:"#7a7068",fontWeight:600}}>分析期間</span>
+        {[["1","近 1 月"],["3","近 3 月"],["6","近 6 月"],["12","近 1 年"]].map(function(x){
+          var isA = period===x[0];
+          return (
+            <button key={x[0]} onClick={function(){setPeriod(x[0]);}}
+              style={{padding:"5px 14px",borderRadius:20,border:isA?"none":"1px solid #d8d4cc",
+                background:isA?"#7055c0":"transparent",color:isA?"#fff":"#7a7068",fontSize:12,fontWeight:isA?700:500,cursor:"pointer"}}>
+              {x[1]}
+            </button>
+          );
+        })}
+      </div>
 
-      {/* ── 設定列 ── */}
-      <div style={{flexShrink:0,background:"#ffffff",border:"1px solid #e8e4de",borderRadius:12,
-        padding:"12px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
-        <div style={{fontSize:12,fontWeight:700,color:"#2a2520",marginBottom:10,
-          display:"flex",alignItems:"center",gap:6}}>
-          ✦ 智能分析設定
+      <div style={{flex:1,overflowY:"auto",paddingBottom:30}}>
+
+        {/* 經營概況 */}
+        <div style={section}>
+          <div style={sTitle}>✦ 經營概況（近 {period} 個月）</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8}}>
+            <div style={Object.assign({},card,{textAlign:"center"})}>
+              <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>營業額</div>
+              <div style={{fontSize:18,fontWeight:800,color:"#b8910a"}}>${cur.rev.toLocaleString()}</div>
+              <div style={{fontSize:10,color:revGrowth>=0?"#2a7a2a":"#c0302a",marginTop:2,fontWeight:700}}>{revGrowth>=0?"▲":"▼"} {Math.abs(revGrowth)}% vs 前期</div>
+            </div>
+            <div style={Object.assign({},card,{textAlign:"center"})}>
+              <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>毛利額</div>
+              <div style={{fontSize:18,fontWeight:800,color:"#2a7a2a"}}>${cur.profit.toLocaleString()}</div>
+              <div style={{fontSize:10,color:"#7a7068",marginTop:2}}>毛利率 {profitRate}%</div>
+            </div>
+            <div style={Object.assign({},card,{textAlign:"center"})}>
+              <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>訂單數</div>
+              <div style={{fontSize:18,fontWeight:800,color:"#2a2520"}}>{cur.cnt} 筆</div>
+            </div>
+            <div style={Object.assign({},card,{textAlign:"center"})}>
+              <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>平均客單價</div>
+              <div style={{fontSize:18,fontWeight:800,color:"#4a8ec0"}}>${cur.avg.toLocaleString()}</div>
+            </div>
+          </div>
         </div>
-        <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}>
-          <div>
-            <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>分析月份範圍</div>
-            <div style={{display:"flex",gap:5}}>
-              {[["1","近1月"],["3","近3月"],["6","近6月"],["12","近1年"]].map(function(x){
-                var isA = months===x[0];
+
+        {/* 大方向建議 */}
+        <div style={section}>
+          <div style={sTitle}>✦ 經營建議</div>
+          {cur.cnt===0 ? (
+            <div style={Object.assign({},card,{textAlign:"center",color:"#c8c4bc",padding:"30px 0"})}>此期間尚無銷售資料</div>
+          ) : (
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {advices.map(function(a,i){
                 return (
-                  <button key={x[0]} onClick={function(){setMonths(x[0]); setResults(null);}}
-                    style={{padding:"5px 12px",borderRadius:20,fontSize:11,fontWeight:isA?700:500,
-                      border:isA?"none":"1px solid #d8d4cc",cursor:"pointer",
-                      background:isA?"#2a2520":"transparent",color:isA?"#ffffff":"#7a7068"}}>
-                    {x[1]}
-                  </button>
+                  <div key={i} style={Object.assign({},card,{display:"flex",gap:12,alignItems:"flex-start",borderLeft:"4px solid "+a.color})}>
+                    <span style={{fontSize:22,flexShrink:0}}>{a.icon}</span>
+                    <div>
+                      <div style={{fontSize:13,fontWeight:700,color:a.color,marginBottom:3}}>{a.title}</div>
+                      <div style={{fontSize:12,color:"#5a5048",lineHeight:1.6}}>{a.text}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* 品類營收分布 */}
+        {catList.length>0 && (
+          <div style={section}>
+            <div style={sTitle}>✦ 品類營收分布</div>
+            <div style={Object.assign({},card,{display:"flex",flexDirection:"column",gap:8})}>
+              {catList.map(function(c){
+                var pct = cur.rev>0?Math.round(c.rev/cur.rev*100):0;
+                return (
+                  <div key={c.name} style={{display:"flex",alignItems:"center",gap:10}}>
+                    <span style={{width:70,fontSize:11,color:"#5a5048",fontWeight:600,flexShrink:0}}>{c.name}</span>
+                    <div style={{flex:1,background:"#f0ede8",borderRadius:6,height:18,position:"relative",overflow:"hidden"}}>
+                      <div style={{position:"absolute",left:0,top:0,bottom:0,width:pct+"%",background:"linear-gradient(90deg,#9a7fd0,#7055c0)",borderRadius:6}}></div>
+                    </div>
+                    <span style={{width:90,fontSize:11,color:"#2a2520",fontWeight:700,textAlign:"right",flexShrink:0}}>${c.rev.toLocaleString()} ({pct}%)</span>
+                  </div>
                 );
               })}
             </div>
           </div>
-          <div>
-            <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>商品大分類</div>
-            <select value={filterMain} onChange={function(e){setFilterMain(e.target.value);setResults(null);}}
-              style={{background:"#f5f4f0",border:"1px solid #d8d4cc",borderRadius:6,padding:"5px 10px",
-                color:"#2a2520",fontSize:11,cursor:"pointer",outline:"none"}}>
-              <option value="">全部分類</option>
-              {MAIN_CATS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
-            </select>
-          </div>
-          <button onClick={runAnalysis} disabled={generating}
-            style={{padding:"8px 22px",borderRadius:9,border:"none",cursor:generating?"default":"pointer",
-              background:generating?"#e0dcd6":"#2a2520",color:"#ffffff",fontSize:12,fontWeight:700,
-              boxShadow:generating?"none":"0 2px 8px rgba(42,37,32,0.2)",transition:"all 0.2s",
-              display:"flex",alignItems:"center",gap:6}}>
-            {generating ? (
-              <span>⏳ 分析中…</span>
-            ) : (
-              <span>✦ 產生智能建議</span>
-            )}
-          </button>
-          {results && (
-            <span style={{fontSize:10,color:"#9a968e",marginLeft:"auto"}}>
-              共分析 {results.items.length} 個品項
-            </span>
-          )}
+        )}
+
+        <div style={{fontSize:10,color:"#aaa69e",textAlign:"center",marginTop:6}}>
+          建議僅供參考，請依實際營運狀況綜合判斷
         </div>
+
       </div>
-
-      {/* ── 未執行提示 ── */}
-      {!results && !generating && (
-        <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,color:"#c8c4bc"}}>
-          <div style={{fontSize:40}}>✦</div>
-          <div style={{fontSize:14,fontWeight:600,color:"#b8b0a4"}}>設定條件後按「產生智能建議」</div>
-          <div style={{fontSize:11,color:"#c8c4bc",textAlign:"center",maxWidth:320,lineHeight:1.8}}>
-            系統將依據銷售量、毛利率、週轉率與庫存天數<br/>
-            自動產生淘汰、補貨、成長與庫存風險建議
-          </div>
-        </div>
-      )}
-
-      {/* ── 產生中動畫 ── */}
-      {generating && (
-        <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}>
-          <div style={{fontSize:32,animation:"spin 1s linear infinite"}}>⏳</div>
-          <div style={{fontSize:13,color:"#9a968e"}}>正在分析進銷存資料…</div>
-          <div style={{fontSize:11,color:"#c8c4bc"}}>計算週轉率、毛利率、庫存風險中</div>
-        </div>
-      )}
-
-      {/* ── 分析結果 ── */}
-      {results && !generating && (
-        <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",gap:8}}>
-
-          {/* 摘要卡片列 */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:6,flexShrink:0}}>
-            {Object.keys(TAG_CONFIG).map(function(k){
-              var cfg = TAG_CONFIG[k];
-              var cnt = results.summary[k]||0;
-              return (
-                <button key={k} onClick={function(){setActiveType(activeType===k?"all":k);}}
-                  style={{padding:"8px 6px",borderRadius:9,textAlign:"center",cursor:"pointer",border:"none",
-                    background:activeType===k?cfg.bg:"#f8f7f4",
-                    boxShadow:activeType===k?"0 0 0 2px "+cfg.color:"none",
-                    transition:"all 0.15s"}}>
-                  <div style={{fontSize:16,marginBottom:2}}>{cfg.label.split(" ")[0]}</div>
-                  <div style={{fontSize:18,fontWeight:800,color:cnt>0?cfg.color:"#c8c4bc"}}>{cnt}</div>
-                  <div style={{fontSize:9,color:"#9a968e",marginTop:1}}>{cfg.desc}</div>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* 篩選 Tab */}
-          <div style={{display:"flex",gap:4,flexShrink:0,flexWrap:"wrap"}}>
-            {TYPE_FILTERS.map(function(t){
-              var isA = activeType===t.key;
-              var cnt = t.key==="all" ? results.items.length : (results.summary[t.key]||0);
-              return (
-                <button key={t.key} onClick={function(){setActiveType(t.key);}}
-                  style={{padding:"3px 12px",borderRadius:20,fontSize:11,cursor:"pointer",
-                    border:isA?"none":"1px solid #d8d4cc",
-                    background:isA?"#2a2520":"transparent",
-                    color:isA?"#ffffff":"#7a7068",fontWeight:isA?700:500}}>
-                  {t.label} <span style={{fontSize:10,opacity:0.7}}>({cnt})</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* 品項列表 */}
-          <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:6}}>
-            {displayItems.length===0 ? (
-              <div style={{textAlign:"center",color:"#c8c4bc",padding:"30px 0",fontSize:12}}>此類別無品項</div>
-            ) : displayItems.map(function(p){
-              var cfg = TAG_CONFIG[p.tag]||TAG_CONFIG.watch;
-              return (
-                <div key={p.sku} style={{background:"#ffffff",border:"1px solid #e8e4de",borderRadius:10,
-                  padding:"12px 14px",boxShadow:"0 1px 3px rgba(0,0,0,0.04)",
-                  borderLeft:"4px solid "+cfg.color}}>
-                  <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
-                    {/* 左：商品資訊 */}
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
-                        <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:20,
-                          background:cfg.bg,color:cfg.color}}>
-                          {cfg.label}
-                        </span>
-                        <span style={{fontSize:11,fontWeight:700,color:"#2a2520"}}>{p.name}</span>
-                        <span style={{fontSize:10,color:"#9a968e",fontFamily:"monospace"}}>{p.sku}</span>
-                        <span style={{fontSize:10,color:CAT_COLORS[p.main]||"#b8910a"}}>{p.main}</span>
-                      </div>
-                      {/* 建議文字 */}
-                      <div style={{fontSize:11,color:"#5a5050",lineHeight:1.6,
-                        background:cfg.bg,borderRadius:7,padding:"6px 10px",marginBottom:6}}>
-                        {p.suggestion}
-                      </div>
-                    </div>
-                    {/* 右：數據卡 */}
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:5,flexShrink:0,width:220}}>
-                      {[
-                        {label:"期間銷售",value:p.soldQty+"件",color:"#2a2520"},
-                        {label:"銷售額",value:"$"+p.soldRev.toLocaleString(),color:"#b8910a"},
-                        {label:"毛利率",value:(p.grossMarginRate*100).toFixed(0)+"%",
-                          color:p.grossMarginRate>=0.3?"#3d9e32":p.grossMarginRate>=0.15?"#b8910a":"#d0552f"},
-                        {label:"週轉率",value:p.soldQty===0?"0.00":p.turnover.toFixed(2),
-                          color:p.turnover>=2?"#3d9e32":p.turnover>=0.5?"#b8910a":"#d0552f"},
-                        {label:"庫存量",value:p.stock+"件",
-                          color:p.stock<=5?"#d0552f":p.stock>=30?"#7055c0":"#2a2520"},
-                        {label:"庫存天數",value:p.stockDays>=9999?"—":p.stockDays+"天",
-                          color:p.stockDays<30?"#d0552f":p.stockDays>90?"#7055c0":"#3d9e32"},
-                      ].map(function(kv){
-                        return (
-                          <div key={kv.label} style={{background:"#f8f7f4",borderRadius:7,padding:"5px 7px",textAlign:"center"}}>
-                            <div style={{fontSize:8,color:"#9a968e",marginBottom:1}}>{kv.label}</div>
-                            <div style={{fontSize:12,fontWeight:700,color:kv.color}}>{kv.value}</div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -8450,7 +8321,7 @@ function POSSystem() {
             {activeTab==="orders"    && <OrdersDrawer orders={orders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedStocks={sharedStocks} sharedAddLog={sharedAddLog}/>}
             {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers}/>}
             {activeTab==="purchase"  && <PurchasePanel purchases={purchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
-            {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={orders}/>}
+            {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={orders} products={sharedProducts}/>}
             {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={orders} products={sharedProducts} stocks={sharedStocks}/>}
             {activeTab==="consign"   && isManager && <ConsignSettlement orders={orders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
             {activeTab==="attendance"&& <AttendanceReport shiftLog={shiftLog} staffRates={staffRates} setStaffRates={setStaffRates} schedule={schedule} setSchedule={setSchedule} isManager={isManager} currentStaff={currentStaff}/>}
