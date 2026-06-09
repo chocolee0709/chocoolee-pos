@@ -834,6 +834,13 @@ var STAFF_LIST = [
 // 管理者專屬密碼（只有 Choco 知道，用於檢視營收/毛利/成本等敏感資料）
 var ADMIN_CODE = "0501";
 
+// 固定週班表（0=日,1=一,...6=六）。null=休假。可在出勤頁調整
+// Alice：週二三五六 12:00-17:00，週一四日休
+var DEFAULT_SHIFTS = {
+  "Choco": {0:{s:"11:00",e:"20:00"},1:{s:"11:00",e:"20:00"},2:{s:"11:00",e:"20:00"},3:{s:"11:00",e:"20:00"},4:{s:"11:00",e:"20:00"},5:{s:"11:00",e:"20:00"},6:{s:"11:00",e:"20:00"}},
+  "Alice": {0:null,1:null,2:{s:"12:00",e:"17:00"},3:{s:"12:00",e:"17:00"},4:null,5:{s:"12:00",e:"17:00"},6:{s:"12:00",e:"17:00"}}
+};
+
 // ── 會員等級規則 ──
 const SILVER_MIN = 3800;
 const POINT_PER  = 79;
@@ -6223,12 +6230,42 @@ function ConsignSettlement(props) {
 // ── 出勤記錄與月結薪資 ─────────────────────────────────────────────
 function AttendanceReport(props) {
   var shiftLog = props.shiftLog || [];
+  var setShiftLog = props.setShiftLog || function(){};
   var staffRates = props.staffRates || {};
   var setStaffRates = props.setStaffRates || function(){};
   var schedule = props.schedule || {};
   var setSchedule = props.setSchedule || function(){};
   var isManager = props.isManager;
   var viewerStaff = props.currentStaff;
+
+  // 店長補登/修改打卡時間（用 loginAt 當識別）
+  function editShiftTime(shiftLoginAt, name) {
+    var rec = shiftLog.find(function(s){ return s.loginAt===shiftLoginAt && s.name===name; });
+    if (!rec) { alert("找不到該筆記錄"); return; }
+    var dateStr = rec.loginAt ? rec.loginAt.slice(0,10) : localDate();
+    var newIn = window.prompt("修改「上班」時間（格式 HH:MM，例如 12:00）", rec.loginTime||"");
+    if (newIn === null) return;
+    var newOut = window.prompt("修改「下班」時間（格式 HH:MM，留空表示尚未下班）", rec.logoutTime||"");
+    if (newOut === null) return;
+    setShiftLog(function(prev){
+      return prev.map(function(s){
+        if (s.loginAt!==shiftLoginAt || s.name!==name) return s;
+        var n = Object.assign({}, s);
+        if (newIn.trim()) {
+          n.loginTime = newIn.trim();
+          n.loginAt = dateStr + "T" + newIn.trim() + ":00";
+        }
+        if (newOut.trim()) {
+          n.logoutTime = newOut.trim();
+          n.logoutAt = dateStr + "T" + newOut.trim() + ":00";
+          n.logoutType = "店長補登";
+        } else {
+          n.logoutTime = null; n.logoutAt = null;
+        }
+        return n;
+      });
+    });
+  }
 
   var today = new Date();
   var ys = useState(String(today.getFullYear()));  var selYear  = ys[0], setSelYear  = ys[1];
@@ -6518,6 +6555,7 @@ function AttendanceReport(props) {
                             <th style={{padding:"6px 12px",textAlign:"center",borderBottom:"1px solid #e8e4de"}}>狀態</th>
                             <th style={{padding:"6px 12px",textAlign:"center",borderBottom:"1px solid #e8e4de"}}>工時</th>
                             {isManager && <th style={{padding:"6px 12px",textAlign:"right",borderBottom:"1px solid #e8e4de"}}>當班薪資</th>}
+                            {isManager && <th style={{padding:"6px 8px",textAlign:"center",borderBottom:"1px solid #e8e4de",width:36}}>修改</th>}
                           </tr>
                         </thead>
                         <tbody>
@@ -6540,6 +6578,10 @@ function AttendanceReport(props) {
                                 </td>
                                 <td style={{padding:"6px 12px",textAlign:"center",fontWeight:700,color:"#2a2520",borderBottom:"1px solid #f0ede8"}}>{sh.hours.toFixed(2)} 小時</td>
                                 {isManager && <td style={{padding:"6px 12px",textAlign:"right",fontWeight:700,color:"#b8910a",borderBottom:"1px solid #f0ede8"}}>${sh.pay.toLocaleString()}</td>}
+                                {isManager && <td style={{padding:"6px 8px",textAlign:"center",borderBottom:"1px solid #f0ede8"}}>
+                                  <button onClick={function(){editShiftTime(sh.loginAt, s.name);}}
+                                    style={{background:"none",border:"none",cursor:"pointer",fontSize:13}} title="補登/修改打卡時間">✏️</button>
+                                </td>}
                               </tr>
                             );
                           })}
@@ -6549,6 +6591,7 @@ function AttendanceReport(props) {
                             <td colSpan={4} style={{padding:"7px 12px",fontSize:11,color:"#7a7068"}}>合計（共 {s.shifts.length} 班）</td>
                             <td style={{padding:"7px 12px",textAlign:"center",color:"#3d9e32",fontSize:13}}>{s.totalHours.toFixed(2)} 小時</td>
                             {isManager && <td style={{padding:"7px 12px",textAlign:"right",color:"#b8910a",fontSize:14}}>${s.totalPay.toLocaleString()}</td>}
+                            {isManager && <td style={{borderBottom:"none"}}></td>}
                           </tr>
                         </tfoot>
                       </table>
@@ -8612,7 +8655,7 @@ function POSSystem() {
             {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={orders} products={sharedProducts} stocks={sharedStocks}/>}
             {activeTab==="consign"   && isManager && <ConsignSettlement orders={orders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
             {activeTab==="expense"   && isManager && <ExpensePanel expenses={expenses} setExpenses={saveExpenses} orders={orders} products={sharedProducts} currentStaff={currentStaff}/>}
-            {activeTab==="attendance"&& <AttendanceReport shiftLog={shiftLog} staffRates={staffRates} setStaffRates={setStaffRates} schedule={schedule} setSchedule={setSchedule} isManager={isManager} currentStaff={currentStaff}/>}
+            {activeTab==="attendance"&& <AttendanceReport shiftLog={shiftLog} setShiftLog={saveShiftLog} staffRates={staffRates} setStaffRates={setStaffRates} schedule={schedule} setSchedule={setSchedule} isManager={isManager} currentStaff={currentStaff}/>}
             {(activeTab==="analytics"||activeTab==="smart"||activeTab==="consign") && !isManager && (
               <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,color:"#c8c4bc"}}>
                 <div style={{fontSize:40}}>🔒</div>
