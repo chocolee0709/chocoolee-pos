@@ -479,10 +479,6 @@
 
   // ── 自動偵測新版：定期比對線上 index.html 的內容，有更新就提示重新整理 ──
   (function setupUpdateCheck(){
-    // file:// 模式（本地檔案直接開）不支援 fetch，跳過自動偵測避免 CORS 錯誤
-    if (location.protocol !== "http:" && location.protocol !== "https:") {
-      return;
-    }
     var INDEX_URL = "index.html";
     var currentHash = null;
     function simpleHash(str){
@@ -6320,14 +6316,43 @@ function AttendanceReport(props) {
 
   monthShifts.forEach(function(s){
     if (!staffMap[s.name]) {
-      staffMap[s.name] = {name:s.name, role:s.role||"—", hourlyRate:staffRates[s.name]||0, totalHours:0, totalPay:0, shifts:[]};
+      staffMap[s.name] = {name:s.name, role:s.role||"—", hourlyRate:staffRates[s.name]||0, totalHours:0, totalPay:0, shifts:[], _dayGroups:{}};
     }
-    var calc = calcShift(s);
-    var rate = staffMap[s.name].hourlyRate;
-    var pay = Math.round(calc.hours * rate);
-    staffMap[s.name].totalHours += calc.hours;
-    staffMap[s.name].totalPay += pay;
-    staffMap[s.name].shifts.push(Object.assign({}, s, calc, {pay:pay, rate:rate}));
+    if (!staffMap[s.name]._dayGroups) staffMap[s.name]._dayGroups = {};
+    var day = s.loginAt.slice(0,10);
+    var g = staffMap[s.name]._dayGroups[day];
+    if (!g) {
+      staffMap[s.name]._dayGroups[day] = {
+        name:s.name, date:day,
+        loginAt:s.loginAt, loginTime:s.loginTime,
+        logoutAt:s.logoutAt||null, logoutTime:s.logoutTime||null,
+        logoutType:s.logoutType||null,
+        recCount:1
+      };
+    } else {
+      g.recCount += 1;
+      // 取最早上班
+      if (s.loginAt < g.loginAt) { g.loginAt = s.loginAt; g.loginTime = s.loginTime; }
+      // 取最晚下班（有 logoutAt 才比較）
+      if (s.logoutAt && (!g.logoutAt || s.logoutAt > g.logoutAt)) {
+        g.logoutAt = s.logoutAt; g.logoutTime = s.logoutTime; g.logoutType = s.logoutType||g.logoutType;
+      }
+    }
+  });
+
+  // 把每人每日合併後的群組，算工時並放入 shifts
+  Object.keys(staffMap).forEach(function(name){
+    var sm = staffMap[name];
+    if (!sm._dayGroups) return;
+    Object.keys(sm._dayGroups).sort().forEach(function(day){
+      var g = sm._dayGroups[day];
+      var calc = calcShift(g);
+      var rate = sm.hourlyRate;
+      var pay = Math.round(calc.hours * rate);
+      sm.totalHours += calc.hours;
+      sm.totalPay += pay;
+      sm.shifts.push(Object.assign({}, g, calc, {pay:pay, rate:rate}));
+    });
   });
 
   var staffArr = Object.values(staffMap).filter(function(s){
@@ -6567,7 +6592,10 @@ function AttendanceReport(props) {
                             var statusIcon  = isLive?"🟢":sh.status==="手動下班"?"🔴":"🔄";
                             return (
                               <tr key={i} style={{background:i%2===0?"#ffffff":"#faf9f7"}}>
-                                <td style={{padding:"6px 12px",color:"#7a7068",borderBottom:"1px solid #f0ede8"}}>{date}</td>
+                                <td style={{padding:"6px 12px",color:"#7a7068",borderBottom:"1px solid #f0ede8"}}>
+                                  {date}
+                                  {sh.recCount>1 && <span style={{fontSize:9,color:"#9a968e",marginLeft:4}}>（{sh.recCount}筆合併）</span>}
+                                </td>
                                 <td style={{padding:"6px 12px",textAlign:"center",color:"#3d9e32",fontWeight:600,borderBottom:"1px solid #f0ede8"}}>{sh.loginTime||"—"}</td>
                                 <td style={{padding:"6px 12px",textAlign:"center",fontWeight:600,borderBottom:"1px solid #f0ede8",
                                   color:isLive?"#3d9e32":"#d0552f"}}>
