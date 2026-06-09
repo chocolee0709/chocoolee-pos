@@ -479,6 +479,10 @@
 
   // ── 自動偵測新版：定期比對線上 index.html 的內容，有更新就提示重新整理 ──
   (function setupUpdateCheck(){
+    // file:// 模式（本地檔案直接開）不支援 fetch，跳過自動偵測避免 CORS 錯誤
+    if (location.protocol !== "http:" && location.protocol !== "https:") {
+      return;
+    }
     var INDEX_URL = "index.html";
     var currentHash = null;
     function simpleHash(str){
