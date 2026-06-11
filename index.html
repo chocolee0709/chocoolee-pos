@@ -5660,12 +5660,15 @@ function HistoryPanel(props) {
   }
 
   // 年度合計
-  var yearRev=0, yearExp=0;
+  var yearRev=0, yearExp=0, lastYearRevTotal=0;
   months.forEach(function(m){
     var h = history[key(m)];
     if (h) { yearRev += h.rev||0; yearExp += h.expense||0; }
+    var lh = history[(year-1)+"-"+String(m).padStart(2,"0")];
+    if (lh) { lastYearRevTotal += lh.rev||0; }
   });
   var yearNet = yearRev - yearExp;
+  var yearYoY = (lastYearRevTotal>0 && yearRev>0) ? Math.round((yearRev-lastYearRevTotal)/lastYearRevTotal*100) : null;
 
   var section = {marginBottom:18};
   var sTitle = {fontSize:13,fontWeight:700,color:"#2a2520",marginBottom:10,letterSpacing:"0.06em",paddingBottom:6,borderBottom:"2px solid #e0dcd6"};
@@ -5690,6 +5693,7 @@ function HistoryPanel(props) {
             <div style={Object.assign({},card,{textAlign:"center"})}>
               <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>年度營業額</div>
               <div style={{fontSize:18,fontWeight:800,color:"#b8910a"}}>${yearRev.toLocaleString()}</div>
+              {yearYoY!==null && <div style={{fontSize:10,fontWeight:700,marginTop:2,color:yearYoY>=0?"#2a7a2a":"#c0302a"}}>{yearYoY>=0?"▲ +"+yearYoY+"%":"▼ "+yearYoY+"%"} vs {year-1}</div>}
             </div>
             <div style={Object.assign({},card,{textAlign:"center"})}>
               <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>年度總支出</div>
@@ -5709,11 +5713,13 @@ function HistoryPanel(props) {
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
               <thead>
                 <tr style={{background:"#f5f4f0",fontSize:10,color:"#9a968e"}}>
-                  <th style={{padding:"8px 10px",textAlign:"left"}}>月份</th>
-                  <th style={{padding:"8px 10px",textAlign:"right"}}>營業額</th>
-                  <th style={{padding:"8px 10px",textAlign:"right"}}>總支出</th>
-                  <th style={{padding:"8px 10px",textAlign:"right"}}>淨利</th>
-                  <th style={{padding:"8px 10px",textAlign:"center",width:60}}></th>
+                  <th style={{padding:"8px 6px",textAlign:"left"}}>月份</th>
+                  <th style={{padding:"8px 6px",textAlign:"right"}}>營業額</th>
+                  <th style={{padding:"8px 6px",textAlign:"right"}}>總支出</th>
+                  <th style={{padding:"8px 6px",textAlign:"right"}}>淨利</th>
+                  <th style={{padding:"8px 6px",textAlign:"center"}}>營收年增</th>
+                  <th style={{padding:"8px 6px",textAlign:"center"}}>淨利年增</th>
+                  <th style={{padding:"8px 6px",textAlign:"center",width:50}}></th>
                 </tr>
               </thead>
               <tbody>
@@ -5724,21 +5730,44 @@ function HistoryPanel(props) {
                   var expense = Number(getVal(m,"expense"))||0;
                   var net = rev - expense;
                   var hasEdit = edits[k] && (edits[k].rev!==undefined || edits[k].expense!==undefined);
+                  // 去年同月
+                  var lastYearKey = (year-1) + "-" + String(m).padStart(2,"0");
+                  var lastYearH = history[lastYearKey];
+                  var lastYearRev = lastYearH ? (lastYearH.rev||0) : 0;
+                  var lastYearNet = lastYearH ? ((lastYearH.rev||0)-(lastYearH.expense||0)) : 0;
+                  // 營收年增率
+                  var yoy = null;
+                  if (lastYearRev > 0 && rev > 0) {
+                    yoy = Math.round((rev - lastYearRev) / lastYearRev * 100);
+                  }
+                  // 淨利年增率
+                  var netYoy = null;
+                  if (lastYearH && lastYearNet !== 0 && (rev||expense)) {
+                    netYoy = Math.round((net - lastYearNet) / Math.abs(lastYearNet) * 100);
+                  }
                   return (
                     <tr key={m} style={{borderBottom:"1px solid #f0ede8",background:saved?"#fffdf5":"#fff"}}>
-                      <td style={{padding:"7px 10px",fontWeight:600,color:"#2a2520"}}>{monthNames[m-1]}</td>
-                      <td style={{padding:"5px 8px"}}>
+                      <td style={{padding:"7px 6px",fontWeight:600,color:"#2a2520"}}>{monthNames[m-1]}</td>
+                      <td style={{padding:"5px 5px"}}>
                         <input type="number" value={getVal(m,"rev")} onChange={function(e){setEdit(m,"rev",e.target.value);}} placeholder="0" style={inp}/>
                       </td>
-                      <td style={{padding:"5px 8px"}}>
+                      <td style={{padding:"5px 5px"}}>
                         <input type="number" value={getVal(m,"expense")} onChange={function(e){setEdit(m,"expense",e.target.value);}} placeholder="0" style={inp}/>
                       </td>
-                      <td style={{padding:"7px 10px",textAlign:"right",fontWeight:700,color:net>=0?"#2a7a2a":"#c0302a"}}>
+                      <td style={{padding:"7px 6px",textAlign:"right",fontWeight:700,color:net>=0?"#2a7a2a":"#c0302a"}}>
                         {(rev||expense)?"$"+net.toLocaleString():"—"}
                       </td>
-                      <td style={{padding:"5px 8px",textAlign:"center"}}>
+                      <td style={{padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:11,
+                        color:yoy===null?"#c8c4bc":yoy>=0?"#2a7a2a":"#c0302a"}}>
+                        {yoy===null?"—":(yoy>=0?"▲+"+yoy+"%":"▼"+yoy+"%")}
+                      </td>
+                      <td style={{padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:11,
+                        color:netYoy===null?"#c8c4bc":netYoy>=0?"#2a7a2a":"#c0302a"}}>
+                        {netYoy===null?"—":(netYoy>=0?"▲+"+netYoy+"%":"▼"+netYoy+"%")}
+                      </td>
+                      <td style={{padding:"5px 5px",textAlign:"center"}}>
                         <button onClick={function(){saveMonth(m);}}
-                          style={{background:hasEdit?"#b8910a":"#e8e4de",border:"none",borderRadius:5,padding:"5px 10px",
+                          style={{background:hasEdit?"#b8910a":"#e8e4de",border:"none",borderRadius:5,padding:"5px 8px",
                             color:hasEdit?"#fff":"#9a968e",fontSize:11,fontWeight:700,cursor:"pointer"}}>
                           {saved&&!hasEdit?"✓":"儲存"}
                         </button>
