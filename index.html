@@ -2893,7 +2893,22 @@ function OrdersDrawer(props) {
                         <span style={{fontSize:12,color:"#9a968e"}}>實收 <b style={{color:"#b8910a"}}>${o.total.toLocaleString()}</b></span>
                       </div>
                     )}
-                    {o.detail && (
+                    {o.cartSnapshot && o.cartSnapshot.length > 0 ? (
+                      <div style={{fontSize:12,color:"#7a7068"}}>
+                        {o.cartSnapshot.map(function(item,idx){
+                          var price = Number(item.price)||0;
+                          var qty = Number(item.qty)||0;
+                          return (
+                            <div key={idx} style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+                              paddingLeft:8,borderLeft:"2px solid #2e2a22",marginBottom:3,gap:8}}>
+                              <span style={{flex:1,color:"#2a2520"}}>{item.name}</span>
+                              <span style={{color:"#9a968e",fontSize:11,whiteSpace:"nowrap"}}>${price.toLocaleString()} × {qty}</span>
+                              <span style={{color:"#b8910a",fontWeight:700,minWidth:60,textAlign:"right",whiteSpace:"nowrap"}}>${(price*qty).toLocaleString()}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : o.detail && (
                       <div style={{fontSize:12,color:"#7a7068",lineHeight:1.7}}>
                         {o.detail.split("、").map(function(item,idx){
                           return <div key={idx} style={{paddingLeft:8,borderLeft:"2px solid #2e2a22",marginBottom:2}}>　{item}</div>;
