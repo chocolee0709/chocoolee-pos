@@ -3447,11 +3447,10 @@ function PurchasePanel(props) {
     alert("✓ 已暫存驗收進度，等全數到貨再送出");
   }
 
-  // 店長覆驗：確認入庫
+  // 店長覆驗：確認入庫（支援局部簽收）
   function confirmPurchase() {
-    if (!confirm("確認完成？將自動入庫並建立新品")) return;
+    if (!confirm("確認入庫本次到貨？未到貨項目會留在待收貨。")) return;
     var po = Object.assign({}, selPo, {
-      status: "completed",
       confirmedBy: currentStaff ? currentStaff.name : "—",
       confirmedAt: new Date().toISOString().slice(0,16).replace("T", " "),
       updatedAt: new Date().toISOString()
@@ -3497,7 +3496,10 @@ function PurchasePanel(props) {
     }
 
     po.items.forEach(function(item) {
-      var goodQty = (item.receivedQty || 0) - (item.damagedQty || 0);
+      // 局部簽收：本次實收良品 = (本次實收 − 破損) − 之前已入庫
+      var goodTotal = (item.receivedQty || 0) - (item.damagedQty || 0);
+      var alreadyStocked = item.stockedQty || 0;
+      var goodQty = goodTotal - alreadyStocked; // 這次新入庫的數量
       if (goodQty <= 0) return;
 
       if (item.isNew) {
@@ -3572,9 +3574,27 @@ function PurchasePanel(props) {
     }
     if (logs.length > 0 && sharedAddLog) sharedAddLog(logs);
 
+    // 更新每項「已入庫數量」(stockedQty)，並判斷是否全數到齊
+    var allReceived = true;
+    po.items = po.items.map(function(item){
+      var goodTotal = (item.receivedQty || 0) - (item.damagedQty || 0);
+      var newStocked = Math.max(item.stockedQty||0, goodTotal); // 累積已入庫
+      if (newStocked < item.qty) allReceived = false; // 還沒到齊
+      return Object.assign({}, item, {stockedQty:newStocked});
+    });
+    // 全到齊 → completed；否則 → 退回 pending（待收貨），等剩餘到貨再簽收
+    if (allReceived) {
+      po.status = "completed";
+    } else {
+      po.status = "pending";
+      po.partialReceived = true; // 標記局部簽收過
+    }
+
     setPurchases(function(prev){ return prev.map(function(p){ return p.no === po.no ? po : p; }); });
     setMode("list"); setSelPo(null);
-    if (dupWarnings.length > 0) {
+    if (!allReceived) {
+      alert("✓ 已入庫本次到貨部份\n\n此採購單尚有未到貨項目，已退回「待收貨」，等剩餘到貨再簽收。");
+    } else if (dupWarnings.length > 0) {
       alert("✓ 採購單已完成，庫存已更新\n\n⚠️ 偵測到重複貨號，已自動改號避免覆蓋資料：\n" + dupWarnings.join("\n") + "\n\n請到商品庫存確認並調整這些貨號。");
     } else {
       alert("✓ 採購單已完成，庫存已更新");
@@ -4407,6 +4427,11 @@ function PurchaseReceiver(props) {
         <span>建立日期：{po.date}</span>
         {po.eta && <span>預計到貨：{po.eta}</span>}
       </div>
+      {po.partialReceived && (
+        <div style={{flexShrink:0,fontSize:11,color:"#b8910a",background:"#fffbeb",border:"1px solid #f0e0b0",borderRadius:6,padding:"6px 10px"}}>
+          📦 此單已局部簽收過。「實收」請填<b>累計總到貨量</b>（含已入庫），系統只會入庫新增的部份。
+        </div>
+      )}
 
       <div style={{flex:1,overflowY:"auto",background:"#fff",borderRadius:8,padding:10}}>
         <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
@@ -4415,6 +4440,7 @@ function PurchaseReceiver(props) {
               <th style={{padding:"6px 4px",textAlign:"center",width:60}}>圖片</th>
               <th style={{padding:"6px 4px",textAlign:"left"}}>商品</th>
               <th style={{padding:"6px 4px",textAlign:"center",width:60}}>採購</th>
+              <th style={{padding:"6px 4px",textAlign:"center",width:55,color:"#3d9e32"}}>已入庫</th>
               <th style={{padding:"6px 4px",textAlign:"center",width:70}}>實收</th>
               <th style={{padding:"6px 4px",textAlign:"center",width:70}}>破損</th>
               <th style={{padding:"6px 4px",textAlign:"center",width:60}}>狀態</th>
@@ -4441,8 +4467,11 @@ function PurchaseReceiver(props) {
                     <div style={{fontSize:9,color:"#9a968e"}}>{item.sku}</div>
                   </td>
                   <td style={{padding:"6px 4px",textAlign:"center"}}>{item.qty}</td>
+                  <td style={{padding:"6px 4px",textAlign:"center",color:item.stockedQty>0?"#3d9e32":"#c8c4bc",fontWeight:item.stockedQty>0?700:400}}>
+                    {item.stockedQty>0?item.stockedQty:"—"}
+                  </td>
                   <td style={{padding:"6px 4px",textAlign:"center"}}>
-                    <input type="number" min="0" value={item.receivedQty||""} disabled={readOnly}
+                    <input type="number" min="0" value={item.receivedQty!==undefined&&item.receivedQty!==""?item.receivedQty:(item.stockedQty||"")} disabled={readOnly}
                       onChange={function(e){updateItem(idx,"receivedQty",Number(e.target.value)||0);}}
                       style={{width:55,padding:"3px",border:"1px solid "+(diff<0?"#d0552f":"#d8d4cc"),borderRadius:4,fontSize:11,textAlign:"center",background:readOnly?"#f5f4f0":"#fff"}}/>
                   </td>
@@ -4454,7 +4483,8 @@ function PurchaseReceiver(props) {
                   <td style={{padding:"6px 4px",textAlign:"center",fontSize:10}}>
                     {!item.receivedQty ? <span style={{color:"#9a968e"}}>—</span>
                       : bad ? <span style={{color:"#d0552f",fontWeight:700}}>⚠️ 異常</span>
-                      : <span style={{color:"#3d9e32",fontWeight:700}}>✓ 完整</span>}
+                      : received >= item.qty ? <span style={{color:"#3d9e32",fontWeight:700}}>✓ 到齊</span>
+                      : <span style={{color:"#b8910a",fontWeight:700}}>部份（{received}/{item.qty}）</span>}
                   </td>
                 </tr>
               );
