@@ -3305,7 +3305,7 @@ function MembersDrawer(props) {
               <div><label style={lbl}>Email</label><input value={form.email} onChange={function(e){setF("email",e.target.value);}} placeholder="選填" style={inp}/></div>
               <div><label style={lbl}>備註</label><input value={form.note} onChange={function(e){setF("note",e.target.value);}} placeholder="選填" style={inp}/></div>
               <div><label style={lbl}>累積消費金額 (NT$)</label><input type="number" value={form.spent} onChange={function(e){setF("spent",e.target.value);}} style={inp}/></div>
-              <div><label style={lbl}>年度單筆>=萬 次數</label><input type="number" min="0" value={form.highCount} onChange={function(e){setF("highCount",e.target.value);}} style={inp}/></div>
+              <div><label style={lbl}>年度單筆滿萬 次數</label><input type="number" min="0" value={form.highCount} onChange={function(e){setF("highCount",e.target.value);}} style={inp}/></div>
             </div>
             {showPreview && (
               <div style={{background:"#eeece8",borderRadius:7,padding:"7px 10px",marginBottom:10,display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
