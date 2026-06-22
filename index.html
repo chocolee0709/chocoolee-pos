@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -8033,7 +8033,7 @@ function POSSystem() {
   var inp = {background:"#ffffff",border:"1px solid #2e2a22",borderRadius:6,padding:"7px 10px",color:"#2a2520",fontSize:12,outline:"none"};
 
   return (
-    <div style={{fontFamily:"'Noto Sans TC','DM Sans',sans-serif",background:"#f5f4f0",color:"#2a2520",height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+    <div style={{fontFamily:"'Noto Sans TC','DM Sans',sans-serif",background:"#f5f4f0",color:"#2a2520",height:"100dvh",minHeight:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
 
       {/* ── Top Bar ── */}
       <div style={{background:"#ffffff",borderBottom:"1px solid #2e2a22",padding:"0 16px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,height:50,gap:12}}>
@@ -8422,7 +8422,7 @@ function POSSystem() {
         </div>
 
         {/* ── Main Tabs ── */}
-        <div style={{display:"flex",alignItems:"center",gap:2,flex:1,justifyContent:"center"}}>
+        <div style={{display:"flex",alignItems:"center",gap:2,flex:1,justifyContent:"center",overflowX:"auto",overflowY:"hidden",WebkitOverflowScrolling:"touch"}}>
           {ALL_TABS.map(function(tab) {
             var isA = activeTab===tab.key;
             var dot = tab.key==="catalog" && lowCount>0 && !isA;
@@ -8431,7 +8431,7 @@ function POSSystem() {
                 style={{display:"flex",alignItems:"center",gap:5,padding:"6px 14px",borderRadius:8,border:"none",
                   background:isA?"#b8910a":"transparent",
                   color:isA?"#ffffff":"#9a968e",
-                  cursor:"pointer",fontSize:12,fontWeight:isA?700:500,
+                  cursor:"pointer",fontSize:12,fontWeight:isA?700:500,flexShrink:0,whiteSpace:"nowrap",
                   position:"relative",transition:"all 0.15s"}}>
                 <span style={{fontSize:13}}>{tab.icon}</span>
                 {tab.label}
@@ -8502,7 +8502,7 @@ function POSSystem() {
 
         {/* ════ 收銀台 ════ */}
         {activeTab==="pos" && (
-          <div style={{display:"flex",flex:1,overflow:"hidden"}}>
+          <div style={{display:"flex",flex:1,overflow:"hidden",minWidth:0}}>
 
             {/* LEFT: 大分類 */}
             <div style={{width:78,background:"#eeece8",borderRight:"1px solid #2e2a22",display:"flex",flexDirection:"column",padding:"8px 5px",gap:4,flexShrink:0,overflowY:"auto"}}>
@@ -8531,7 +8531,7 @@ function POSSystem() {
             </div>
 
         {/* MIDDLE */}
-        <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:180}}>
 
           {/* Row 1: Search */}
           <div style={{padding:"10px 12px 0",flexShrink:0}}>
@@ -8586,7 +8586,7 @@ function POSSystem() {
 
           {/* Product Grid */}
           <div style={{padding:"8px 12px",flex:1,overflowY:"auto"}}>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))",gap:7}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(90px,1fr))",gap:7}}>
               {filtered.slice(0,120).map(function(p) {
                 var inCart = cart.find(function(i){return i.id===p.id;});
                 var cc = CAT_COLORS[p.main]||"#b8910a";
@@ -8623,7 +8623,7 @@ function POSSystem() {
         </div>
 
         {/* RIGHT: Cart — responsive width, two independent scroll zones */}
-        <div style={{width:"clamp(300px, 24vw, 420px)",background:"#eeece8",borderLeft:"1px solid #d8d4cc",display:"flex",flexDirection:"column",flexShrink:0}}>
+        <div style={{width:"clamp(250px, 24vw, 420px)",background:"#eeece8",borderLeft:"1px solid #d8d4cc",display:"flex",flexDirection:"column",flexShrink:0}}>
 
           {/* Cart header */}
           <div style={{padding:"12px 13px",borderBottom:"1px solid #d8d4cc",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
