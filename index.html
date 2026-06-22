@@ -7969,24 +7969,28 @@ function POSSystem() {
     saveOrders(function(prev){ return [newOrder].concat(prev); });
 
     // 扣庫存：依購物車每項商品數量扣除（業外收入類不扣）
+    // 先在外面算好銷售 log（不依賴 setState callback，避免非同步時 saleLogs 還是空的）
     var saleLogs = [];
+    cart.forEach(function(it){
+      if (it.main === "業外收入") return; // 業外收入不計庫存
+      var cur = sharedStocks[it.id] !== undefined ? sharedStocks[it.id] : 0;
+      var after = cur - it.qty;
+      saleLogs.push({
+        id: Date.now() + Math.random(),
+        date: dateStr, time: timeStr,
+        productId: it.id, sku: it.sku, name: it.name,
+        main: it.main, sub: it.sub,
+        reason: "銷售（訂單 " + orderNo + "）",
+        change: -it.qty, before: cur, after: after,
+        operator: currentStaff ? currentStaff.name : "—"
+      });
+    });
     saveStocks(function(prev){
       var next = Object.assign({}, prev);
       cart.forEach(function(it){
         if (it.main === "業外收入") return; // 業外收入不計庫存
         var cur = next[it.id] !== undefined ? next[it.id] : 0;
-        var after = cur - it.qty;
-        next[it.id] = after;
-        // 同時記錄異動 log（用 reason 欄位，跟其他異動統一格式）
-        saleLogs.push({
-          id: Date.now() + Math.random(),
-          date: dateStr, time: timeStr,
-          productId: it.id, sku: it.sku, name: it.name,
-          main: it.main, sub: it.sub,
-          reason: "銷售（訂單 " + orderNo + "）",
-          change: -it.qty, before: cur, after: after,
-          operator: currentStaff ? currentStaff.name : "—"
-        });
+        next[it.id] = cur - it.qty;
       });
       return next;
     });
@@ -9107,8 +9111,8 @@ function POSSystem() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<POSSystem />);
 
+ReactDOM.createRoot(document.getElementById("root")).render(<POSSystem />);
 </script>
 </body>
 </html>
