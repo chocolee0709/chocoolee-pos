@@ -6465,6 +6465,7 @@ function StockFlowPanel(props) {
   var products  = props.products || [];
   var stockLog  = props.stockLog || [];
   var stocks    = props.sharedStocks || {};
+  var orders    = props.orders || [];
 
   var now = new Date();
   var y = now.getFullYear(), m = String(now.getMonth()+1).padStart(2,"0"), d = String(now.getDate()).padStart(2,"0");
@@ -6511,6 +6512,21 @@ function StockFlowPanel(props) {
   // 為每個商品算進銷存
   var rows = [];
   if (queried) {
+    // 從訂單（orders）算各商品在區間內的銷售量（不依賴 stockLog，舊訂單也算得到）
+    var orderSalesById = {};  // {productId: 銷售數量}
+    var orderSalesBySku = {}; // {sku: 銷售數量}（備援，舊訂單可能沒 productId）
+    orders.forEach(function(o){
+      if (o.status !== "paid") return;
+      if (!(o.date>=activeFrom && o.date<=activeTo)) return;
+      if (!o.cartSnapshot) return;
+      o.cartSnapshot.forEach(function(it){
+        if (it.main === "業外收入") return;
+        var q = it.qty || 0;
+        if (it.id !== undefined && it.id !== null) orderSalesById[it.id] = (orderSalesById[it.id]||0) + q;
+        if (it.sku) orderSalesBySku[it.sku] = (orderSalesBySku[it.sku]||0) + q;
+      });
+    });
+
     targetProds.forEach(function(p){
       // 該商品全部異動（不限區間），依時間排序
       var allLogs = stockLog.filter(function(l){
@@ -6526,10 +6542,14 @@ function StockFlowPanel(props) {
         var r = l.reason||"";
         var ch = l.change||0;
         if (r.indexOf("採購入庫")>=0 || r.indexOf("進貨")>=0) purchaseIn += Math.abs(ch);
-        else if (r.indexOf("銷售")>=0) saleOut += Math.abs(ch);   // 含「銷售（訂單…）」等
+        else if (r.indexOf("銷售")>=0) { /* 銷售改用訂單計算，這裡不重複計入 */ }
         else if (ch>0) otherIn += ch;
         else if (ch<0) otherOut += Math.abs(ch);
       });
+
+      // 銷售量：優先用訂單算（涵蓋所有歷史訂單）
+      saleOut = (orderSalesById[p.id] !== undefined ? orderSalesById[p.id] : 0);
+      if (saleOut === 0 && orderSalesBySku[p.sku] !== undefined) saleOut = orderSalesBySku[p.sku];
 
       var curStock = stocks[p.id]!==undefined ? stocks[p.id] : p.stock;
 
@@ -6562,13 +6582,13 @@ function StockFlowPanel(props) {
       // 期末 = 期初 + 進貨 − 銷售 + 其他增 − 其他減（確保進出平衡）
       var endStock = startStock + purchaseIn - saleOut + otherIn - otherOut;
 
-      // 只顯示「有異動」或「有庫存」的商品
-      if (pLogs.length>0 || curStock>0) {
+      // 只顯示「有異動、有銷售、或有庫存」的商品
+      if (pLogs.length>0 || saleOut>0 || curStock>0) {
         rows.push({
           sku:p.sku, name:p.name, main:p.main, sub:p.sub,
           startStock:startStock, purchaseIn:purchaseIn, saleOut:saleOut,
           otherIn:otherIn, otherOut:otherOut, endStock:endStock,
-          curStock:curStock, hasActivity:pLogs.length>0
+          curStock:curStock, hasActivity:pLogs.length>0||saleOut>0
         });
       }
     });
@@ -9182,7 +9202,7 @@ function POSSystem() {
             {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={orders} products={sharedProducts}/>}
             {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={orders} products={sharedProducts} stocks={sharedStocks}/>}
             {activeTab==="consign"   && isManager && <ConsignSettlement orders={orders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
-            {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={sharedStockLog} sharedStocks={sharedStocks}/>}
+            {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={sharedStockLog} sharedStocks={sharedStocks} orders={orders}/>}
             {activeTab==="expense"   && isManager && <ExpensePanel expenses={expenses} setExpenses={saveExpenses} orders={orders} products={sharedProducts} currentStaff={currentStaff}/>}
             {activeTab==="history"   && isManager && <HistoryPanel history={history} setHistory={saveHistory}/>}
             {activeTab==="attendance"&& <AttendanceReport shiftLog={shiftLog} setShiftLog={saveShiftLog} staffRates={staffRates} setStaffRates={setStaffRates} schedule={schedule} setSchedule={setSchedule} isManager={isManager} currentStaff={currentStaff}/>}
