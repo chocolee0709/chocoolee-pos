@@ -6537,12 +6537,23 @@ function StockFlowPanel(props) {
       // 區間內異動
       var pLogs = allLogs.filter(function(l){ return l.date>=activeFrom && l.date<=activeTo; });
 
+      // ── 找區間內「最早一筆盤點校正」當作期初基準 ──
+      // 若區間內有盤點（如 6/1 盤點），期初 = 該盤點後庫存，且盤點本身不計入其他±
+      var inRangeStocktakeIdx = -1;
+      for (var sk=0; sk<pLogs.length; sk++){
+        var sr = pLogs[sk].reason||"";
+        if (sr.indexOf("盤點")>=0){ inRangeStocktakeIdx = sk; break; }
+      }
+
       var purchaseIn=0, saleOut=0, otherIn=0, otherOut=0;
-      pLogs.forEach(function(l){
+      pLogs.forEach(function(l, idx){
         var r = l.reason||"";
         var ch = l.change||0;
+        // 區間內的盤點：若是當作期初基準的那筆（或之前的），不計入異動
+        if (r.indexOf("盤點")>=0 && inRangeStocktakeIdx>=0 && idx<=inRangeStocktakeIdx) return;
         if (r.indexOf("採購入庫")>=0 || r.indexOf("進貨")>=0) purchaseIn += Math.abs(ch);
         else if (r.indexOf("銷售")>=0) { /* 銷售改用訂單計算，這裡不重複計入 */ }
+        else if (r.indexOf("盤點")>=0) { /* 期初基準後的盤點仍計入其他 */ if(ch>0) otherIn+=ch; else otherOut+=Math.abs(ch); }
         else if (ch>0) otherIn += ch;
         else if (ch<0) otherOut += Math.abs(ch);
       });
@@ -6553,30 +6564,31 @@ function StockFlowPanel(props) {
 
       var curStock = stocks[p.id]!==undefined ? stocks[p.id] : p.stock;
 
-      // ── 期初 = 區間開始前「最近一次盤點後的庫存」，再加上盤點後到區間起日前的異動 ──
-      // 找區間起日之前（不含）的盤點記錄（盤點校正/盤點調整）
-      var beforeLogs = allLogs.filter(function(l){ return l.date < activeFrom; });
-      var lastStocktakeIdx = -1;
-      for (var k=beforeLogs.length-1; k>=0; k--){
-        var rr = beforeLogs[k].reason||"";
-        if (rr.indexOf("盤點")>=0){ lastStocktakeIdx = k; break; }
-      }
+      // ── 期初 ──
       var startStock;
-      if (lastStocktakeIdx >= 0){
-        // 盤點後庫存 + 盤點後到區間起日前的所有異動
-        startStock = beforeLogs[lastStocktakeIdx].after || 0;
-        for (var j=lastStocktakeIdx+1; j<beforeLogs.length; j++){
-          startStock += (beforeLogs[j].change || 0);
-        }
-      } else if (beforeLogs.length > 0){
-        // 沒盤點記錄，用區間前最後一筆的 after
-        startStock = beforeLogs[beforeLogs.length-1].after || 0;
-      } else if (pLogs.length > 0){
-        // 區間前完全無記錄，用區間第一筆的 before
-        startStock = pLogs[0].before || 0;
+      if (inRangeStocktakeIdx >= 0){
+        // 區間內有盤點 → 期初 = 該盤點後的庫存（盤點校正完的數字）
+        startStock = pLogs[inRangeStocktakeIdx].after || 0;
       } else {
-        // 完全無異動，用目前庫存
-        startStock = curStock;
+        // 區間內無盤點 → 用區間開始前最近一次盤點後的庫存 + 之後異動
+        var beforeLogs = allLogs.filter(function(l){ return l.date < activeFrom; });
+        var lastStocktakeIdx = -1;
+        for (var k=beforeLogs.length-1; k>=0; k--){
+          var rr = beforeLogs[k].reason||"";
+          if (rr.indexOf("盤點")>=0){ lastStocktakeIdx = k; break; }
+        }
+        if (lastStocktakeIdx >= 0){
+          startStock = beforeLogs[lastStocktakeIdx].after || 0;
+          for (var j=lastStocktakeIdx+1; j<beforeLogs.length; j++){
+            startStock += (beforeLogs[j].change || 0);
+          }
+        } else if (beforeLogs.length > 0){
+          startStock = beforeLogs[beforeLogs.length-1].after || 0;
+        } else if (pLogs.length > 0){
+          startStock = pLogs[0].before || 0;
+        } else {
+          startStock = curStock;
+        }
       }
 
       // 期末 = 期初 + 進貨 − 銷售 + 其他增 − 其他減（確保進出平衡）
