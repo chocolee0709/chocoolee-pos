@@ -794,6 +794,7 @@ const MANAGER_TABS = [
   {key:"analytics", label:"銷售分析",icon:"▲"},
   {key:"smart",     label:"智能分析",icon:"✦"},
   {key:"consign",   label:"寄售結算",icon:"❋"},
+  {key:"stockflow", label:"進銷存查詢",icon:"📊"},
   {key:"attendance",label:"出勤打卡記錄",icon:"⏱"},
   {key:"expense",   label:"店舖支出損益",icon:"💵"},
   {key:"history",   label:"歷史業績補登",icon:"📅"},
@@ -1198,6 +1199,14 @@ function CatalogPanel(props) {
     // 「直接設為」模式用「盤點調整」當原因（除非使用者另選原因）；增減模式用所選原因
     var logReason = adjustMode === "set" ? "盤點調整" : reason;
     setStocks(function(s){ var n=Object.assign({},s); n[adjustId]=after; return n; });
+    // 同步更新 product.stock 欄位，避免 stocks 動態表與 product.stock 分岔
+    if (props.setSharedProducts) {
+      props.setSharedProducts(function(prev){
+        return (prev||[]).map(function(p){
+          return String(p.id)===String(adjustId) ? Object.assign({}, p, {stock:after}) : p;
+        });
+      });
+    }
     if (prod) {
       addLog([{
         id: Date.now(), date: dateStr, time: timeStr,
@@ -3458,6 +3467,7 @@ function PurchasePanel(props) {
     var newProducts = [];
     var stockAdds = {};
     var logs = [];
+    var curStocks = props.sharedStocks || {};  // 目前庫存（用來算入庫前後的正確數字）
     var now = new Date();
     var dateStr = localDate(now);
     var timeStr = localTime(now);
@@ -3528,14 +3538,17 @@ function PurchasePanel(props) {
           operator: currentStaff ? currentStaff.name : "—"
         });
       } else {
-        // 既有商品：庫存增加
-        stockAdds[item.productId] = (stockAdds[item.productId] || 0) + goodQty;
+        // 既有商品：庫存增加（before = 目前庫存 + 本批此商品已累加的量；after = before + 這次量）
+        var prevStocked = stockAdds[item.productId] || 0;
+        var beforeQty = (curStocks[item.productId] !== undefined ? curStocks[item.productId] : 0) + prevStocked;
+        var afterQty = beforeQty + goodQty;
+        stockAdds[item.productId] = prevStocked + goodQty;
         logs.push({
           id: Date.now()+Math.random(), date: dateStr, time: timeStr,
           productId: item.productId, sku: item.sku, name: item.name,
           main: item.main, sub: item.sub,
           reason: "採購入庫" + (item.damagedQty>0 ? "（含破損"+item.damagedQty+"）" : ""),
-          change: goodQty, before: 0, after: 0,
+          change: goodQty, before: beforeQty, after: afterQty,
           operator: currentStaff ? currentStaff.name : "—"
         });
       }
@@ -6276,8 +6289,9 @@ function ConsignSettlement(props) {
           </div>
           <div>
             <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>品牌篩選</div>
-            <select value={selBrand} onChange={function(e){setSelBrand(e.target.value);setQueried(false);}} style={inp}>
-              <option value="全部">全部品牌</option>
+            <select value={selBrand} onChange={function(e){setSelBrand(e.target.value);setQueried(false);}}
+              style={Object.assign({}, inp, {minWidth:120,maxWidth:200,cursor:"pointer"})}>
+              <option value="全部">全部品牌（{CONSIGN_BRANDS.length}）</option>
               {CONSIGN_BRANDS.map(function(b){return <option key={b} value={b}>{b}</option>;})}
             </select>
           </div>
@@ -6442,6 +6456,254 @@ function ConsignSettlement(props) {
         })}
 
       </div>
+    </div>
+  );
+}
+
+// ── 進銷存查詢（全分類）─────────────────────────────────────────
+function StockFlowPanel(props) {
+  var products  = props.products || [];
+  var stockLog  = props.stockLog || [];
+  var stocks    = props.sharedStocks || {};
+
+  var now = new Date();
+  var y = now.getFullYear(), m = String(now.getMonth()+1).padStart(2,"0"), d = String(now.getDate()).padStart(2,"0");
+  var dfs = useState(y+"-"+m+"-01");  var dateFrom = dfs[0], setDateFrom = dfs[1];
+  var dts = useState(y+"-"+m+"-"+d);  var dateTo   = dts[0], setDateTo   = dts[1];
+  var mfs = useState("全部");          var selMain  = mfs[0], setSelMain  = mfs[1];
+  var sfs = useState("全部");          var selSub   = sfs[0], setSelSub   = sfs[1];
+  var qs  = useState(false);           var queried  = qs[0],  setQueried  = qs[1];
+  var qfs = useState("");              var queryFrom= qfs[0], setQueryFrom= qfs[1];
+  var qts = useState("");              var queryTo  = qts[0], setQueryTo  = qts[1];
+  var qms = useState("全部");          var queryMain= qms[0], setQueryMain= qms[1];
+  var qss = useState("全部");          var querySub = qss[0], setQuerySub = qss[1];
+  var kws = useState("");              var keyword  = kws[0], setKeyword  = kws[1];
+
+  function doQuery(){
+    setQueryFrom(dateFrom); setQueryTo(dateTo); setQueryMain(selMain); setQuerySub(selSub); setQueried(true);
+  }
+  function quickRange(type){
+    var t = new Date();
+    var yy=t.getFullYear(), mm=String(t.getMonth()+1).padStart(2,"0");
+    if(type==="thisMonth"){ setDateFrom(yy+"-"+mm+"-01"); setDateTo(yy+"-"+mm+"-"+String(t.getDate()).padStart(2,"0")); }
+    else if(type==="lastMonth"){ var lm=new Date(yy,t.getMonth()-1,1); var ly=lm.getFullYear(),lmo=String(lm.getMonth()+1).padStart(2,"0"); var last=new Date(yy,t.getMonth(),0).getDate(); setDateFrom(ly+"-"+lmo+"-01"); setDateTo(ly+"-"+lmo+"-"+String(last).padStart(2,"0")); }
+    else if(type==="thisYear"){ setDateFrom(yy+"-01-01"); setDateTo(yy+"-"+mm+"-"+String(t.getDate()).padStart(2,"0")); }
+    setQueried(false);
+  }
+
+  var activeFrom = queried ? queryFrom : "";
+  var activeTo   = queried ? queryTo   : "";
+  var activeMain = queried ? queryMain : "全部";
+  var activeSub  = queried ? querySub  : "全部";
+
+  // 小分類選項（依大分類）
+  var subOptions = selMain==="全部" ? [] : (CAT_STRUCT[selMain]||[]);
+
+  // 篩選商品
+  var targetProds = products.filter(function(p){
+    if (p.main==="業外收入") return false;
+    if (activeMain!=="全部" && p.main!==activeMain) return false;
+    if (activeSub!=="全部"  && p.sub!==activeSub)   return false;
+    if (keyword && p.name.indexOf(keyword)<0 && (p.sku||"").indexOf(keyword)<0) return false;
+    return true;
+  });
+
+  // 為每個商品算進銷存
+  var rows = [];
+  if (queried) {
+    targetProds.forEach(function(p){
+      // 該商品全部異動（不限區間），依時間排序
+      var allLogs = stockLog.filter(function(l){
+        return (String(l.productId)===String(p.id)||l.sku===p.sku);
+      });
+      allLogs.sort(function(a,b){ return (a.date+(a.time||""))>(b.date+(b.time||""))?1:-1; });
+
+      // 區間內異動
+      var pLogs = allLogs.filter(function(l){ return l.date>=activeFrom && l.date<=activeTo; });
+
+      var purchaseIn=0, saleOut=0, otherIn=0, otherOut=0;
+      pLogs.forEach(function(l){
+        var r = l.reason||"";
+        var ch = l.change||0;
+        if (r.indexOf("採購入庫")>=0 || r.indexOf("進貨")>=0) purchaseIn += Math.abs(ch);
+        else if (r.indexOf("銷售")>=0) saleOut += Math.abs(ch);   // 含「銷售（訂單…）」等
+        else if (ch>0) otherIn += ch;
+        else if (ch<0) otherOut += Math.abs(ch);
+      });
+
+      var curStock = stocks[p.id]!==undefined ? stocks[p.id] : p.stock;
+
+      // ── 期初 = 區間開始前「最近一次盤點後的庫存」，再加上盤點後到區間起日前的異動 ──
+      // 找區間起日之前（不含）的盤點記錄（盤點校正/盤點調整）
+      var beforeLogs = allLogs.filter(function(l){ return l.date < activeFrom; });
+      var lastStocktakeIdx = -1;
+      for (var k=beforeLogs.length-1; k>=0; k--){
+        var rr = beforeLogs[k].reason||"";
+        if (rr.indexOf("盤點")>=0){ lastStocktakeIdx = k; break; }
+      }
+      var startStock;
+      if (lastStocktakeIdx >= 0){
+        // 盤點後庫存 + 盤點後到區間起日前的所有異動
+        startStock = beforeLogs[lastStocktakeIdx].after || 0;
+        for (var j=lastStocktakeIdx+1; j<beforeLogs.length; j++){
+          startStock += (beforeLogs[j].change || 0);
+        }
+      } else if (beforeLogs.length > 0){
+        // 沒盤點記錄，用區間前最後一筆的 after
+        startStock = beforeLogs[beforeLogs.length-1].after || 0;
+      } else if (pLogs.length > 0){
+        // 區間前完全無記錄，用區間第一筆的 before
+        startStock = pLogs[0].before || 0;
+      } else {
+        // 完全無異動，用目前庫存
+        startStock = curStock;
+      }
+
+      // 期末 = 期初 + 進貨 − 銷售 + 其他增 − 其他減（確保進出平衡）
+      var endStock = startStock + purchaseIn - saleOut + otherIn - otherOut;
+
+      // 只顯示「有異動」或「有庫存」的商品
+      if (pLogs.length>0 || curStock>0) {
+        rows.push({
+          sku:p.sku, name:p.name, main:p.main, sub:p.sub,
+          startStock:startStock, purchaseIn:purchaseIn, saleOut:saleOut,
+          otherIn:otherIn, otherOut:otherOut, endStock:endStock,
+          curStock:curStock, hasActivity:pLogs.length>0
+        });
+      }
+    });
+    // 排序：依大分類→小分類→貨號
+    rows.sort(function(a,b){
+      if(a.main!==b.main) return a.main>b.main?1:-1;
+      if(a.sub!==b.sub) return (a.sub||"")>(b.sub||"")?1:-1;
+      return String(a.sku||"").localeCompare(String(b.sku||""),"zh-TW",{numeric:true});
+    });
+  }
+
+  // 總計
+  var totalStart    = rows.reduce(function(s,r){return s+r.startStock;},0);
+  var totalPurchase = rows.reduce(function(s,r){return s+r.purchaseIn;},0);
+  var totalSale     = rows.reduce(function(s,r){return s+r.saleOut;},0);
+  var totalEnd      = rows.reduce(function(s,r){return s+r.endStock;},0);
+
+  var inp = {background:"#ffffff",border:"1px solid #d8d4cc",borderRadius:6,padding:"6px 9px",color:"#2a2520",fontSize:12,outline:"none"};
+  var th  = {padding:"8px 6px",fontSize:11,color:"#7a7068",fontWeight:600,whiteSpace:"nowrap"};
+  var td  = {padding:"7px 6px",fontSize:12,borderBottom:"1px solid #f0ede8",whiteSpace:"nowrap"};
+
+  function exportExcel(){
+    if(!queried || rows.length===0){ alert("請先查詢，且需有資料才能匯出"); return; }
+    var aoa=[["進銷存報表"],[activeFrom+" ~ "+activeTo+"　分類："+activeMain+(activeSub!=="全部"?" / "+activeSub:"")],[],
+      ["貨號","商品名稱","大分類","小分類","期初庫存","進貨","銷售","其他增","其他減","期末庫存"]];
+    rows.forEach(function(r){
+      aoa.push([r.sku,r.name,r.main,r.sub,r.startStock,r.purchaseIn,r.saleOut,r.otherIn,r.otherOut,r.endStock]);
+    });
+    aoa.push(["合計","","","",totalStart,totalPurchase,totalSale,"","",totalEnd]);
+    var wb=XLSX.utils.book_new();
+    var ws=XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"]=[{wch:12},{wch:24},{wch:12},{wch:12},{wch:9},{wch:8},{wch:8},{wch:8},{wch:8},{wch:9}];
+    XLSX.utils.book_append_sheet(wb,ws,"進銷存");
+    XLSX.writeFile(wb,"進銷存_"+activeFrom.split("-").join("")+"_"+activeTo.split("-").join("")+".xlsx");
+  }
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden",padding:"14px 16px",gap:12}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+        <div style={{fontSize:16,fontWeight:800,color:"#2a2520"}}>📊 進銷存查詢</div>
+        <button onClick={exportExcel} style={{marginLeft:"auto",padding:"7px 16px",background:"#2a7a4a",border:"none",borderRadius:8,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>↓ 匯出 Excel</button>
+      </div>
+
+      {/* 查詢條件 */}
+      <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end",flexShrink:0,background:"#faf9f6",border:"1px solid #ece8e0",borderRadius:10,padding:"12px 14px"}}>
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={function(){quickRange("thisMonth");}} style={{padding:"5px 10px",background:"#fff",border:"1px solid #d8d4cc",borderRadius:6,fontSize:11,cursor:"pointer",color:"#7a7068"}}>本月</button>
+          <button onClick={function(){quickRange("lastMonth");}} style={{padding:"5px 10px",background:"#fff",border:"1px solid #d8d4cc",borderRadius:6,fontSize:11,cursor:"pointer",color:"#7a7068"}}>上月</button>
+          <button onClick={function(){quickRange("thisYear");}} style={{padding:"5px 10px",background:"#fff",border:"1px solid #d8d4cc",borderRadius:6,fontSize:11,cursor:"pointer",color:"#7a7068"}}>今年</button>
+        </div>
+        <div>
+          <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>開始日期</div>
+          <input type="date" value={dateFrom} onChange={function(e){setDateFrom(e.target.value);setQueried(false);}} style={inp}/>
+        </div>
+        <div style={{alignSelf:"center",paddingTop:14,color:"#9a968e"}}>—</div>
+        <div>
+          <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>結束日期</div>
+          <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);setQueried(false);}} style={inp}/>
+        </div>
+        <div>
+          <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>大分類</div>
+          <select value={selMain} onChange={function(e){setSelMain(e.target.value);setSelSub("全部");setQueried(false);}} style={Object.assign({},inp,{minWidth:110,cursor:"pointer"})}>
+            <option value="全部">全部分類</option>
+            {MAIN_CATS.filter(function(c){return c!=="業外收入";}).map(function(c){return <option key={c} value={c}>{c}</option>;})}
+          </select>
+        </div>
+        <div>
+          <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>小分類</div>
+          <select value={selSub} onChange={function(e){setSelSub(e.target.value);setQueried(false);}} disabled={selMain==="全部"}
+            style={Object.assign({},inp,{minWidth:110,maxWidth:180,cursor:selMain==="全部"?"not-allowed":"pointer",background:selMain==="全部"?"#f0ede8":"#fff"})}>
+            <option value="全部">全部</option>
+            {subOptions.map(function(s){return <option key={s} value={s}>{s}</option>;})}
+          </select>
+        </div>
+        <div>
+          <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>關鍵字</div>
+          <input value={keyword} onChange={function(e){setKeyword(e.target.value);}} placeholder="品名/貨號" style={Object.assign({},inp,{width:110})}/>
+        </div>
+        <button onClick={doQuery} style={{padding:"7px 20px",background:"#b8910a",border:"none",borderRadius:8,color:"#ffffff",fontSize:13,fontWeight:700,cursor:"pointer"}}>查詢</button>
+      </div>
+
+      {/* 結果 */}
+      {!queried ? (
+        <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"#b0aca4",fontSize:13}}>
+          設定條件後按「查詢」，列出各商品的期初、進貨、銷售、期末庫存
+        </div>
+      ) : rows.length===0 ? (
+        <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"#b0aca4",fontSize:13}}>
+          此條件下查無資料
+        </div>
+      ) : (
+        <div style={{flex:1,overflow:"auto",background:"#fff",borderRadius:10,border:"1px solid #ece8e0"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",minWidth:720}}>
+            <thead style={{position:"sticky",top:0,background:"#f5f2ec",zIndex:1}}>
+              <tr style={{borderBottom:"2px solid #e8e4de"}}>
+                <th style={Object.assign({},th,{textAlign:"left"})}>貨號</th>
+                <th style={Object.assign({},th,{textAlign:"left"})}>商品名稱</th>
+                <th style={Object.assign({},th,{textAlign:"left"})}>分類</th>
+                <th style={Object.assign({},th,{textAlign:"center"})}>期初</th>
+                <th style={Object.assign({},th,{textAlign:"center",color:"#2a7a4a"})}>進貨</th>
+                <th style={Object.assign({},th,{textAlign:"center",color:"#c06a1a"})}>銷售</th>
+                <th style={Object.assign({},th,{textAlign:"center"})}>其他±</th>
+                <th style={Object.assign({},th,{textAlign:"center",fontWeight:800})}>期末</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(function(r,i){
+                var other = r.otherIn - r.otherOut;
+                return (
+                  <tr key={r.sku+"-"+i} style={{background:i%2?"#faf9f6":"#fff"}}>
+                    <td style={Object.assign({},td,{textAlign:"left",fontFamily:"monospace",fontSize:11,color:"#9a968e"})}>{r.sku}</td>
+                    <td style={Object.assign({},td,{textAlign:"left"})}>{r.name}</td>
+                    <td style={Object.assign({},td,{textAlign:"left",fontSize:10,color:"#9a968e"})}>{r.main}{r.sub?" / "+r.sub:""}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",color:"#7a7068"})}>{r.startStock}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",color:r.purchaseIn>0?"#2a7a4a":"#d8d4cc",fontWeight:r.purchaseIn>0?700:400})}>{r.purchaseIn>0?"+"+r.purchaseIn:"—"}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",color:r.saleOut>0?"#c06a1a":"#d8d4cc",fontWeight:r.saleOut>0?700:400})}>{r.saleOut>0?"−"+r.saleOut:"—"}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",color:other!==0?(other>0?"#2a7a4a":"#c0302a"):"#d8d4cc",fontSize:11})}>{other!==0?(other>0?"+"+other:other):"—"}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",fontWeight:800,color:"#2a2520"})}>{r.endStock}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr style={{background:"#f5f2ec",borderTop:"2px solid #e8e4de",fontWeight:700}}>
+                <td style={Object.assign({},td,{textAlign:"left"})} colSpan={3}>合計（{rows.length} 項）</td>
+                <td style={Object.assign({},td,{textAlign:"center"})}>{totalStart}</td>
+                <td style={Object.assign({},td,{textAlign:"center",color:"#2a7a4a"})}>+{totalPurchase}</td>
+                <td style={Object.assign({},td,{textAlign:"center",color:"#c06a1a"})}>−{totalSale}</td>
+                <td style={Object.assign({},td,{textAlign:"center"})}>—</td>
+                <td style={Object.assign({},td,{textAlign:"center",fontWeight:800})}>{totalEnd}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -8916,14 +9178,15 @@ function POSSystem() {
             {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={sharedStockLog} sharedAddLog={sharedAddLog}/>}
             {activeTab==="orders"    && <OrdersDrawer orders={orders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedStocks={sharedStocks} sharedAddLog={sharedAddLog}/>}
             {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers}/>}
-            {activeTab==="purchase"  && <PurchasePanel purchases={purchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} isManager={isManager} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
+            {activeTab==="purchase"  && <PurchasePanel purchases={purchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
             {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={orders} products={sharedProducts}/>}
             {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={orders} products={sharedProducts} stocks={sharedStocks}/>}
             {activeTab==="consign"   && isManager && <ConsignSettlement orders={orders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
+            {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={sharedStockLog} sharedStocks={sharedStocks}/>}
             {activeTab==="expense"   && isManager && <ExpensePanel expenses={expenses} setExpenses={saveExpenses} orders={orders} products={sharedProducts} currentStaff={currentStaff}/>}
             {activeTab==="history"   && isManager && <HistoryPanel history={history} setHistory={saveHistory}/>}
             {activeTab==="attendance"&& <AttendanceReport shiftLog={shiftLog} setShiftLog={saveShiftLog} staffRates={staffRates} setStaffRates={setStaffRates} schedule={schedule} setSchedule={setSchedule} isManager={isManager} currentStaff={currentStaff}/>}
-            {(activeTab==="analytics"||activeTab==="smart"||activeTab==="consign") && !isManager && (
+            {(activeTab==="analytics"||activeTab==="smart"||activeTab==="consign"||activeTab==="stockflow") && !isManager && (
               <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,color:"#c8c4bc"}}>
                 <div style={{fontSize:40}}>🔒</div>
                 <div style={{fontSize:15,fontWeight:600,color:"#9a968e"}}>此頁面需店長權限</div>
