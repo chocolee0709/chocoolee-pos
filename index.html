@@ -7816,88 +7816,9 @@ function POSSystem() {
         }
       } catch(e) {}
     })();
-    // 先載入 stocks 當底（沒有 log 的商品保留原值），再由 stocklog 重算覆蓋有 log 的商品
     loadOne("stocks",     setSharedStocks);
-    loadOne("stocklog",   function(logData){
-      setSharedStockLog(logData);
-      // ── 以明細帳(stockLog)為準重算 stocks，但銷售改從訂單算（避免6月前銷售未寫log造成偏高）──
-      // 庫存 = 最近盤點後的值 + 盤點後進貨(log) − 盤點後銷售(訂單) + 其他異動(log，退貨等)
-      try {
-        if (Array.isArray(logData) && logData.length > 0) {
-          // 先彙整所有月份訂單的「各商品銷售量」(含日期，用來算盤點後的銷售)
-          var orderSales = {}; // {sku: [{date, qty}]}
-          Object.keys(localStorage).forEach(function(key){
-            if (key.indexOf("chocoolee-orders-")===0){
-              try {
-                var ords = JSON.parse(localStorage.getItem(key)||"[]");
-                ords.forEach(function(o){
-                  if (o.status!=="paid"||!o.cartSnapshot) return;
-                  o.cartSnapshot.forEach(function(it){
-                    if (!it.sku||it.main==="業外收入") return;
-                    if (!orderSales[it.sku]) orderSales[it.sku] = [];
-                    orderSales[it.sku].push({date:o.date, qty:it.qty||0});
-                  });
-                });
-              } catch(e){}
-            }
-          });
+    loadOne("stocklog",   setSharedStockLog);
 
-          var byProd = {};
-          logData.forEach(function(l){
-            var k = (l.productId!==undefined&&l.productId!==null) ? String(l.productId) : ("sku:"+l.sku);
-            if (!byProd[k]) byProd[k] = [];
-            byProd[k].push(l);
-          });
-          var rebuilt = {};
-          Object.keys(byProd).forEach(function(k){
-            var arr = byProd[k].slice().sort(function(a,b){ return (a.date+(a.time||""))>(b.date+(b.time||""))?1:-1; });
-            // 找最後一次盤點
-            var lastSt = -1;
-            for (var i=arr.length-1;i>=0;i--){ if((arr[i].reason||"").indexOf("盤點")>=0){ lastSt=i; break; } }
-            var sku = arr[0].sku;
-            var pid = arr[0].productId;
-            if (pid===undefined || pid===null) return;
-            var val, sinceDate;
-            if (lastSt >= 0){
-              // 有盤點：盤點後值 + 盤點後進貨(log) − 盤點後銷售(訂單)
-              val = arr[lastSt].after||0;
-              sinceDate = arr[lastSt].date;
-              for (var j=lastSt+1;j<arr.length;j++){
-                var rsn = arr[j].reason||"";
-                if (rsn.indexOf("銷售")>=0) continue; // 銷售用訂單算
-                val += (arr[j].change||0);
-              }
-            } else {
-              // 無盤點：起點 0 + 全部進貨/其他(log，跳過銷售) − 全部銷售(訂單)
-              val = 0;
-              sinceDate = "0000-00-00"; // 涵蓋所有銷售
-              arr.forEach(function(l){
-                var rsn = l.reason||"";
-                if (rsn.indexOf("銷售")>=0) return; // 銷售用訂單算
-                val += (l.change||0);
-              });
-            }
-            // 扣掉 sinceDate 之後的銷售（從訂單，完整）
-            var sales = orderSales[sku] || [];
-            sales.forEach(function(s){
-              if (s.date >= sinceDate) val -= s.qty;
-            });
-            rebuilt[pid] = val;
-          });
-          // 套用重算結果（覆蓋 stocks 動態表）——延遲執行，確保 loadOne("stocks") 已先載入完成
-          if (Object.keys(rebuilt).length > 0) {
-            setTimeout(function(){
-              setSharedStocks(function(prev){
-                var n = Object.assign({}, prev);
-                Object.keys(rebuilt).forEach(function(id){ n[id] = rebuilt[id]; });
-                saveData("stocks", n);
-                return n;
-              });
-            }, 1200);
-          }
-        }
-      } catch(e) {}
-    });
     loadOne("shiftlog",   setShiftLog);
     loadOne("expenses",   setExpenses);
     loadOne("history",    setHistory);
