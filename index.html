@@ -7817,7 +7817,44 @@ function POSSystem() {
       } catch(e) {}
     })();
     loadOne("stocks",     setSharedStocks);
-    loadOne("stocklog",   setSharedStockLog);
+    loadOne("stocklog",   function(logData){
+      setSharedStockLog(logData);
+      // ── 以明細帳(stockLog)為準，重算 stocks 動態表，確保兩者同步 ──
+      // 每個商品 = 最近盤點後的值 + 盤點後所有 change；無盤點則所有 change 累加
+      try {
+        if (Array.isArray(logData) && logData.length > 0) {
+          var byProd = {};
+          logData.forEach(function(l){
+            var k = (l.productId!==undefined&&l.productId!==null) ? String(l.productId) : ("sku:"+l.sku);
+            if (!byProd[k]) byProd[k] = [];
+            byProd[k].push(l);
+          });
+          var rebuilt = {};
+          Object.keys(byProd).forEach(function(k){
+            var arr = byProd[k].slice().sort(function(a,b){ return (a.date+(a.time||""))>(b.date+(b.time||""))?1:-1; });
+            // 找最後一次盤點
+            var lastSt = -1;
+            for (var i=arr.length-1;i>=0;i--){ if((arr[i].reason||"").indexOf("盤點")>=0){ lastSt=i; break; } }
+            // 安全閥：只重算「有盤點基準」的商品（盤點是可靠起點）；
+            // 沒盤點過的商品保留原 stocks，避免因銷售未寫log而越算越錯
+            if (lastSt < 0) return;
+            var val = arr[lastSt].after||0;
+            for (var j=lastSt+1;j<arr.length;j++){ val += (arr[j].change||0); }
+            var pid = arr[0].productId;
+            if (pid!==undefined && pid!==null) rebuilt[pid] = val;
+          });
+          // 套用重算結果（覆蓋 stocks 動態表）
+          if (Object.keys(rebuilt).length > 0) {
+            setSharedStocks(function(prev){
+              var n = Object.assign({}, prev);
+              Object.keys(rebuilt).forEach(function(id){ n[id] = rebuilt[id]; });
+              saveData("stocks", n);
+              return n;
+            });
+          }
+        }
+      } catch(e) {}
+    });
     loadOne("shiftlog",   setShiftLog);
     loadOne("expenses",   setExpenses);
     loadOne("history",    setHistory);
