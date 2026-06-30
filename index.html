@@ -7819,10 +7819,28 @@ function POSSystem() {
     loadOne("stocks",     setSharedStocks);
     loadOne("stocklog",   function(logData){
       setSharedStockLog(logData);
-      // ── 以明細帳(stockLog)為準，重算 stocks 動態表，確保兩者同步 ──
-      // 每個商品 = 最近盤點後的值 + 盤點後所有 change；無盤點則所有 change 累加
+      // ── 以明細帳(stockLog)為準重算 stocks，但銷售改從訂單算（避免6月前銷售未寫log造成偏高）──
+      // 庫存 = 最近盤點後的值 + 盤點後進貨(log) − 盤點後銷售(訂單) + 其他異動(log，退貨等)
       try {
         if (Array.isArray(logData) && logData.length > 0) {
+          // 先彙整所有月份訂單的「各商品銷售量」(含日期，用來算盤點後的銷售)
+          var orderSales = {}; // {sku: [{date, qty}]}
+          Object.keys(localStorage).forEach(function(key){
+            if (key.indexOf("chocoolee-orders-")===0){
+              try {
+                var ords = JSON.parse(localStorage.getItem(key)||"[]");
+                ords.forEach(function(o){
+                  if (o.status!=="paid"||!o.cartSnapshot) return;
+                  o.cartSnapshot.forEach(function(it){
+                    if (!it.sku||it.main==="業外收入") return;
+                    if (!orderSales[it.sku]) orderSales[it.sku] = [];
+                    orderSales[it.sku].push({date:o.date, qty:it.qty||0});
+                  });
+                });
+              } catch(e){}
+            }
+          });
+
           var byProd = {};
           logData.forEach(function(l){
             var k = (l.productId!==undefined&&l.productId!==null) ? String(l.productId) : ("sku:"+l.sku);
@@ -7835,11 +7853,22 @@ function POSSystem() {
             // 找最後一次盤點
             var lastSt = -1;
             for (var i=arr.length-1;i>=0;i--){ if((arr[i].reason||"").indexOf("盤點")>=0){ lastSt=i; break; } }
-            // 安全閥：只重算「有盤點基準」的商品（盤點是可靠起點）；
-            // 沒盤點過的商品保留原 stocks，避免因銷售未寫log而越算越錯
+            // 安全閥：只重算「有盤點基準」的商品
             if (lastSt < 0) return;
+            var stDate = arr[lastSt].date;
             var val = arr[lastSt].after||0;
-            for (var j=lastSt+1;j<arr.length;j++){ val += (arr[j].change||0); }
+            // 盤點後的 log 異動：進貨、退貨等都加，但「銷售」不從 log 算（改用訂單）
+            for (var j=lastSt+1;j<arr.length;j++){
+              var rsn = arr[j].reason||"";
+              if (rsn.indexOf("銷售")>=0) continue; // 銷售改用訂單，跳過
+              val += (arr[j].change||0);
+            }
+            // 扣掉盤點日之後的銷售（從訂單，完整涵蓋6月前後）
+            var sku = arr[0].sku;
+            var sales = orderSales[sku] || [];
+            sales.forEach(function(s){
+              if (s.date >= stDate) val -= s.qty; // 盤點日當天及之後的銷售都扣
+            });
             var pid = arr[0].productId;
             if (pid!==undefined && pid!==null) rebuilt[pid] = val;
           });
