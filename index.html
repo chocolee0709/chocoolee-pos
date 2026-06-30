@@ -7816,6 +7816,7 @@ function POSSystem() {
         }
       } catch(e) {}
     })();
+    // 先載入 stocks 當底（沒有 log 的商品保留原值），再由 stocklog 重算覆蓋有 log 的商品
     loadOne("stocks",     setSharedStocks);
     loadOne("stocklog",   function(logData){
       setSharedStockLog(logData);
@@ -7883,14 +7884,16 @@ function POSSystem() {
             });
             rebuilt[pid] = val;
           });
-          // 套用重算結果（覆蓋 stocks 動態表）
+          // 套用重算結果（覆蓋 stocks 動態表）——延遲執行，確保 loadOne("stocks") 已先載入完成
           if (Object.keys(rebuilt).length > 0) {
-            setSharedStocks(function(prev){
-              var n = Object.assign({}, prev);
-              Object.keys(rebuilt).forEach(function(id){ n[id] = rebuilt[id]; });
-              saveData("stocks", n);
-              return n;
-            });
+            setTimeout(function(){
+              setSharedStocks(function(prev){
+                var n = Object.assign({}, prev);
+                Object.keys(rebuilt).forEach(function(id){ n[id] = rebuilt[id]; });
+                saveData("stocks", n);
+                return n;
+              });
+            }, 1200);
           }
         }
       } catch(e) {}
