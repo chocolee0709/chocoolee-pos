@@ -7853,24 +7853,35 @@ function POSSystem() {
             // 找最後一次盤點
             var lastSt = -1;
             for (var i=arr.length-1;i>=0;i--){ if((arr[i].reason||"").indexOf("盤點")>=0){ lastSt=i; break; } }
-            // 安全閥：只重算「有盤點基準」的商品
-            if (lastSt < 0) return;
-            var stDate = arr[lastSt].date;
-            var val = arr[lastSt].after||0;
-            // 盤點後的 log 異動：進貨、退貨等都加，但「銷售」不從 log 算（改用訂單）
-            for (var j=lastSt+1;j<arr.length;j++){
-              var rsn = arr[j].reason||"";
-              if (rsn.indexOf("銷售")>=0) continue; // 銷售改用訂單，跳過
-              val += (arr[j].change||0);
-            }
-            // 扣掉盤點日之後的銷售（從訂單，完整涵蓋6月前後）
             var sku = arr[0].sku;
+            var pid = arr[0].productId;
+            if (pid===undefined || pid===null) return;
+            var val, sinceDate;
+            if (lastSt >= 0){
+              // 有盤點：盤點後值 + 盤點後進貨(log) − 盤點後銷售(訂單)
+              val = arr[lastSt].after||0;
+              sinceDate = arr[lastSt].date;
+              for (var j=lastSt+1;j<arr.length;j++){
+                var rsn = arr[j].reason||"";
+                if (rsn.indexOf("銷售")>=0) continue; // 銷售用訂單算
+                val += (arr[j].change||0);
+              }
+            } else {
+              // 無盤點：起點 0 + 全部進貨/其他(log，跳過銷售) − 全部銷售(訂單)
+              val = 0;
+              sinceDate = "0000-00-00"; // 涵蓋所有銷售
+              arr.forEach(function(l){
+                var rsn = l.reason||"";
+                if (rsn.indexOf("銷售")>=0) return; // 銷售用訂單算
+                val += (l.change||0);
+              });
+            }
+            // 扣掉 sinceDate 之後的銷售（從訂單，完整）
             var sales = orderSales[sku] || [];
             sales.forEach(function(s){
-              if (s.date >= stDate) val -= s.qty; // 盤點日當天及之後的銷售都扣
+              if (s.date >= sinceDate) val -= s.qty;
             });
-            var pid = arr[0].productId;
-            if (pid!==undefined && pid!==null) rebuilt[pid] = val;
+            rebuilt[pid] = val;
           });
           // 套用重算結果（覆蓋 stocks 動態表）
           if (Object.keys(rebuilt).length > 0) {
