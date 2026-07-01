@@ -3761,6 +3761,25 @@ function PurchasePanel(props) {
                     </div>
                   )}
                   {!overviewText && <div style={{flex:1}}></div>}
+                  {/* 強制重新入庫中：顯示取消按鈕（在列表直接可見，不用進入才能取消）*/}
+                  {po.forceRestocked && isManager && (
+                    <button onClick={function(e){
+                      e.stopPropagation();
+                      if (!confirm("確定取消重新入庫？\n將恢復回原本的「已完成」狀態，不會更動庫存。")) return;
+                      var thisPo = po;
+                      var restoredPo = Object.assign({}, thisPo, {
+                        status: "completed",
+                        partialReceived: false,
+                        forceRestocked: false,
+                        items: thisPo.backupItems || thisPo.items,
+                        backupItems: null
+                      });
+                      setPurchases(function(prev){ return prev.map(function(p){ return p.no===restoredPo.no ? restoredPo : p; }); });
+                    }}
+                      style={{background:"#fffbe0",border:"1px solid #b8910a",borderRadius:6,padding:"5px 10px",color:"#a07000",fontSize:11,fontWeight:700,cursor:"pointer",flexShrink:0,marginRight:4}}>
+                      ↩ 取消重新入庫
+                    </button>
+                  )}
                   <button onClick={function(e){
                     e.stopPropagation();
                     setSelPo(po);
