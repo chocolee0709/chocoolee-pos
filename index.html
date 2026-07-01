@@ -3859,10 +3859,14 @@ function PurchasePanel(props) {
   // ====== 查看模式（已完成） ======
   if (mode === "view") {
     function handleForceRestock(po) {
-      // 清除 stockedQty，退回 pending 讓管理者重新覆驗入庫
+      if (!confirm("⚠️ 強制重新入庫：\n\n將清除此採購單所有品項的「已入庫」記錄，讓管理者可重新覆驗入庫。\n\n確定執行？")) return;
+      // 備份原本的 stockedQty，讓使用者可以取消
+      var backupItems = (po.items||[]).map(function(it){ return Object.assign({},it); });
       var resetPo = Object.assign({}, po, {
         status: "pending",
         partialReceived: false,
+        forceRestocked: true,          // 標記：強制重新入庫中
+        backupItems: backupItems,      // 備份原始 items（含 stockedQty）
         items: (po.items||[]).map(function(it){
           return Object.assign({}, it, {stockedQty: 0});
         })
@@ -3870,10 +3874,26 @@ function PurchasePanel(props) {
       setPurchases(function(prev){ return prev.map(function(p){ return p.no===resetPo.no ? resetPo : p; }); });
       setSelPo(resetPo);
       setMode("list");
-      alert("✓ 已重置「" + po.no + "」的入庫狀態，請重新開啟此採購單進行覆驗入庫。");
+      alert("✓ 已重置「" + po.no + "」的入庫狀態。\n\n如需取消，請重新開啟此採購單，點「取消重新入庫」恢復原狀。");
+    }
+    function handleCancelForceRestock(po) {
+      if (!confirm("確定取消重新入庫？\n\n將恢復回原本的「已完成」狀態，不會更動庫存。")) return;
+      // 用 backupItems 恢復原始狀態
+      var restoredPo = Object.assign({}, po, {
+        status: "completed",
+        partialReceived: false,
+        forceRestocked: false,
+        items: po.backupItems || po.items,
+        backupItems: null
+      });
+      setPurchases(function(prev){ return prev.map(function(p){ return p.no===restoredPo.no ? restoredPo : p; }); });
+      setSelPo(restoredPo);
+      setMode("list");
+      alert("✓ 已取消重新入庫，恢復回原本的已完成狀態。");
     }
     return <PurchaseViewer po={selPo}
-      onForceRestock={isManager ? handleForceRestock : null}
+      onForceRestock={isManager && !selPo.forceRestocked ? handleForceRestock : null}
+      onCancelForceRestock={isManager && selPo.forceRestocked ? handleCancelForceRestock : null}
       onClose={function(){setMode("list");setSelPo(null);}}/>;
   }
 
@@ -4694,13 +4714,21 @@ function PurchaseViewer(props) {
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:10,height:"100%",overflow:"hidden"}}>
-      <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0,flexWrap:"wrap"}}>
         <button onClick={props.onClose} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#7a7068"}}>‹</button>
         <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>✅ 已完成 {po.no}</div>
-        {props.onForceRestock && (
+        {/* 強制重新入庫：只在「尚未強制重置中」時顯示，避免重複觸發 */}
+        {props.onForceRestock && !po.forceRestocked && (
           <button onClick={forceRestock}
             style={{marginLeft:"auto",background:"#fff0ee",border:"1px solid #d0552f",borderRadius:6,padding:"5px 10px",color:"#d0552f",fontSize:11,fontWeight:700,cursor:"pointer"}}>
             ⚠️ 強制重新入庫
+          </button>
+        )}
+        {/* 取消重新入庫：只在「強制重置中、尚未覆驗完成」時顯示 */}
+        {props.onCancelForceRestock && po.forceRestocked && (
+          <button onClick={function(){props.onCancelForceRestock(po);}}
+            style={{marginLeft:"auto",background:"#fffbe0",border:"1px solid #b8910a",borderRadius:6,padding:"5px 10px",color:"#a07000",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+            ↩ 取消重新入庫
           </button>
         )}
       </div>
