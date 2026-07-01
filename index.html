@@ -3472,7 +3472,7 @@ function PurchasePanel(props) {
     var dateStr = localDate(now);
     var timeStr = localTime(now);
 
-    // 貨號撞號保護：收集現有所有貨號（商品清單 + 本批已建立的新品）
+    // 貨號撞號保護：收集現有所有貨號（商品清單 + 本批已建立的新品 + 採購單待入庫的新品）
     var usedSkus = {};
     // 從 localStorage 讀「最新」商品清單（而非可能過時的 props），確保跨採購單也能抓到剛建立的貨號
     var latestProducts = products;
@@ -3484,6 +3484,25 @@ function PurchasePanel(props) {
       }
     } catch(e) {}
     latestProducts.forEach(function(p){ if(p && p.sku) usedSkus[String(p.sku).trim()] = true; });
+
+    // ★ 同時納入「其他採購單裡尚未完成入庫的 isNew 新品貨號」，避免跨採購單撞號加 @@
+    try {
+      var latestPurchases = props.purchases || [];
+      try {
+        var lpuRaw = localStorage.getItem("chocoolee-purchases");
+        if (lpuRaw) {
+          var lpuArr = JSON.parse(lpuRaw);
+          if (Array.isArray(lpuArr) && lpuArr.length > 0) latestPurchases = lpuArr;
+        }
+      } catch(e2) {}
+      latestPurchases.forEach(function(pu){
+        if (!pu || pu.no === po.no) return; // 跳過自己這張單
+        (pu.items||[]).forEach(function(it){
+          if (it.isNew && it.sku) usedSkus[String(it.sku).trim()] = true;
+        });
+      });
+    } catch(e) {}
+
     var dupWarnings = [];
     var idCounter = 0; // 確保同批新品 id 不碰撞
     function genId() {
@@ -3511,44 +3530,57 @@ function PurchasePanel(props) {
       if (goodQty <= 0) return;
 
       if (item.isNew) {
-        // 新品：建立商品 + 入庫（貨號撞號自動改 @@，避免覆蓋既有資料）
-        var newId = genId();
-        var finalSku = safeSkU(item.sku);
-        var newProd = {
-          id: newId, sku: finalSku, name: item.name,
-          price: item.price || 0, cost: item.cost || 0,
-          main: item.main || "生活選物", sub: item.sub || "生活小物",
-          barcode: item.barcode || String(newId).slice(-9),
-          image: item.image || "", stock: 0,
-          mainEdited: true,  // 防止 mergeProducts 覆蓋分類
-          updatedAt: new Date().toISOString()
-        };
-        // 從黑名單 map 移除此貨號
-        try {
-          var dsk = readDeletedMap();
-          if (dsk[finalSku]) { delete dsk[finalSku]; saveData("deletedskus", JSON.stringify(dsk)); }
-        } catch(e) {}
-        newProducts.push(newProd);
-        stockAdds[newId] = goodQty;
-        logs.push({
-          id: Date.now()+Math.random(), date: dateStr, time: timeStr,
-          productId: newId, sku: finalSku, name: item.name,
-          main: newProd.main, sub: newProd.sub,
-          reason: "採購入庫（新品）", change: goodQty, before: 0, after: goodQty,
-          operator: currentStaff ? currentStaff.name : "—"
-        });
+        // 新品：先確認 products 裡是否已有同 sku 的商品（跨裝置可能已建立）
+        // 若已存在 → 當成既有商品入庫，避免 id 不一致造成庫存孤兒
+        var existingProd = latestProducts.find(function(p){ return p && String(p.sku||"").trim() === String(item.sku||"").trim(); });
+        if (existingProd) {
+          // 已存在同 sku → 改走既有商品路徑，用正確的 productId
+          stockAdds[existingProd.id] = (stockAdds[existingProd.id] || 0) + goodQty;
+          logs.push({
+            id: Date.now()+Math.random(), date: dateStr, time: timeStr,
+            productId: existingProd.id, sku: item.sku, name: item.name,
+            main: existingProd.main, sub: existingProd.sub,
+            reason: "採購入庫（新品）", change: goodQty, before: null, after: null,
+            operator: currentStaff ? currentStaff.name : "—"
+          });
+        } else {
+          // 真的不存在 → 建立新品 + 入庫
+          var newId = genId();
+          var finalSku = safeSkU(item.sku);
+          var newProd = {
+            id: newId, sku: finalSku, name: item.name,
+            price: item.price || 0, cost: item.cost || 0,
+            main: item.main || "生活選物", sub: item.sub || "生活小物",
+            barcode: item.barcode || String(newId).slice(-9),
+            image: item.image || "", stock: 0,
+            mainEdited: true,  // 防止 mergeProducts 覆蓋分類
+            updatedAt: new Date().toISOString()
+          };
+          // 從黑名單 map 移除此貨號
+          try {
+            var dsk = readDeletedMap();
+            if (dsk[finalSku]) { delete dsk[finalSku]; saveData("deletedskus", JSON.stringify(dsk)); }
+          } catch(e) {}
+          newProducts.push(newProd);
+          stockAdds[newId] = goodQty;
+          logs.push({
+            id: Date.now()+Math.random(), date: dateStr, time: timeStr,
+            productId: newId, sku: finalSku, name: item.name,
+            main: newProd.main, sub: newProd.sub,
+            reason: "採購入庫（新品）", change: goodQty, before: 0, after: goodQty,
+            operator: currentStaff ? currentStaff.name : "—"
+          });
+        }
       } else {
-        // 既有商品：庫存增加（before = 目前庫存 + 本批此商品已累加的量；after = before + 這次量）
-        var prevStocked = stockAdds[item.productId] || 0;
-        var beforeQty = (curStocks[item.productId] !== undefined ? curStocks[item.productId] : 0) + prevStocked;
-        var afterQty = beforeQty + goodQty;
-        stockAdds[item.productId] = prevStocked + goodQty;
+        // 既有商品：先記下這筆要加多少量；before/after 改在 setSharedStocks 的 updater 內、
+        // 用 React 保證最新的 prev 計算（避免 props.sharedStocks 閉包過期導致 log 數字不準）
+        stockAdds[item.productId] = (stockAdds[item.productId] || 0) + goodQty;
         logs.push({
           id: Date.now()+Math.random(), date: dateStr, time: timeStr,
           productId: item.productId, sku: item.sku, name: item.name,
           main: item.main, sub: item.sub,
           reason: "採購入庫" + (item.damagedQty>0 ? "（含破損"+item.damagedQty+"）" : ""),
-          change: goodQty, before: beforeQty, after: afterQty,
+          change: goodQty, before: null, after: null, // 佔位，下面套用庫存時會補上正確值
           operator: currentStaff ? currentStaff.name : "—"
         });
       }
@@ -3577,8 +3609,19 @@ function PurchasePanel(props) {
     if (Object.keys(stockAdds).length > 0 && setSharedStocks) {
       setSharedStocks(function(prev){
         var n = Object.assign({}, prev);
+        // 先記下每個商品「套用前」的真實庫存（保證最新），補回 logs 的 before/after
+        var realBefore = {};
         Object.keys(stockAdds).forEach(function(id){
-          n[id] = (n[id] || 0) + stockAdds[id];
+          realBefore[id] = n[id] || 0;
+          n[id] = realBefore[id] + stockAdds[id];
+        });
+        logs.forEach(function(l){
+          if (l.before === null && realBefore[l.productId] !== undefined) {
+            // 同一商品在這批單裡可能有多筆(理論上不會，但保險)，用累加方式還原每筆對應的 before/after
+            l.before = realBefore[l.productId];
+            l.after = realBefore[l.productId] + l.change;
+            realBefore[l.productId] = l.after; // 下一筆(若有)接續累加
+          }
         });
         return n;
       });
@@ -3586,6 +3629,13 @@ function PurchasePanel(props) {
     if (logs.length > 0 && sharedAddLog) sharedAddLog(logs);
 
     // 更新每項「已入庫數量」(stockedQty)，並判斷是否全數到齊
+    // ★ 重要：只在「真的有入庫」(stockAdds 非空 或 newProducts 非空)時才更新 stockedQty，
+    //   避免「入庫失敗但 stockedQty 已標記」導致之後再次確認時 goodQty=0 永遠跳過，形成死結
+    var hasActualStock = Object.keys(stockAdds).length > 0 || newProducts.length > 0;
+    if (!hasActualStock) {
+      alert("⚠️ 入庫異常：沒有找到需要入庫的數量。\n請確認「實收」欄位是否已填寫，或此批商品是否已全數入庫。");
+      return;
+    }
     var allReceived = true;
     po.items = po.items.map(function(item){
       var goodTotal = (item.receivedQty || 0) - (item.damagedQty || 0);
@@ -3783,7 +3833,7 @@ function PurchasePanel(props) {
 
   // ====== 建立/編輯模式 ======
   if (mode === "create") {
-    return <PurchaseEditor po={selPo} setPo={setSelPo} products={products}
+    return <PurchaseEditor po={selPo} setPo={setSelPo} products={products} purchases={purchases}
       onSave={savePurchase} onCancel={function(){setMode("list");setSelPo(null);}}
       onDelete={selPo && purchases.find(function(p){return p.no===selPo.no;}) ? delPurchase : null}/>;
   }
@@ -3808,7 +3858,23 @@ function PurchasePanel(props) {
 
   // ====== 查看模式（已完成） ======
   if (mode === "view") {
-    return <PurchaseViewer po={selPo} onClose={function(){setMode("list");setSelPo(null);}}/>;
+    function handleForceRestock(po) {
+      // 清除 stockedQty，退回 pending 讓管理者重新覆驗入庫
+      var resetPo = Object.assign({}, po, {
+        status: "pending",
+        partialReceived: false,
+        items: (po.items||[]).map(function(it){
+          return Object.assign({}, it, {stockedQty: 0});
+        })
+      });
+      setPurchases(function(prev){ return prev.map(function(p){ return p.no===resetPo.no ? resetPo : p; }); });
+      setSelPo(resetPo);
+      setMode("list");
+      alert("✓ 已重置「" + po.no + "」的入庫狀態，請重新開啟此採購單進行覆驗入庫。");
+    }
+    return <PurchaseViewer po={selPo}
+      onForceRestock={isManager ? handleForceRestock : null}
+      onClose={function(){setMode("list");setSelPo(null);}}/>;
   }
 
   return null;
@@ -3957,7 +4023,16 @@ function PurchaseEditor(props) {
 
       {showAddItem && (
         <ItemPicker addingNew={addingNew} products={products}
-          existingSkus={(po.items||[]).map(function(i){return i.sku;}).filter(function(s){return s && String(s).trim();})}
+          existingSkus={(function(){
+            // 自己這張單的貨號
+            var skus=(po.items||[]).map(function(i){return i.sku;}).filter(function(s){return s&&String(s).trim();});
+            // ★ 其他採購單裡 isNew 的新品貨號（尚未入庫的），也納入排重
+            (props.purchases||[]).forEach(function(pu){
+              if(!pu||pu.no===po.no) return;
+              (pu.items||[]).forEach(function(it){if(it.isNew&&it.sku) skus.push(String(it.sku).trim());});
+            });
+            return skus;
+          })()}
           onAdd={addItem} onCancel={function(){setShowAddItem(false);}}/>
       )}
 
@@ -4611,11 +4686,23 @@ function PurchaseViewer(props) {
   var po = props.po;
   var items = po.items || [];
 
+  function forceRestock() {
+    if (!props.onForceRestock) return;
+    if (!confirm("⚠️ 強制重新入庫：\n\n將清除此採購單所有品項的「已入庫」記錄，讓管理者可重新覆驗入庫。\n\n確定執行？")) return;
+    props.onForceRestock(po);
+  }
+
   return (
     <div style={{display:"flex",flexDirection:"column",gap:10,height:"100%",overflow:"hidden"}}>
       <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
         <button onClick={props.onClose} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#7a7068"}}>‹</button>
         <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>✅ 已完成 {po.no}</div>
+        {props.onForceRestock && (
+          <button onClick={forceRestock}
+            style={{marginLeft:"auto",background:"#fff0ee",border:"1px solid #d0552f",borderRadius:6,padding:"5px 10px",color:"#d0552f",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+            ⚠️ 強制重新入庫
+          </button>
+        )}
       </div>
 
       <div style={{display:"flex",gap:12,flexShrink:0,fontSize:11,color:"#7a7068",flexWrap:"wrap"}}>
@@ -8264,32 +8351,29 @@ function POSSystem() {
     saveOrders(function(prev){ return [newOrder].concat(prev); });
 
     // 扣庫存：依購物車每項商品數量扣除（業外收入類不扣）
-    // 先在外面算好銷售 log（不依賴 setState callback，避免非同步時 saleLogs 還是空的）
+    // ★ 根本修正：before/after 必須在 setStocks 的 updater 內、用 React 保證最新的 prev 計算，
+    //   不能用外部閉包的 sharedStocks（它可能是舊的渲染快照，導致「剛入庫後馬上結帳」算錯基準）
     var saleLogs = [];
-    cart.forEach(function(it){
-      if (it.main === "業外收入") return; // 業外收入不計庫存
-      var cur = sharedStocks[it.id] !== undefined ? sharedStocks[it.id] : 0;
-      var after = cur - it.qty;
-      saleLogs.push({
-        id: Date.now() + Math.random(),
-        date: dateStr, time: timeStr,
-        productId: it.id, sku: it.sku, name: it.name,
-        main: it.main, sub: it.sub,
-        reason: "銷售（訂單 " + orderNo + "）",
-        change: -it.qty, before: cur, after: after,
-        operator: currentStaff ? currentStaff.name : "—"
-      });
-    });
     saveStocks(function(prev){
       var next = Object.assign({}, prev);
       cart.forEach(function(it){
         if (it.main === "業外收入") return; // 業外收入不計庫存
-        var cur = next[it.id] !== undefined ? next[it.id] : 0;
-        next[it.id] = cur - it.qty;
+        var cur = next[it.id] !== undefined ? next[it.id] : 0; // 用 updater 內的 next，保證是當下最新庫存
+        var after = cur - it.qty;
+        next[it.id] = after;
+        saleLogs.push({
+          id: Date.now() + Math.random() + "-" + it.id,
+          date: dateStr, time: timeStr,
+          productId: it.id, sku: it.sku, name: it.name,
+          main: it.main, sub: it.sub,
+          reason: "銷售（訂單 " + orderNo + "）",
+          change: -it.qty, before: cur, after: after,
+          operator: currentStaff ? currentStaff.name : "—"
+        });
       });
       return next;
     });
-    // 寫入庫存異動明細
+    // 寫入庫存異動明細（saleLogs 在 saveStocks 的 updater 內同步填充，updater 是同步執行的，這裡已經有資料）
     if (sharedAddLog && saleLogs.length) sharedAddLog(saleLogs);
 
     // Update member: add points, update lastVisit, update spent
