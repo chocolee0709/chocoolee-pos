@@ -5367,7 +5367,107 @@ function AnalyticsDrawer(props) {
 
         {/* ── 整體 KPI 卡片 ── */}
         <div style={Object.assign({},section)}>
-          <div style={sTitle}>▲ {viewMode==="month" ? (selMonth.split("-")[0]+" 年 "+parseInt(selMonth.split("-")[1])+" 月業績") : viewMode==="year" ? (selYear+" 年度業績") : "整體業績"}</div>
+          <div style={{display:"flex",alignItems:"center",marginBottom:6}}>
+            <div style={sTitle}>{viewMode==="month" ? (selMonth.split("-")[0]+" 年 "+parseInt(selMonth.split("-")[1])+" 月業績") : viewMode==="year" ? (selYear+" 年度業績") : "整體業績"}</div>
+            {viewMode==="month" && (
+              <button onClick={function(){
+                // ── 匯出當月日報表 Excel ──
+                var XL=window.XLSX;
+                if(!XL){alert("匯出功能載入中，請稍後再試");return;}
+                var ym=selMonth; // "2026-06"
+                var yr=parseInt(ym.split("-")[0]), mo=parseInt(ym.split("-")[1]);
+                var daysInMonth=new Date(yr,mo,0).getDate();
+                var weekDays=["日","一","二","三","四","五","六"];
+                // Excel 欄位對應：系統大分類
+                var cats=["居家香氛","生活選物","寄售","流行配件","IP商品","雞毛撣子","業外收入"];
+                var catLabels={"居家香氛":"香氛","生活選物":"生活雜貨","寄售":"寄售","流行配件":"帽子配件","IP商品":"IP商品","雞毛撣子":"雞毛撣子","業外收入":"業外收入"};
+                var pays=["現金","Line Pay","信用卡","轉帳"];
+
+                // 彙整每日資料
+                var dayMap={};
+                paid.forEach(function(o){
+                  var d=o.date; if(!d||d.slice(0,7)!==ym) return;
+                  if(!dayMap[d]) dayMap[d]={cats:{},pay:{},disc:0,market:0};
+                  var dm=dayMap[d];
+                  if(o.cartSnapshot) o.cartSnapshot.forEach(function(it){
+                    var c=it.main||"其他";
+                    dm.cats[c]=(dm.cats[c]||0)+it.price*it.qty;
+                  });
+                  if(o.payBreakdown) pays.forEach(function(p){dm.pay[p]=(dm.pay[p]||0)+(Number(o.payBreakdown[p])||0);});
+                  else if(o.payment) dm.pay[o.payment]=(dm.pay[o.payment]||0)+o.total;
+                  dm.disc+=(o.discAmt||0);
+                  if(o.isMarket) dm.market+=o.total;
+                });
+
+                // 標題列
+                var headers=["日期","星期"].concat(cats).concat(["市集","折扣","業績"]).concat(pays);
+                var wb=XL.utils.book_new();
+                var wsData=[headers];
+                var totals={cats:{},pay:{},disc:0,market:0,rev:0};
+                cats.forEach(function(c){totals.cats[c]=0;});
+                pays.forEach(function(p){totals.pay[p]=0;});
+
+                for(var day=1;day<=daysInMonth;day++){
+                  var dateStr=yr+"-"+String(mo).padStart(2,"0")+"-"+String(day).padStart(2,"0");
+                  var dm=dayMap[dateStr]||{cats:{},pay:{},disc:0,market:0};
+                  var dow=new Date(yr,mo-1,day).getDay();
+                  var dayRev=cats.reduce(function(s,c){return s+(dm.cats[c]||0);},0)-(dm.disc||0);
+                  var row=[dateStr,weekDays[dow]];
+                  cats.forEach(function(c){
+                    var v=dm.cats[c]||0;
+                    row.push(v||"");
+                    totals.cats[c]+=v;
+                  });
+                  row.push(dm.market||"");
+                  row.push(dm.disc||"");
+                  row.push(dayRev||"");
+                  pays.forEach(function(p){
+                    var v=dm.pay[p]||0;
+                    row.push(v||"");
+                    totals.pay[p]+=v;
+                  });
+                  totals.disc+=dm.disc||0;
+                  totals.rev+=dayRev;
+                  wsData.push(row);
+                }
+
+                // TOTAL 列
+                var totalRev2=cats.reduce(function(s,c){return s+totals.cats[c];},0)-totals.disc;
+                var tRow=["TOTAL",""];
+                cats.forEach(function(c){tRow.push(totals.cats[c]||"");});
+                tRow.push(totals.market||"");
+                tRow.push(totals.disc||"");
+                tRow.push(totalRev2);
+                pays.forEach(function(p){tRow.push(totals.pay[p]||"");});
+                wsData.push(tRow);
+
+                // 百分比列
+                var pRow=["百分比",""];
+                cats.forEach(function(c){pRow.push(totalRev2>0?Math.round(totals.cats[c]/totalRev2*1000)/10+"%" :"");});
+                pRow.push(""); pRow.push(""); pRow.push("");
+                pays.forEach(function(p){pRow.push(totalRev2>0?Math.round(totals.pay[p]/totalRev2*1000)/10+"%":"");});
+                wsData.push(pRow);
+
+                // 商品類別彙總
+                wsData.push([]);
+                wsData.push(["商品類別","","營業額","業績佔比"]);
+                cats.forEach(function(c){
+                  wsData.push([catLabels[c]||c,"",totals.cats[c]||0,totalRev2>0?Math.round(totals.cats[c]/totalRev2*1000)/10+"%":""]);
+                });
+                wsData.push(["折扣","",-(totals.disc||0),""]);
+                wsData.push(["合計","",totalRev2,""]);
+
+                var ws=XL.utils.aoa_to_sheet(wsData);
+                // 欄寬
+                ws["!cols"]=[{wch:12},{wch:6}].concat(cats.map(function(){return {wch:10};})).concat([{wch:8},{wch:8},{wch:10}]).concat(pays.map(function(){return {wch:10};}));
+                XL.utils.book_append_sheet(wb,ws,mo+"月");
+                XL.writeFile(wb,yr+"年"+mo+"月日報表.xlsx");
+              }}
+                style={{marginLeft:"auto",padding:"5px 12px",background:"#2a7a4a",border:"none",borderRadius:6,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+                ↓ 匯出月報表
+              </button>
+            )}
+          </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
             {[
               {label:"總營業額",value:"$"+totalRev.toLocaleString(),color:"#b8910a"},
