@@ -6771,23 +6771,14 @@ function StockFlowPanel(props) {
       // 區間內異動
       var pLogs = allLogs.filter(function(l){ return l.date>=activeFrom && l.date<=activeTo; });
 
-      // ── 找區間內「最早一筆盤點校正」當作期初基準 ──
-      // 若區間內有盤點（如 6/1 盤點），期初 = 該盤點後庫存，且盤點本身不計入其他±
-      var inRangeStocktakeIdx = -1;
-      for (var sk=0; sk<pLogs.length; sk++){
-        var sr = pLogs[sk].reason||"";
-        if (sr.indexOf("盤點")>=0){ inRangeStocktakeIdx = sk; break; }
-      }
-
-      var purchaseIn=0, saleOut=0, otherIn=0, otherOut=0;
-      pLogs.forEach(function(l, idx){
+      // ── 區間內所有盤點異動都算進「盤損盈」欄，期初只用區間開始前的最後盤點 ──
+      var purchaseIn=0, saleOut=0, otherIn=0, otherOut=0, stocktakeAdj=0;
+      pLogs.forEach(function(l){
         var r = l.reason||"";
         var ch = l.change||0;
-        // 區間內的盤點：若是當作期初基準的那筆（或之前的），不計入異動
-        if (r.indexOf("盤點")>=0 && inRangeStocktakeIdx>=0 && idx<=inRangeStocktakeIdx) return;
         if (r.indexOf("採購入庫")>=0 || r.indexOf("進貨")>=0) purchaseIn += Math.abs(ch);
-        else if (r.indexOf("銷售")>=0) { /* 銷售改用訂單計算，這裡不重複計入 */ }
-        else if (r.indexOf("盤點")>=0) { /* 期初基準後的盤點仍計入其他 */ if(ch>0) otherIn+=ch; else otherOut+=Math.abs(ch); }
+        else if (r.indexOf("銷售")>=0) { /* 銷售改用訂單計算 */ }
+        else if (r.indexOf("盤點")>=0) { stocktakeAdj += ch; } // 全部盤點進盤損盈
         else if (ch>0) otherIn += ch;
         else if (ch<0) otherOut += Math.abs(ch);
       });
@@ -6798,42 +6789,44 @@ function StockFlowPanel(props) {
 
       var curStock = stocks[p.id]!==undefined ? stocks[p.id] : p.stock;
 
-      // ── 期初 ──
-      var startStock;
-      if (inRangeStocktakeIdx >= 0){
-        // 區間內有盤點 → 期初 = 該盤點後的庫存（盤點校正完的數字）
-        startStock = pLogs[inRangeStocktakeIdx].after || 0;
+      // ── 期末 = 當前實際庫存（最準確，反映所有真實異動）──
+      // ── 期初 = 期末 - 區間內異動（反推，確保期初期末完全平衡）──
+      // 這樣可避免因 stockLog 銷售記錄不完整（6月前）導致期初偏高問題
+      var today2 = (function(){ var d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); })();
+
+      var endStock;
+      if (activeTo >= today2) {
+        // 查詢期間包含今天：期末 = 目前實際庫存（最準）
+        endStock = curStock;
       } else {
-        // 區間內無盤點 → 用區間開始前最近一次盤點後的庫存 + 之後異動
-        var beforeLogs = allLogs.filter(function(l){ return l.date < activeFrom; });
-        var lastStocktakeIdx = -1;
-        for (var k=beforeLogs.length-1; k>=0; k--){
-          var rr = beforeLogs[k].reason||"";
-          if (rr.indexOf("盤點")>=0){ lastStocktakeIdx = k; break; }
-        }
-        if (lastStocktakeIdx >= 0){
-          startStock = beforeLogs[lastStocktakeIdx].after || 0;
-          for (var j=lastStocktakeIdx+1; j<beforeLogs.length; j++){
-            startStock += (beforeLogs[j].change || 0);
-          }
-        } else if (beforeLogs.length > 0){
-          startStock = beforeLogs[beforeLogs.length-1].after || 0;
-        } else if (pLogs.length > 0){
-          startStock = pLogs[0].before || 0;
-        } else {
-          startStock = curStock;
-        }
+        // 查詢過去期間：從目前庫存倒推（扣掉查詢截止後的 log 異動）
+        endStock = curStock;
+        allLogs.filter(function(l){ return l.date > activeTo; }).forEach(function(l){
+          var r = l.reason||"";
+          if (r.indexOf("銷售")>=0) return; // 銷售單獨處理
+          endStock -= (l.change||0);
+        });
+        // 扣掉截止日後的銷售（從訂單）
+        var props_orders = orders || [];
+        props_orders.forEach(function(o){
+          if (o.status!=="paid"||!o.date||o.date<=activeTo||!o.cartSnapshot) return;
+          o.cartSnapshot.forEach(function(it){
+            if ((it.id!==undefined&&String(it.id)===String(p.id))||(it.sku&&it.sku===p.sku)){
+              endStock += (it.qty||0); // 截止後的銷售反向加回來
+            }
+          });
+        });
       }
 
-      // 期末 = 期初 + 進貨 − 銷售 + 其他增 − 其他減（確保進出平衡）
-      var endStock = startStock + purchaseIn - saleOut + otherIn - otherOut;
+      // 期初 = 期末 − 本期所有異動（反推，確保平衡）
+      var startStock = endStock - purchaseIn + saleOut - stocktakeAdj - (otherIn - otherOut);
 
       // 只顯示「有異動、有銷售、或有庫存」的商品
       if (pLogs.length>0 || saleOut>0 || curStock>0) {
         rows.push({
           sku:p.sku, name:p.name, main:p.main, sub:p.sub,
           startStock:startStock, purchaseIn:purchaseIn, saleOut:saleOut,
-          otherIn:otherIn, otherOut:otherOut, endStock:endStock,
+          stocktakeAdj:stocktakeAdj, otherIn:otherIn, otherOut:otherOut, endStock:endStock,
           curStock:curStock, hasActivity:pLogs.length>0||saleOut>0
         });
       }
@@ -6847,10 +6840,11 @@ function StockFlowPanel(props) {
   }
 
   // 總計
-  var totalStart    = rows.reduce(function(s,r){return s+r.startStock;},0);
-  var totalPurchase = rows.reduce(function(s,r){return s+r.purchaseIn;},0);
-  var totalSale     = rows.reduce(function(s,r){return s+r.saleOut;},0);
-  var totalEnd      = rows.reduce(function(s,r){return s+r.endStock;},0);
+  var totalStart      = rows.reduce(function(s,r){return s+r.startStock;},0);
+  var totalPurchase   = rows.reduce(function(s,r){return s+r.purchaseIn;},0);
+  var totalSale       = rows.reduce(function(s,r){return s+r.saleOut;},0);
+  var totalStocktake  = rows.reduce(function(s,r){return s+(r.stocktakeAdj||0);},0);
+  var totalEnd        = rows.reduce(function(s,r){return s+r.endStock;},0);
 
   var inp = {background:"#ffffff",border:"1px solid #d8d4cc",borderRadius:6,padding:"6px 9px",color:"#2a2520",fontSize:12,outline:"none"};
   var th  = {padding:"8px 6px",fontSize:11,color:"#7a7068",fontWeight:600,whiteSpace:"nowrap"};
@@ -6859,11 +6853,12 @@ function StockFlowPanel(props) {
   function exportExcel(){
     if(!queried || rows.length===0){ alert("請先查詢，且需有資料才能匯出"); return; }
     var aoa=[["進銷存報表"],[activeFrom+" ~ "+activeTo+"　分類："+activeMain+(activeSub!=="全部"?" / "+activeSub:"")],[],
-      ["貨號","商品名稱","大分類","小分類","期初庫存","進貨","銷售","其他增","其他減","期末庫存"]];
+      ["貨號","商品名稱","大分類","小分類","期初庫存","進貨","銷售","盤損盈","其他±","期末庫存"]];
     rows.forEach(function(r){
-      aoa.push([r.sku,r.name,r.main,r.sub,r.startStock,r.purchaseIn,r.saleOut,r.otherIn,r.otherOut,r.endStock]);
+      var other=r.otherIn-r.otherOut;
+      aoa.push([r.sku,r.name,r.main,r.sub,r.startStock,r.purchaseIn,r.saleOut,r.stocktakeAdj||0,other,r.endStock]);
     });
-    aoa.push(["合計","","","",totalStart,totalPurchase,totalSale,"","",totalEnd]);
+    aoa.push(["合計","","","",totalStart,totalPurchase,totalSale,totalStocktake,"",totalEnd]);
     var wb=XLSX.utils.book_new();
     var ws=XLSX.utils.aoa_to_sheet(aoa);
     ws["!cols"]=[{wch:12},{wch:24},{wch:12},{wch:12},{wch:9},{wch:8},{wch:8},{wch:8},{wch:8},{wch:9}];
@@ -6936,6 +6931,7 @@ function StockFlowPanel(props) {
                 <th style={Object.assign({},th,{textAlign:"center"})}>期初</th>
                 <th style={Object.assign({},th,{textAlign:"center",color:"#2a7a4a"})}>進貨</th>
                 <th style={Object.assign({},th,{textAlign:"center",color:"#c06a1a"})}>銷售</th>
+                <th style={Object.assign({},th,{textAlign:"center",color:"#7a4ab8"})}>盤損盈</th>
                 <th style={Object.assign({},th,{textAlign:"center"})}>其他±</th>
                 <th style={Object.assign({},th,{textAlign:"center",fontWeight:800})}>期末</th>
               </tr>
@@ -6943,6 +6939,7 @@ function StockFlowPanel(props) {
             <tbody>
               {rows.map(function(r,i){
                 var other = r.otherIn - r.otherOut;
+                var adj = r.stocktakeAdj || 0;
                 return (
                   <tr key={r.sku+"-"+i} style={{background:i%2?"#faf9f6":"#fff"}}>
                     <td style={Object.assign({},td,{textAlign:"left",fontFamily:"monospace",fontSize:11,color:"#9a968e"})}>{r.sku}</td>
@@ -6951,6 +6948,7 @@ function StockFlowPanel(props) {
                     <td style={Object.assign({},td,{textAlign:"center",color:"#7a7068"})}>{r.startStock}</td>
                     <td style={Object.assign({},td,{textAlign:"center",color:r.purchaseIn>0?"#2a7a4a":"#d8d4cc",fontWeight:r.purchaseIn>0?700:400})}>{r.purchaseIn>0?"+"+r.purchaseIn:"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",color:r.saleOut>0?"#c06a1a":"#d8d4cc",fontWeight:r.saleOut>0?700:400})}>{r.saleOut>0?"−"+r.saleOut:"—"}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",color:adj!==0?(adj>0?"#2a7a4a":"#c0302a"):"#d8d4cc",fontWeight:adj!==0?700:400,fontSize:11})}>{adj!==0?(adj>0?"+"+adj:adj):"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",color:other!==0?(other>0?"#2a7a4a":"#c0302a"):"#d8d4cc",fontSize:11})}>{other!==0?(other>0?"+"+other:other):"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",fontWeight:800,color:"#2a2520"})}>{r.endStock}</td>
                   </tr>
@@ -6963,6 +6961,7 @@ function StockFlowPanel(props) {
                 <td style={Object.assign({},td,{textAlign:"center"})}>{totalStart}</td>
                 <td style={Object.assign({},td,{textAlign:"center",color:"#2a7a4a"})}>+{totalPurchase}</td>
                 <td style={Object.assign({},td,{textAlign:"center",color:"#c06a1a"})}>−{totalSale}</td>
+                <td style={Object.assign({},td,{textAlign:"center",color:totalStocktake!==0?(totalStocktake>0?"#2a7a4a":"#c0302a"):"#d8d4cc"})}>{totalStocktake!==0?(totalStocktake>0?"+"+totalStocktake:totalStocktake):"—"}</td>
                 <td style={Object.assign({},td,{textAlign:"center"})}>—</td>
                 <td style={Object.assign({},td,{textAlign:"center",fontWeight:800})}>{totalEnd}</td>
               </tr>
