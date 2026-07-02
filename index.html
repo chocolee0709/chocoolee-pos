@@ -457,7 +457,85 @@
     doMergePush(3);
   };
 
-  // ⚠️ 已停用 SSE 自動下載：資料只在「開啟/重新整理頁面」時下載，避免覆蓋使用者剛儲存的修改
+  // stocklog 合併推送（用 id 為 key，避免多台裝置互相覆蓋）
+  window.pushStockLogMerged = function(localArr) {
+    function doMerge(retry) {
+      getToken(function(token){
+        if (!token) {
+          if (retry > 0) setTimeout(function(){ doMerge(retry-1); }, 3000);
+          else showToast("⚠️ stocklog 推送失敗（無 token）", true);
+          return;
+        }
+        fetch(FB + "/chocoolee/stocklog.json?auth=" + token)
+          .then(function(r){ return r.json(); })
+          .then(function(fbData){
+            // 合併：以 id 為 key，本機有的優先（本機是最新操作）
+            var fbArr = [];
+            try {
+              var parsed = typeof fbData === "string" ? JSON.parse(fbData) : fbData;
+              if (Array.isArray(parsed)) fbArr = parsed;
+            } catch(e) {}
+            var merged = {};
+            fbArr.forEach(function(l){ if(l&&l.id) merged[l.id] = l; });
+            localArr.forEach(function(l){ if(l&&l.id) merged[l.id] = l; }); // 本機蓋 Firebase
+            var result = Object.values(merged);
+            return fetch(FB + "/chocoolee/stocklog.json?auth=" + token, {
+              method:"PUT", headers:{"Content-Type":"application/json"},
+              body: JSON.stringify(result)
+            });
+          })
+          .then(function(r){
+            if (r && r.ok) { showToast("☁️ 已同步"); }
+            else if (r && r.status === 401) {
+              fbToken = null;
+              if (retry > 0) setTimeout(function(){ doMerge(retry-1); }, 1000);
+            } else if (r) {
+              showToast("⚠️ 同步失敗 ("+r.status+")", true);
+            }
+          })
+          .catch(function(){
+            if (retry > 0) setTimeout(function(){ doMerge(retry-1); }, 3000);
+            else showToast("⚠️ stocklog 推送失敗", true);
+          });
+      });
+    }
+    doMerge(3);
+  };
+
+  // stocks 合併推送（以本機值為準，但只更新有值的 key，不清除 Firebase 有但本機沒有的）
+  window.pushStocksMerged = function(localStocks) {
+    function doMerge(retry) {
+      getToken(function(token){
+        if (!token) {
+          if (retry > 0) setTimeout(function(){ doMerge(retry-1); }, 3000);
+          return;
+        }
+        fetch(FB + "/chocoolee/stocks.json?auth=" + token)
+          .then(function(r){ return r.json(); })
+          .then(function(fbData){
+            var fbStocks = {};
+            try { fbStocks = typeof fbData === "string" ? JSON.parse(fbData) : (fbData||{}); } catch(e){}
+            // 合併：Firebase 為底，本機值覆蓋（本機才有最新操作）
+            var merged = Object.assign({}, fbStocks, localStocks);
+            return fetch(FB + "/chocoolee/stocks.json?auth=" + token, {
+              method:"PUT", headers:{"Content-Type":"application/json"},
+              body: JSON.stringify(merged)
+            });
+          })
+          .then(function(r){
+            if (r && r.ok) { showToast("☁️ 已同步"); }
+            else if (r && r.status === 401) {
+              fbToken = null;
+              if (retry > 0) setTimeout(function(){ doMerge(retry-1); }, 1000);
+            }
+          })
+          .catch(function(){
+            if (retry > 0) setTimeout(function(){ doMerge(retry-1); }, 3000);
+          });
+      });
+    }
+    doMerge(3);
+  };
   function startSSE() {
     // 不啟動 SSE，不自動下載資料
   }
@@ -3761,25 +3839,6 @@ function PurchasePanel(props) {
                     </div>
                   )}
                   {!overviewText && <div style={{flex:1}}></div>}
-                  {/* 強制重新入庫中：顯示取消按鈕（在列表直接可見，不用進入才能取消）*/}
-                  {po.forceRestocked && isManager && (
-                    <button onClick={function(e){
-                      e.stopPropagation();
-                      if (!confirm("確定取消重新入庫？\n將恢復回原本的「已完成」狀態，不會更動庫存。")) return;
-                      var thisPo = po;
-                      var restoredPo = Object.assign({}, thisPo, {
-                        status: "completed",
-                        partialReceived: false,
-                        forceRestocked: false,
-                        items: thisPo.backupItems || thisPo.items,
-                        backupItems: null
-                      });
-                      setPurchases(function(prev){ return prev.map(function(p){ return p.no===restoredPo.no ? restoredPo : p; }); });
-                    }}
-                      style={{background:"#fffbe0",border:"1px solid #b8910a",borderRadius:6,padding:"5px 10px",color:"#a07000",fontSize:11,fontWeight:700,cursor:"pointer",flexShrink:0,marginRight:4}}>
-                      ↩ 取消重新入庫
-                    </button>
-                  )}
                   <button onClick={function(e){
                     e.stopPropagation();
                     setSelPo(po);
@@ -3877,42 +3936,7 @@ function PurchasePanel(props) {
 
   // ====== 查看模式（已完成） ======
   if (mode === "view") {
-    function handleForceRestock(po) {
-      if (!confirm("⚠️ 強制重新入庫：\n\n將清除此採購單所有品項的「已入庫」記錄，讓管理者可重新覆驗入庫。\n\n確定執行？")) return;
-      // 備份原本的 stockedQty，讓使用者可以取消
-      var backupItems = (po.items||[]).map(function(it){ return Object.assign({},it); });
-      var resetPo = Object.assign({}, po, {
-        status: "pending",
-        partialReceived: false,
-        forceRestocked: true,          // 標記：強制重新入庫中
-        backupItems: backupItems,      // 備份原始 items（含 stockedQty）
-        items: (po.items||[]).map(function(it){
-          return Object.assign({}, it, {stockedQty: 0});
-        })
-      });
-      setPurchases(function(prev){ return prev.map(function(p){ return p.no===resetPo.no ? resetPo : p; }); });
-      setSelPo(resetPo);
-      setMode("list");
-      alert("✓ 已重置「" + po.no + "」的入庫狀態。\n\n如需取消，請重新開啟此採購單，點「取消重新入庫」恢復原狀。");
-    }
-    function handleCancelForceRestock(po) {
-      if (!confirm("確定取消重新入庫？\n\n將恢復回原本的「已完成」狀態，不會更動庫存。")) return;
-      // 用 backupItems 恢復原始狀態
-      var restoredPo = Object.assign({}, po, {
-        status: "completed",
-        partialReceived: false,
-        forceRestocked: false,
-        items: po.backupItems || po.items,
-        backupItems: null
-      });
-      setPurchases(function(prev){ return prev.map(function(p){ return p.no===restoredPo.no ? restoredPo : p; }); });
-      setSelPo(restoredPo);
-      setMode("list");
-      alert("✓ 已取消重新入庫，恢復回原本的已完成狀態。");
-    }
     return <PurchaseViewer po={selPo}
-      onForceRestock={isManager && !selPo.forceRestocked ? handleForceRestock : null}
-      onCancelForceRestock={isManager && selPo.forceRestocked ? handleCancelForceRestock : null}
       onClose={function(){setMode("list");setSelPo(null);}}/>;
   }
 
@@ -4725,31 +4749,11 @@ function PurchaseViewer(props) {
   var po = props.po;
   var items = po.items || [];
 
-  function forceRestock() {
-    if (!props.onForceRestock) return;
-    if (!confirm("⚠️ 強制重新入庫：\n\n將清除此採購單所有品項的「已入庫」記錄，讓管理者可重新覆驗入庫。\n\n確定執行？")) return;
-    props.onForceRestock(po);
-  }
-
   return (
     <div style={{display:"flex",flexDirection:"column",gap:10,height:"100%",overflow:"hidden"}}>
       <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0,flexWrap:"wrap"}}>
         <button onClick={props.onClose} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#7a7068"}}>‹</button>
         <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>✅ 已完成 {po.no}</div>
-        {/* 強制重新入庫：只在「尚未強制重置中」時顯示，避免重複觸發 */}
-        {props.onForceRestock && !po.forceRestocked && (
-          <button onClick={forceRestock}
-            style={{marginLeft:"auto",background:"#fff0ee",border:"1px solid #d0552f",borderRadius:6,padding:"5px 10px",color:"#d0552f",fontSize:11,fontWeight:700,cursor:"pointer"}}>
-            ⚠️ 強制重新入庫
-          </button>
-        )}
-        {/* 取消重新入庫：只在「強制重置中、尚未覆驗完成」時顯示 */}
-        {props.onCancelForceRestock && po.forceRestocked && (
-          <button onClick={function(){props.onCancelForceRestock(po);}}
-            style={{marginLeft:"auto",background:"#fffbe0",border:"1px solid #b8910a",borderRadius:6,padding:"5px 10px",color:"#a07000",fontSize:11,fontWeight:700,cursor:"pointer"}}>
-            ↩ 取消重新入庫
-          </button>
-        )}
       </div>
 
       <div style={{display:"flex",gap:12,flexShrink:0,fontSize:11,color:"#7a7068",flexWrap:"wrap"}}>
@@ -6771,14 +6775,15 @@ function StockFlowPanel(props) {
       // 區間內異動
       var pLogs = allLogs.filter(function(l){ return l.date>=activeFrom && l.date<=activeTo; });
 
-      // ── 區間內所有盤點異動都算進「盤損盈」欄，期初只用區間開始前的最後盤點 ──
-      var purchaseIn=0, saleOut=0, otherIn=0, otherOut=0, stocktakeAdj=0;
+      // ── 異動分類：盤點/校正計入其他±，維持原欄位設計 ──
+      var purchaseIn=0, saleOut=0, otherIn=0, otherOut=0;
       pLogs.forEach(function(l){
         var r = l.reason||"";
         var ch = l.change||0;
-        if (r.indexOf("採購入庫")>=0 || r.indexOf("進貨")>=0) purchaseIn += Math.abs(ch);
+        // 盤點/校正優先判斷（reason 可能同時含「進貨」字樣，如「盤點校正（補登進貨）」）
+        if (r.indexOf("盤點")>=0 || r.indexOf("校正")>=0) { if(ch>0) otherIn+=ch; else otherOut+=Math.abs(ch); }
+        else if (r.indexOf("採購入庫")>=0 || r.indexOf("進貨")>=0) purchaseIn += Math.abs(ch);
         else if (r.indexOf("銷售")>=0) { /* 銷售改用訂單計算 */ }
-        else if (r.indexOf("盤點")>=0) { stocktakeAdj += ch; } // 全部盤點進盤損盈
         else if (ch>0) otherIn += ch;
         else if (ch<0) otherOut += Math.abs(ch);
       });
@@ -6819,14 +6824,14 @@ function StockFlowPanel(props) {
       }
 
       // 期初 = 期末 − 本期所有異動（反推，確保平衡）
-      var startStock = endStock - purchaseIn + saleOut - stocktakeAdj - (otherIn - otherOut);
+      var startStock = endStock - purchaseIn + saleOut - (otherIn - otherOut);
 
       // 只顯示「有異動、有銷售、或有庫存」的商品
       if (pLogs.length>0 || saleOut>0 || curStock>0) {
         rows.push({
           sku:p.sku, name:p.name, main:p.main, sub:p.sub,
           startStock:startStock, purchaseIn:purchaseIn, saleOut:saleOut,
-          stocktakeAdj:stocktakeAdj, otherIn:otherIn, otherOut:otherOut, endStock:endStock,
+          otherIn:otherIn, otherOut:otherOut, endStock:endStock,
           curStock:curStock, hasActivity:pLogs.length>0||saleOut>0
         });
       }
@@ -6843,7 +6848,6 @@ function StockFlowPanel(props) {
   var totalStart      = rows.reduce(function(s,r){return s+r.startStock;},0);
   var totalPurchase   = rows.reduce(function(s,r){return s+r.purchaseIn;},0);
   var totalSale       = rows.reduce(function(s,r){return s+r.saleOut;},0);
-  var totalStocktake  = rows.reduce(function(s,r){return s+(r.stocktakeAdj||0);},0);
   var totalEnd        = rows.reduce(function(s,r){return s+r.endStock;},0);
 
   var inp = {background:"#ffffff",border:"1px solid #d8d4cc",borderRadius:6,padding:"6px 9px",color:"#2a2520",fontSize:12,outline:"none"};
@@ -6853,12 +6857,11 @@ function StockFlowPanel(props) {
   function exportExcel(){
     if(!queried || rows.length===0){ alert("請先查詢，且需有資料才能匯出"); return; }
     var aoa=[["進銷存報表"],[activeFrom+" ~ "+activeTo+"　分類："+activeMain+(activeSub!=="全部"?" / "+activeSub:"")],[],
-      ["貨號","商品名稱","大分類","小分類","期初庫存","進貨","銷售","盤損盈","其他±","期末庫存"]];
+      ["貨號","商品名稱","大分類","小分類","期初庫存","進貨","銷售","其他增","其他減","期末庫存"]];
     rows.forEach(function(r){
-      var other=r.otherIn-r.otherOut;
-      aoa.push([r.sku,r.name,r.main,r.sub,r.startStock,r.purchaseIn,r.saleOut,r.stocktakeAdj||0,other,r.endStock]);
+      aoa.push([r.sku,r.name,r.main,r.sub,r.startStock,r.purchaseIn,r.saleOut,r.otherIn,r.otherOut,r.endStock]);
     });
-    aoa.push(["合計","","","",totalStart,totalPurchase,totalSale,totalStocktake,"",totalEnd]);
+    aoa.push(["合計","","","",totalStart,totalPurchase,totalSale,"","",totalEnd]);
     var wb=XLSX.utils.book_new();
     var ws=XLSX.utils.aoa_to_sheet(aoa);
     ws["!cols"]=[{wch:12},{wch:24},{wch:12},{wch:12},{wch:9},{wch:8},{wch:8},{wch:8},{wch:8},{wch:9}];
@@ -6931,7 +6934,6 @@ function StockFlowPanel(props) {
                 <th style={Object.assign({},th,{textAlign:"center"})}>期初</th>
                 <th style={Object.assign({},th,{textAlign:"center",color:"#2a7a4a"})}>進貨</th>
                 <th style={Object.assign({},th,{textAlign:"center",color:"#c06a1a"})}>銷售</th>
-                <th style={Object.assign({},th,{textAlign:"center",color:"#7a4ab8"})}>盤損盈</th>
                 <th style={Object.assign({},th,{textAlign:"center"})}>其他±</th>
                 <th style={Object.assign({},th,{textAlign:"center",fontWeight:800})}>期末</th>
               </tr>
@@ -6939,7 +6941,6 @@ function StockFlowPanel(props) {
             <tbody>
               {rows.map(function(r,i){
                 var other = r.otherIn - r.otherOut;
-                var adj = r.stocktakeAdj || 0;
                 return (
                   <tr key={r.sku+"-"+i} style={{background:i%2?"#faf9f6":"#fff"}}>
                     <td style={Object.assign({},td,{textAlign:"left",fontFamily:"monospace",fontSize:11,color:"#9a968e"})}>{r.sku}</td>
@@ -6948,7 +6949,6 @@ function StockFlowPanel(props) {
                     <td style={Object.assign({},td,{textAlign:"center",color:"#7a7068"})}>{r.startStock}</td>
                     <td style={Object.assign({},td,{textAlign:"center",color:r.purchaseIn>0?"#2a7a4a":"#d8d4cc",fontWeight:r.purchaseIn>0?700:400})}>{r.purchaseIn>0?"+"+r.purchaseIn:"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",color:r.saleOut>0?"#c06a1a":"#d8d4cc",fontWeight:r.saleOut>0?700:400})}>{r.saleOut>0?"−"+r.saleOut:"—"}</td>
-                    <td style={Object.assign({},td,{textAlign:"center",color:adj!==0?(adj>0?"#2a7a4a":"#c0302a"):"#d8d4cc",fontWeight:adj!==0?700:400,fontSize:11})}>{adj!==0?(adj>0?"+"+adj:adj):"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",color:other!==0?(other>0?"#2a7a4a":"#c0302a"):"#d8d4cc",fontSize:11})}>{other!==0?(other>0?"+"+other:other):"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",fontWeight:800,color:"#2a2520"})}>{r.endStock}</td>
                   </tr>
@@ -6961,7 +6961,6 @@ function StockFlowPanel(props) {
                 <td style={Object.assign({},td,{textAlign:"center"})}>{totalStart}</td>
                 <td style={Object.assign({},td,{textAlign:"center",color:"#2a7a4a"})}>+{totalPurchase}</td>
                 <td style={Object.assign({},td,{textAlign:"center",color:"#c06a1a"})}>−{totalSale}</td>
-                <td style={Object.assign({},td,{textAlign:"center",color:totalStocktake!==0?(totalStocktake>0?"#2a7a4a":"#c0302a"):"#d8d4cc"})}>{totalStocktake!==0?(totalStocktake>0?"+"+totalStocktake:totalStocktake):"—"}</td>
                 <td style={Object.assign({},td,{textAlign:"center"})}>—</td>
                 <td style={Object.assign({},td,{textAlign:"center",fontWeight:800})}>{totalEnd}</td>
               </tr>
@@ -7667,7 +7666,16 @@ function saveData(key, value) {
     }
     trySetItem("chocoolee-"+key, serialized);
     try {
-      if (window.pushToFirebase) window.pushToFirebase(key, serialized);
+      // stocklog 和 stocks 用合併推送，避免多台裝置整包覆蓋
+      if (key === "stocklog" && window.pushStockLogMerged) {
+        var arr2 = typeof value === "string" ? JSON.parse(value) : value;
+        window.pushStockLogMerged(arr2);
+      } else if (key === "stocks" && window.pushStocksMerged) {
+        var obj2 = typeof value === "string" ? JSON.parse(value) : value;
+        window.pushStocksMerged(obj2);
+      } else if (window.pushToFirebase) {
+        window.pushToFirebase(key, serialized);
+      }
     } catch(e) {}
   } catch(e) {}
 }
@@ -8497,29 +8505,39 @@ function POSSystem() {
     saveOrders(function(prev){ return [newOrder].concat(prev); });
 
     // 扣庫存：依購物車每項商品數量扣除（業外收入類不扣）
-    // ★ 根本修正：before/after 必須在 setStocks 的 updater 內、用 React 保證最新的 prev 計算，
-    //   不能用外部閉包的 sharedStocks（它可能是舊的渲染快照，導致「剛入庫後馬上結帳」算錯基準）
+    // ★ 先在 sharedStocks 快照上算好 saleLogs（同步），再用 saveStocks updater 套用
     var saleLogs = [];
+    var stockSnapshot = sharedStocks || {};
+    // 先用當下快照算 saleLogs（同步，保證 sharedAddLog 呼叫時有資料）
+    cart.forEach(function(it){
+      if (it.main === "業外收入") return;
+      var cur = stockSnapshot[it.id] !== undefined ? stockSnapshot[it.id] : 0;
+      var after = cur - it.qty;
+      saleLogs.push({
+        id: Date.now() + Math.random() + "-" + it.id,
+        date: dateStr, time: timeStr,
+        productId: it.id, sku: it.sku, name: it.name,
+        main: it.main, sub: it.sub,
+        reason: "銷售（訂單 " + orderNo + "）",
+        change: -it.qty, before: cur, after: after,
+        operator: currentStaff ? currentStaff.name : "—"
+      });
+    });
+    // saveStocks updater 用 prev（保證最新）實際扣庫存，before/after 也用 prev 重算確保準確
     saveStocks(function(prev){
       var next = Object.assign({}, prev);
       cart.forEach(function(it){
-        if (it.main === "業外收入") return; // 業外收入不計庫存
-        var cur = next[it.id] !== undefined ? next[it.id] : 0; // 用 updater 內的 next，保證是當下最新庫存
+        if (it.main === "業外收入") return;
+        var cur = next[it.id] !== undefined ? next[it.id] : 0;
         var after = cur - it.qty;
         next[it.id] = after;
-        saleLogs.push({
-          id: Date.now() + Math.random() + "-" + it.id,
-          date: dateStr, time: timeStr,
-          productId: it.id, sku: it.sku, name: it.name,
-          main: it.main, sub: it.sub,
-          reason: "銷售（訂單 " + orderNo + "）",
-          change: -it.qty, before: cur, after: after,
-          operator: currentStaff ? currentStaff.name : "—"
-        });
+        // 同步更新 saleLogs 的 before/after（若 prev 跟快照不同，以 prev 為準）
+        var slog = saleLogs.find(function(l){ return String(l.productId)===String(it.id); });
+        if (slog) { slog.before = cur; slog.after = after; }
       });
       return next;
     });
-    // 寫入庫存異動明細（saleLogs 在 saveStocks 的 updater 內同步填充，updater 是同步執行的，這裡已經有資料）
+    // 寫入庫存異動明細（saleLogs 已同步填充）
     if (sharedAddLog && saleLogs.length) sharedAddLog(saleLogs);
 
     // Update member: add points, update lastVisit, update spent
