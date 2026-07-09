@@ -311,6 +311,31 @@
                   return;
                 }
 
+                // stocks：下載後套用「尚未成功推送」的本機變更（pending），
+                // 避免斷線期間的扣庫存/盤點被 Firebase 舊資料蓋掉；
+                // 下次任何庫存操作觸發推送時會把 pending 一起推上去
+                if (key === "stocks") {
+                  try {
+                    var fbStocksDl = JSON.parse(newVal) || {};
+                    var pendRaw = localStorage.getItem("chocoolee-pending-stocks");
+                    var pend = pendRaw ? JSON.parse(pendRaw) : null;
+                    if (pend && Object.keys(pend).length > 0) {
+                      Object.keys(pend).forEach(function(k){
+                        if (pend[k] === null) delete fbStocksDl[k];
+                        else fbStocksDl[k] = pend[k];
+                      });
+                      localStorage.setItem("chocoolee-" + key, JSON.stringify(fbStocksDl));
+                    } else {
+                      localStorage.setItem("chocoolee-" + key, newVal);
+                    }
+                    changed.push(key);
+                  } catch(e) {
+                    localStorage.setItem("chocoolee-" + key, newVal);
+                    changed.push(key);
+                  }
+                  return;
+                }
+
                 // 其他資料：直接用 Firebase 版本
                 localStorage.setItem("chocoolee-" + key, newVal);
                 changed.push(key);
@@ -502,7 +527,8 @@
     doMerge(3);
   };
 
-  // stocks 合併推送（以本機值為準，但只更新有值的 key，不清除 Firebase 有但本機沒有的）
+  // stocks 合併推送（只推「本裝置實際變動」的 key，其他 key 保留 Firebase 值，
+  // 避免整包覆蓋掉其他裝置剛推上去的庫存變動）
   window.pushStocksMerged = function(localStocks) {
     function doMerge(retry) {
       getToken(function(token){
@@ -515,15 +541,35 @@
           .then(function(fbData){
             var fbStocks = {};
             try { fbStocks = typeof fbData === "string" ? JSON.parse(fbData) : (fbData||{}); } catch(e){}
-            // 合併：Firebase 為底，本機值覆蓋（本機才有最新操作）
-            var merged = Object.assign({}, fbStocks, localStocks);
+            // delta 來源：記憶體 delta + 持久化 pending（含斷線期間累積的變更）
+            var delta = Object.assign({}, window._stocksDelta || {});
+            try {
+              var pRaw = localStorage.getItem("chocoolee-pending-stocks");
+              if (pRaw) { var pObj = JSON.parse(pRaw); Object.keys(pObj).forEach(function(k){ delta[k] = true; }); }
+            } catch(e) {}
+            var merged;
+            if (Object.keys(delta).length > 0) {
+              // 有 delta：以 Firebase 為底，只把本裝置變動過的 key 蓋上去
+              merged = Object.assign({}, fbStocks);
+              Object.keys(delta).forEach(function(k){
+                if (localStocks[k] !== undefined) merged[k] = localStocks[k];
+                else delete merged[k];
+              });
+            } else {
+              // 無 delta 記錄（如初始化/手動全量）：保守用本機覆蓋
+              merged = Object.assign({}, fbStocks, localStocks);
+            }
             return fetch(FB + "/chocoolee/stocks.json?auth=" + token, {
               method:"PUT", headers:{"Content-Type":"application/json"},
               body: JSON.stringify(merged)
             });
           })
           .then(function(r){
-            if (r && r.ok) { showToast("☁️ 已同步"); }
+            if (r && r.ok) {
+              window._stocksDelta = {};
+              try { localStorage.removeItem("chocoolee-pending-stocks"); } catch(e){}
+              showToast("☁️ 已同步");
+            }
             else if (r && r.status === 401) {
               fbToken = null;
               if (retry > 0) setTimeout(function(){ doMerge(retry-1); }, 1000);
@@ -8213,6 +8259,21 @@ function POSSystem() {
   function saveStocks(updater) {
     setSharedStocks(function(prev){
       var next = typeof updater==="function" ? updater(prev) : updater;
+      // 收集本次變動的 key（delta）：合併推送只更新這些 key，
+      // 避免整包覆蓋掉其他裝置剛推上去的庫存變動。
+      // 同時持久化到 pending（推送成功才清除）：斷線重整也不會遺失變更
+      try {
+        window._stocksDelta = window._stocksDelta || {};
+        var pendingRaw = localStorage.getItem("chocoolee-pending-stocks");
+        var pending = pendingRaw ? JSON.parse(pendingRaw) : {};
+        Object.keys(next).forEach(function(k){
+          if(next[k]!==prev[k]){ window._stocksDelta[k]=true; pending[k]=next[k]; }
+        });
+        Object.keys(prev).forEach(function(k){
+          if(!(k in next)){ window._stocksDelta[k]=true; pending[k]=null; }
+        });
+        localStorage.setItem("chocoolee-pending-stocks", JSON.stringify(pending));
+      } catch(e) {}
       saveData("stocks", next);
       return next;
     });
@@ -8284,6 +8345,7 @@ function POSSystem() {
       });
     }
     setCurrentOperator(staff);
+    setAdminMode(false); // 切換操作者自動退出管理者模式（安全：避免店員看到成本）
     var managerKeys = MANAGER_TABS.map(function(t){return t.key;});
     if (staff.role!=="店長" && managerKeys.indexOf(activeTab)>=0) setActiveTab("pos");
     setShowLogin(false);
@@ -9601,6 +9663,7 @@ function POSSystem() {
                         setPendingSwitchTo(null);
                         setSwitchPin("");
                         setSwitchErr("");
+                        setAdminMode(false); // 換班自動退出管理者模式（安全：避免店員看到成本）
                       } else if (np.length >= pendingSwitchTo.pin.length) {
                         setSwitchErr("PIN 錯誤");
                       }
@@ -9627,6 +9690,7 @@ function POSSystem() {
                     setPendingSwitchTo(null);
                     setSwitchPin("");
                     setSwitchErr("");
+                    setAdminMode(false); // 換班自動退出管理者模式（安全：避免店員看到成本）
                   } else if (np.length >= pendingSwitchTo.pin.length) {
                     setSwitchErr("PIN 錯誤");
                   }
