@@ -7725,14 +7725,46 @@ function saveData(key, value) {
         localStorage.setItem(k, v);
         return true;
       } catch(e) {
-        // localStorage 滿了：清理所有圖片快取騰出空間（Firebase 有備份）
-        var imgKeys = [];
+        // localStorage 滿了：清理可重建的資料騰出空間（這些 Firebase 都有，或可重新載入）
+        var junkKeys = [];
         for (var i = 0; i < localStorage.length; i++) {
           var lk = localStorage.key(i);
-          if (lk && lk.indexOf("chocoolee-product-images/") === 0) imgKeys.push(lk);
+          if (!lk) continue;
+          if (lk.indexOf("chocoolee-product-images") === 0) junkKeys.push(lk);
+          else if (lk === "chocoolee-backup-before-shop") junkKeys.push(lk);
+          else if (lk.indexOf("chocoolee-shop-") === 0) junkKeys.push(lk);
         }
-        imgKeys.forEach(function(dk){ localStorage.removeItem(dk); });
-        try { localStorage.setItem(k, v); return true; } catch(e2) { return false; }
+        junkKeys.forEach(function(dk){ try { localStorage.removeItem(dk); } catch(e3){} });
+        try { localStorage.setItem(k, v); return true; } catch(e2) {}
+
+        // 還是失敗 → 清掉採購單裡的 base64 圖片（資料保留，只移除肥大的圖）
+        try {
+          var puRaw = localStorage.getItem("chocoolee-purchases");
+          if (puRaw && puRaw.indexOf("data:image") >= 0) {
+            var puArr = JSON.parse(puRaw);
+            puArr.forEach(function(po){
+              (po.items || []).forEach(function(it){
+                if (it.image && String(it.image).indexOf("data:") === 0) it.image = "";
+              });
+            });
+            localStorage.setItem("chocoolee-purchases", JSON.stringify(puArr));
+            localStorage.setItem(k, v);
+            return true;
+          }
+        } catch(e4) {}
+
+        // 真的救不了 → 明確警告使用者（不再靜默丟資料！）
+        try {
+          if (window.showToast) window.showToast("❌ 儲存空間已滿，資料未儲存！", true);
+          console.error("[嚴重] localStorage 寫入失敗，資料未儲存:", k);
+          if (!window._quotaAlerted) {
+            window._quotaAlerted = true;
+            setTimeout(function(){
+              alert("⚠️ 裝置儲存空間已滿\n\n剛才的操作「沒有儲存成功」。\n\n請執行空間清理工具，或改用另一台裝置操作。");
+            }, 100);
+          }
+        } catch(e5) {}
+        return false;
       }
     }
 
