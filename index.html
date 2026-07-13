@@ -311,6 +311,32 @@
                   return;
                 }
 
+                // stocklog：以 Firebase 為準（開啟只下載），但套回「尚未成功推送」的
+                // pending 記錄（使用者按儲存後推送失敗的），避免斷線期間的記錄遺失。
+                // pending 會在下次使用者操作觸發儲存推送時一起上傳，不會自動上傳
+                if (key === "stocklog") {
+                  try {
+                    var fbLogArr = JSON.parse(newVal) || [];
+                    var pendLogRaw = localStorage.getItem("chocoolee-pending-stocklog");
+                    var pendLogs = pendLogRaw ? JSON.parse(pendLogRaw) : [];
+                    if (pendLogs.length > 0) {
+                      var fbLogIds = {};
+                      fbLogArr.forEach(function(l){ if(l&&l.id!==undefined) fbLogIds[String(l.id)] = true; });
+                      pendLogs.forEach(function(l){
+                        if (l && l.id !== undefined && !fbLogIds[String(l.id)]) fbLogArr.push(l);
+                      });
+                      localStorage.setItem("chocoolee-" + key, JSON.stringify(fbLogArr));
+                    } else {
+                      localStorage.setItem("chocoolee-" + key, newVal);
+                    }
+                    changed.push(key);
+                  } catch(e) {
+                    localStorage.setItem("chocoolee-" + key, newVal);
+                    changed.push(key);
+                  }
+                  return;
+                }
+
                 // stocks：下載後套用「尚未成功推送」的本機變更（pending），
                 // 避免斷線期間的扣庫存/盤點被 Firebase 舊資料蓋掉；
                 // 下次任何庫存操作觸發推送時會把 pending 一起推上去
@@ -510,7 +536,10 @@
             });
           })
           .then(function(r){
-            if (r && r.ok) { showToast("☁️ 已同步"); }
+            if (r && r.ok) {
+              try { localStorage.removeItem("chocoolee-pending-stocklog"); } catch(e){}
+              showToast("☁️ 已同步");
+            }
             else if (r && r.status === 401) {
               fbToken = null;
               if (retry > 0) setTimeout(function(){ doMerge(retry-1); }, 1000);
@@ -8288,6 +8317,22 @@ function POSSystem() {
   function saveStockLog(updater) {
     setSharedStockLog(function(prev){
       var next = typeof updater==="function" ? updater(prev) : updater;
+      // 把本次新增的記錄存入 pending（推送成功才清除）：
+      // 若推送失敗（WiFi 斷），重整下載後這些記錄會套回本機，
+      // 並在下次使用者操作觸發儲存時一起上傳（維持「按儲存才上傳」原則）
+      try {
+        var prevIds = {};
+        (prev||[]).forEach(function(l){ if(l&&l.id!==undefined) prevIds[String(l.id)]=true; });
+        var newEntries = (next||[]).filter(function(l){ return l&&l.id!==undefined&&!prevIds[String(l.id)]; });
+        if (newEntries.length > 0) {
+          var pRaw = localStorage.getItem("chocoolee-pending-stocklog");
+          var pend = pRaw ? JSON.parse(pRaw) : [];
+          var pendIds = {};
+          pend.forEach(function(l){ if(l&&l.id!==undefined) pendIds[String(l.id)]=true; });
+          newEntries.forEach(function(l){ if(!pendIds[String(l.id)]) pend.push(l); });
+          localStorage.setItem("chocoolee-pending-stocklog", JSON.stringify(pend));
+        }
+      } catch(e) {}
       saveData("stocklog", next);
       return next;
     });
