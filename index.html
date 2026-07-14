@@ -3650,8 +3650,9 @@ function PurchasePanel(props) {
       } catch(e2) {}
       latestPurchases.forEach(function(pu){
         if (!pu || pu.no === po.no) return; // 跳過自己這張單
+        if (pu.status === "completed") return; // 已入庫 → 商品已在 products 裡，不需重複排除
         (pu.items||[]).forEach(function(it){
-          if (it.isNew && it.sku) usedSkus[String(it.sku).trim()] = true;
+          if (it.isNew && it.sku && !(it.stockedQty > 0)) usedSkus[String(it.sku).trim()] = true;
         });
       });
     } catch(e) {}
@@ -4164,10 +4165,14 @@ function PurchaseEditor(props) {
           existingSkus={(function(){
             // 自己這張單的貨號
             var skus=(po.items||[]).map(function(i){return i.sku;}).filter(function(s){return s&&String(s).trim();});
-            // ★ 其他採購單裡 isNew 的新品貨號（尚未入庫的），也納入排重
+            // 其他採購單裡「尚未入庫」的 isNew 新品貨號才需要排重；
+            // 已入庫的新品早已成為正式商品，不可排除（否則會搜尋不到既有商品）
             (props.purchases||[]).forEach(function(pu){
               if(!pu||pu.no===po.no) return;
-              (pu.items||[]).forEach(function(it){if(it.isNew&&it.sku) skus.push(String(it.sku).trim());});
+              if(pu.status==="completed") return; // 已完成入庫 → 商品已存在，不排除
+              (pu.items||[]).forEach(function(it){
+                if(it.isNew && it.sku && !(it.stockedQty>0)) skus.push(String(it.sku).trim());
+              });
             });
             return skus;
           })()}
@@ -4464,14 +4469,18 @@ function ItemPicker(props) {
 
   // 既有商品篩選
   var subOptions = fMain ? (CAT_STRUCT[fMain] || []) : [];
-  var filtered = products.filter(function(p){
+  var allMatched = products.filter(function(p){
     if (existingSkus.indexOf(p.sku) !== -1) return false;
     if (fMain && p.main !== fMain) return false;
     if (fSub && p.sub !== fSub) return false;
     if (!query) return true;
     var qq = query.toLowerCase();
     return (p.name||"").toLowerCase().indexOf(qq) !== -1 || (p.sku||"").toLowerCase().indexOf(qq) !== -1;
-  }).slice(0, 50);
+  });
+  // 有搜尋/篩選時放寬顯示上限（避免商品被 slice 截掉而「搜尋不到」）
+  var LIMIT = (query || fMain || fSub) ? 300 : 50;
+  var filtered = allMatched.slice(0, LIMIT);
+  var moreCount = allMatched.length - filtered.length;
 
   // 檢查貨號重複
   var skuDup = nf.sku && (
