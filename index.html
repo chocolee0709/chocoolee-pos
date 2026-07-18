@@ -1185,6 +1185,7 @@ function CatalogPanel(props) {
   var qs  = useState(""); var q = qs[0], setQ = qs[1];
   var mfs = useState(""); var filterMain = mfs[0], setFilterMain = mfs[1];
   var sfs = useState(""); var filterSub  = sfs[0], setFilterSub  = sfs[1];
+  var fls = useState(""); var filterListing = fls[0], setFilterListing = fls[1]; // "" 全部 / "on" 上架中 / "off" 已下架
   var pgs = useState(0); var page = pgs[0], setPage = pgs[1];
   var as = useState(null); var adjustId = as[0], setAdjustId = as[1];
   var ds = useState(0);    var delta = ds[0], setDelta = ds[1];
@@ -1387,7 +1388,10 @@ function CatalogPanel(props) {
     var mQ = !q || p.name.indexOf(q)>=0 || p.sku.indexOf(q)>=0;
     var mM = !filterMain || p.main===filterMain;
     var mS = !filterSub  || p.sub===filterSub;
-    return mQ && mM && mS;
+    var mL = filterListing === "" ? true
+           : filterListing === "on" ? !p.delisted
+           : !!p.delisted;
+    return mQ && mM && mS && mL;
   });
   // 依貨號自然排序（保留前導零、數字+字母組合）
   filtered.sort(function(a,b){
@@ -1868,8 +1872,14 @@ function CatalogPanel(props) {
           <option value="">{filterMain?"全部小分類":"請先選大分類"}</option>
           {subOptions.map(function(s){return <option key={s} value={s}>{s}</option>;})}
         </select>
-        {(q||filterMain) && (
-          <button onClick={function(){setQ("");setFilterMain("");setFilterSub("");setPage(0);}}
+        <select value={filterListing} onChange={function(e){setFilterListing(e.target.value);setPage(0);}}
+          style={Object.assign({},inp,{width:"auto",cursor:"pointer",flex:"0 0 auto"})}>
+          <option value="">上架＋下架</option>
+          <option value="on">✓ 上架中</option>
+          <option value="off">🚫 已下架</option>
+        </select>
+        {(q||filterMain||filterListing) && (
+          <button onClick={function(){setQ("");setFilterMain("");setFilterSub("");setFilterListing("");setPage(0);}}
             style={{background:"none",border:"1px solid #d8d4cc",borderRadius:20,padding:"4px 10px",color:"#9a968e",fontSize:10,cursor:"pointer"}}>
             清除
           </button>
@@ -2146,7 +2156,26 @@ function CatalogPanel(props) {
                   {editSubOpts.map(function(s){return <option key={s} value={s}>{s}</option>;})}
                 </select>
               </div>
-              <div><label style={lbl}>條碼</label><input value={editForm.barcode||""} onChange={function(e){setEF("barcode",e.target.value);}} style={inp}/></div>
+              <div><label style={lbl}>條碼</label><input value={editForm.barcode||"" } onChange={function(e){setEF("barcode",e.target.value);}} style={inp}/></div>
+              {isManager && (
+                <div style={{gridColumn:"1 / -1"}}>
+                  <label style={lbl}>上架狀態 🔒</label>
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    <button onClick={function(){setEF("delisted", !editForm.delisted);}}
+                      style={{
+                        background: editForm.delisted ? "#f0ede8" : "#e8f5ec",
+                        border: "1px solid " + (editForm.delisted ? "#c0bab0" : "#7ab88e"),
+                        borderRadius:6,padding:"6px 14px",fontSize:12,fontWeight:700,cursor:"pointer",
+                        color: editForm.delisted ? "#8a8478" : "#2a7a4a"
+                      }}>
+                      {editForm.delisted ? "🚫 已下架" : "✓ 上架中"}
+                    </button>
+                    <span style={{fontSize:10,color:"#9a968e"}}>
+                      {editForm.delisted ? "收銀台不顯示，庫存與報表仍照常計算" : "點擊可下架（暫不進貨的商品）"}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
           <div style={{display:"flex",gap:6,justifyContent:"space-between",alignItems:"center"}}>
@@ -2230,7 +2259,10 @@ function CatalogPanel(props) {
                           onMouseEnter={function(e){e.currentTarget.style.background="#e8e4de";e.currentTarget.style.color="#b8910a";}}
                           onMouseLeave={function(e){e.currentTarget.style.background="#f5f4f0";e.currentTarget.style.color="#c8c4bc";}}>📦</div>
                       )}
-                      <span style={{color:"#2a2520",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+                      {p.delisted && (
+                        <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,background:"#f0ede8",color:"#8a8478",flexShrink:0}}>下架</span>
+                      )}
+                      <span style={{color:p.delisted?"#9a968e":"#2a2520",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
                     </div>
                   </td>
                   <td style={{padding:"7px 8px 7px 0",fontSize:10,borderBottom:"1px solid #f0ede8"}}>
@@ -4264,7 +4296,28 @@ function PurchaseEditor(props) {
                       style={Object.assign({},inp,{background:item.isNew?"#fff":"#f5f4f0"})}/>
                   </div>
                   <div>
-                    <label style={lbl}>貨號{!item.isNew && " 🔒"}</label>
+                    <label style={lbl}>
+                      貨號{!item.isNew && " 🔒"}
+                      {item.isNew && (function(){
+                        var s = String(item.sku||"").trim().toLowerCase();
+                        if (!s) return null;
+                        // 與商品清單重複？（含已下架商品）
+                        var hitProd = (products||[]).find(function(p){ return String(p.sku||"").trim().toLowerCase()===s; });
+                        // 與本張單其他品項重複？
+                        var dupSelf = (po.items||[]).some(function(it,i){ return i!==editingIdx && String(it.sku||"").trim().toLowerCase()===s; });
+                        // 與其他採購單「尚未入庫」的新品重複？
+                        var dupOther = (props.purchases||[]).some(function(pu){
+                          if (!pu || pu.no===po.no || pu.status==="completed") return false;
+                          return (pu.items||[]).some(function(it){
+                            return it.isNew && !(it.stockedQty>0) && String(it.sku||"").trim().toLowerCase()===s;
+                          });
+                        });
+                        if (hitProd) return <span style={{color:"#d0552f",fontWeight:700}}> ⚠️ 已有同貨號{hitProd.delisted?"（已下架商品）":""}</span>;
+                        if (dupSelf) return <span style={{color:"#d0552f",fontWeight:700}}> ⚠️ 本單重複</span>;
+                        if (dupOther) return <span style={{color:"#d0552f",fontWeight:700}}> ⚠️ 其他採購單已用</span>;
+                        return <span style={{color:"#2a7a4a",fontWeight:700}}> ✓</span>;
+                      })()}
+                    </label>
                     <input value={item.sku||""} disabled={!item.isNew}
                       onChange={function(e){setF("sku", e.target.value);}}
                       style={Object.assign({},inp,{background:item.isNew?"#fff":"#f5f4f0"})}/>
@@ -4334,7 +4387,36 @@ function PurchaseEditor(props) {
       <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexShrink:0}}>
         <button onClick={props.onCancel}
           style={{background:"none",border:"1px solid #d8d4cc",borderRadius:6,padding:"7px 16px",color:"#7a7068",fontSize:12,cursor:"pointer"}}>取消</button>
-        <button onClick={props.onSave}
+        <button onClick={function(){
+          // 儲存前最後把關：新品貨號不可與商品清單、本單其他品項、其他待入庫採購單重複
+          var seen = {};
+          var errs = [];
+          (po.items||[]).forEach(function(it){
+            if (!it.isNew) return;
+            var s = String(it.sku||"").trim().toLowerCase();
+            if (!s) { errs.push("「"+(it.name||"未命名")+"」未填貨號"); return; }
+            if (seen[s]) { errs.push("「"+it.name+"」貨號 "+it.sku+" 與本單其他品項重複"); return; }
+            seen[s] = true;
+            var hitP = (products||[]).find(function(p){ return String(p.sku||"").trim().toLowerCase()===s; });
+            if (hitP) {
+              errs.push("「"+it.name+"」貨號 "+it.sku+" 已存在於商品清單"+(hitP.delisted?"（已下架的「"+hitP.name+"」）":"（"+hitP.name+"）"));
+              return;
+            }
+            var conflictPo = null;
+            (props.purchases||[]).forEach(function(pu){
+              if (!pu || pu.no===po.no || pu.status==="completed" || conflictPo) return;
+              (pu.items||[]).forEach(function(oi){
+                if (oi.isNew && !(oi.stockedQty>0) && String(oi.sku||"").trim().toLowerCase()===s) conflictPo = pu.no;
+              });
+            });
+            if (conflictPo) errs.push("「"+it.name+"」貨號 "+it.sku+" 已用於採購單 "+conflictPo);
+          });
+          if (errs.length) {
+            alert("⚠️ 貨號有問題，請修正後再儲存：\n\n" + errs.join("\n"));
+            return;
+          }
+          props.onSave();
+        }}
           style={{background:"#b8910a",border:"none",borderRadius:6,padding:"7px 20px",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>儲存採購單</button>
       </div>
     </div>
@@ -4482,10 +4564,11 @@ function ItemPicker(props) {
   var filtered = allMatched.slice(0, LIMIT);
   var moreCount = allMatched.length - filtered.length;
 
-  // 檢查貨號重複
-  var skuDup = nf.sku && (
-    products.some(function(p){ return p.sku === nf.sku.trim(); }) ||
-    existingSkus.indexOf(nf.sku.trim()) !== -1
+  // 檢查貨號重複（trim + 忽略大小寫，比對商品清單與待入庫新品）
+  var nfSkuNorm = String(nf.sku||"").trim().toLowerCase();
+  var skuDup = nfSkuNorm && (
+    products.some(function(p){ return String(p.sku||"").trim().toLowerCase() === nfSkuNorm; }) ||
+    existingSkus.some(function(s){ return String(s||"").trim().toLowerCase() === nfSkuNorm; })
   );
 
   var lbl = {fontSize:10,color:"#7a7068",marginBottom:3,display:"block"};
@@ -4613,7 +4696,10 @@ function ItemPicker(props) {
                       <div style={{width:60,height:60,borderRadius:6,background:"#f5f4f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#d8d4cc"}}>📦</div>
                     )}
                     <span style={{fontSize:10,color:"#9a968e",width:60}}>{p.sku}</span>
-                    <span style={{flex:1}}>{p.name}</span>
+                    <span style={{flex:1}}>
+                      {p.delisted && <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,background:"#f0ede8",color:"#8a8478",marginRight:5}}>下架</span>}
+                      {p.name}
+                    </span>
                     <span style={{fontSize:10,color:"#9a968e"}}>{p.main}/{p.sub}</span>
                   </div>
                 );
@@ -8474,6 +8560,7 @@ function POSSystem() {
 
   var filtered = useMemo(function() {
     var arr = sharedProducts.filter(function(p) {
+      if (p.delisted) return false; // 已下架商品不在收銀台顯示（庫存與報表仍照常計算）
       if (!activeMain && p.main === "業外收入") return false;
       var mM = !activeMain || p.main === activeMain;
       var mS = !activeSub  || p.sub  === activeSub;
