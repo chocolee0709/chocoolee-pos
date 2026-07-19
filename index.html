@@ -5759,6 +5759,130 @@ function AnalyticsDrawer(props) {
         </div>
         )}
 
+        {/* ── 會員消費分析 ── */}
+        {(function(){
+          var members = props.members || [];
+          var byPhone = {};
+          members.forEach(function(m){ if(m&&m.phone) byPhone[String(m.phone).trim()] = m; });
+
+          var memberRev = 0, memberOrders = 0, guestRev = 0, guestOrders = 0;
+          var buyerPhones = {};   // 本期有消費的會員
+          var newBuyerPhones = {};// 本期新加入且有消費
+          paid.forEach(function(o){
+            var ph = String(o.phone||"").trim();
+            var m = ph ? byPhone[ph] : null;
+            if (m) {
+              memberRev += o.total||0; memberOrders++;
+              buyerPhones[ph] = (buyerPhones[ph]||0) + (o.total||0);
+            } else {
+              guestRev += o.total||0; guestOrders++;
+            }
+          });
+          var totalRev2 = memberRev + guestRev;
+          if (totalRev2 === 0) return null;
+
+          // 期間範圍（本月/本年/整體）
+          var inPeriod = function(dstr){
+            if (!dstr) return false;
+            if (viewMode==="month") return dstr.slice(0,7)===selMonth;
+            if (viewMode==="year")  return dstr.slice(0,4)===selYear;
+            return true;
+          };
+          var newMembers = members.filter(function(m){ return m && inPeriod(m.joinDate); });
+          newMembers.forEach(function(m){
+            var ph = String(m.phone||"").trim();
+            if (ph && buyerPhones[ph]) newBuyerPhones[ph] = true;
+          });
+          var repeatCount = Object.keys(buyerPhones).filter(function(ph){
+            return !newBuyerPhones[ph];
+          }).length;
+          var newCount = Object.keys(newBuyerPhones).length;
+          var activeCount = Object.keys(buyerPhones).length;
+          var memberPct = Math.round(memberRev/totalRev2*1000)/10;
+          var avgMember = memberOrders ? Math.round(memberRev/memberOrders) : 0;
+          var avgGuest  = guestOrders  ? Math.round(guestRev/guestOrders)  : 0;
+          // 回購會員貢獻
+          var repeatRev = 0;
+          Object.keys(buyerPhones).forEach(function(ph){
+            if (!newBuyerPhones[ph]) repeatRev += buyerPhones[ph];
+          });
+          var newRev = memberRev - repeatRev;
+
+          var box = {background:"#fff",borderRadius:9,padding:"10px 12px",flex:1,minWidth:120,border:"1px solid #ece8e2"};
+          var num = {fontSize:19,fontWeight:800,color:"#2a2520"};
+          var cap = {fontSize:10,color:"#9a968e",marginBottom:3};
+
+          return (
+            <div style={Object.assign({},section)}>
+              <div style={sTitle}>◈ 會員消費分析</div>
+
+              {/* 會員 vs 非會員佔比條 */}
+              <div style={Object.assign({},card,{marginBottom:8})}>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:6}}>
+                  <span style={{color:"#b8910a",fontWeight:700}}>會員 ${memberRev.toLocaleString()}（{memberPct}%）</span>
+                  <span style={{color:"#9a968e"}}>非會員 ${guestRev.toLocaleString()}</span>
+                </div>
+                <div style={{height:16,background:"#f0ede8",borderRadius:8,overflow:"hidden",display:"flex"}}>
+                  <div style={{width:memberPct+"%",background:"#b8910a"}}></div>
+                  <div style={{flex:1,background:"#d8d4cc"}}></div>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#9a968e",marginTop:5}}>
+                  <span>會員 {memberOrders} 筆・客單 ${avgMember.toLocaleString()}</span>
+                  <span>非會員 {guestOrders} 筆・客單 ${avgGuest.toLocaleString()}</span>
+                </div>
+              </div>
+
+              {/* 新客 vs 回購 */}
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}>
+                <div style={box}>
+                  <div style={cap}>本期新增會員</div>
+                  <div style={num}>{newMembers.length}<span style={{fontSize:11,color:"#9a968e",fontWeight:400}}> 人</span></div>
+                  <div style={{fontSize:10,color:"#9a968e",marginTop:2}}>其中 {newCount} 人已消費</div>
+                </div>
+                <div style={box}>
+                  <div style={cap}>回購會員</div>
+                  <div style={Object.assign({},num,{color:"#2a7a4a"})}>{repeatCount}<span style={{fontSize:11,color:"#9a968e",fontWeight:400}}> 人</span></div>
+                  <div style={{fontSize:10,color:"#9a968e",marginTop:2}}>貢獻 ${repeatRev.toLocaleString()}</div>
+                </div>
+                <div style={box}>
+                  <div style={cap}>本期活躍會員</div>
+                  <div style={Object.assign({},num,{color:"#b8910a"})}>{activeCount}<span style={{fontSize:11,color:"#9a968e",fontWeight:400}}> 人</span></div>
+                  <div style={{fontSize:10,color:"#9a968e",marginTop:2}}>
+                    新客 ${newRev.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+
+              {/* 消費排行 Top 8 */}
+              {activeCount > 0 && (
+                <div style={Object.assign({},card)}>
+                  <div style={{fontSize:11,color:"#7a7068",fontWeight:700,marginBottom:6}}>會員消費排行</div>
+                  {Object.keys(buyerPhones).map(function(ph){
+                    return {phone:ph, amt:buyerPhones[ph], m:byPhone[ph], isNew:!!newBuyerPhones[ph]};
+                  }).sort(function(a,b){ return b.amt-a.amt; }).slice(0,8).map(function(x,i){
+                    var pct = Math.round(x.amt/memberRev*100);
+                    return (
+                      <div key={x.phone} style={{marginBottom:6}}>
+                        <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:2}}>
+                          <span style={{color:"#2a2520"}}>
+                            <span style={{color:"#c8c4bc",marginRight:5}}>{i+1}</span>
+                            {(x.m&&x.m.name)||"—"}
+                            {x.isNew && <span style={{fontSize:9,marginLeft:5,padding:"1px 5px",borderRadius:4,background:"#fdf0e6",color:"#c0703a",fontWeight:700}}>新客</span>}
+                          </span>
+                          <span style={{fontWeight:700,color:"#b8910a"}}>${x.amt.toLocaleString()}</span>
+                        </div>
+                        <div style={{height:5,background:"#f0ede8",borderRadius:3,overflow:"hidden"}}>
+                          <div style={{width:pct+"%",height:"100%",background:"#b8910a"}}></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* ── 大分類銷售佔比 ── */}
         <div style={Object.assign({},section)}>
           <div style={sTitle}>▲ 大分類銷售分析</div>
@@ -6092,6 +6216,99 @@ function SmartAnalysisDrawer(props) {
             </div>
           </div>
         </div>
+
+        {/* ── 會員經營分析 ── */}
+        {(function(){
+          var members = props.members || [];
+          if (!members.length) return null;
+          var byPhone = {};
+          members.forEach(function(m){ if(m&&m.phone) byPhone[String(m.phone).trim()] = m; });
+
+          // 期間內訂單（沿用 period 月數的 cutoffStr）
+          var periodOrders = orders.filter(function(o){
+            return o.status==="paid" && o.date && o.date >= cutoffStr;
+          });
+          var memberRev=0, guestRev=0, memberCnt=0, guestCnt=0;
+          var buyers = {};
+          periodOrders.forEach(function(o){
+            var ph = String(o.phone||"").trim();
+            if (ph && byPhone[ph]) {
+              memberRev += o.total||0; memberCnt++;
+              if (!buyers[ph]) buyers[ph] = {amt:0, times:0};
+              buyers[ph].amt += o.total||0; buyers[ph].times++;
+            } else { guestRev += o.total||0; guestCnt++; }
+          });
+          var totalR = memberRev + guestRev;
+          if (totalR === 0) return null;
+
+          var newMembers = members.filter(function(m){ return m && m.joinDate && m.joinDate >= cutoffStr; });
+          var newPhones = {};
+          newMembers.forEach(function(m){ if(m.phone) newPhones[String(m.phone).trim()]=true; });
+          var activePhones = Object.keys(buyers);
+          var newActive = activePhones.filter(function(p){ return newPhones[p]; });
+          var oldActive = activePhones.filter(function(p){ return !newPhones[p]; });
+          var multiBuy = activePhones.filter(function(p){ return buyers[p].times >= 2; });
+          // 新會員轉換率、老客回購率
+          var convRate = newMembers.length ? Math.round(newActive.length/newMembers.length*100) : 0;
+          var repeatRate = activePhones.length ? Math.round(multiBuy.length/activePhones.length*100) : 0;
+          var memberPct = Math.round(memberRev/totalR*100);
+          var avgM = memberCnt ? Math.round(memberRev/memberCnt) : 0;
+          var avgG = guestCnt ? Math.round(guestRev/guestCnt) : 0;
+          // 沉睡會員（有消費紀錄但期間內沒回來）
+          var sleeping = members.filter(function(m){
+            var ph = String(m.phone||"").trim();
+            return ph && !buyers[ph] && (m.spent||0) > 0;
+          }).length;
+
+          var tips = [];
+          if (memberPct < 30) tips.push({t:"⚠️",c:"#d0552f",s:"會員消費僅佔 "+memberPct+"%，建議加強結帳時的入會邀請"});
+          else if (memberPct >= 60) tips.push({t:"✓",c:"#2a7a4a",s:"會員貢獻 "+memberPct+"% 營收，會員經營成效良好"});
+          if (avgM > avgG && avgG > 0) tips.push({t:"💡",c:"#b8910a",s:"會員客單價 $"+avgM.toLocaleString()+" 高於非會員 $"+avgG.toLocaleString()+"（多 "+Math.round((avgM/avgG-1)*100)+"%），值得投資會員經營"});
+          if (convRate < 50 && newMembers.length >= 3) tips.push({t:"⚠️",c:"#d0552f",s:"新會員 "+newMembers.length+" 人中僅 "+newActive.length+" 人消費（"+convRate+"%），可考慮入會首購優惠"});
+          if (repeatRate < 30 && activePhones.length >= 5) tips.push({t:"💡",c:"#b8910a",s:"僅 "+repeatRate+"% 會員回購兩次以上，建議設計回購誘因"});
+          if (sleeping >= 10) tips.push({t:"💤",c:"#7a7068",s:"有 "+sleeping+" 位會員本期未回購，可規劃喚醒活動"});
+
+          var box = {background:"#fff",borderRadius:9,padding:"10px 12px",flex:1,minWidth:110,border:"1px solid #ece8e2"};
+          return (
+            <div style={section}>
+              <div style={sTitle}>◈ 會員經營分析（近 {period} 個月）</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
+                <div style={box}>
+                  <div style={{fontSize:10,color:"#9a968e",marginBottom:3}}>會員營收佔比</div>
+                  <div style={{fontSize:20,fontWeight:800,color:"#b8910a"}}>{memberPct}%</div>
+                  <div style={{fontSize:10,color:"#9a968e",marginTop:2}}>${memberRev.toLocaleString()}</div>
+                </div>
+                <div style={box}>
+                  <div style={{fontSize:10,color:"#9a968e",marginBottom:3}}>新增會員</div>
+                  <div style={{fontSize:20,fontWeight:800,color:"#2a2520"}}>{newMembers.length}</div>
+                  <div style={{fontSize:10,color:"#9a968e",marginTop:2}}>轉換率 {convRate}%</div>
+                </div>
+                <div style={box}>
+                  <div style={{fontSize:10,color:"#9a968e",marginBottom:3}}>回購會員</div>
+                  <div style={{fontSize:20,fontWeight:800,color:"#2a7a4a"}}>{oldActive.length}</div>
+                  <div style={{fontSize:10,color:"#9a968e",marginTop:2}}>多次回購 {multiBuy.length} 人</div>
+                </div>
+                <div style={box}>
+                  <div style={{fontSize:10,color:"#9a968e",marginBottom:3}}>會員客單</div>
+                  <div style={{fontSize:20,fontWeight:800,color:"#2a2520"}}>${avgM.toLocaleString()}</div>
+                  <div style={{fontSize:10,color:"#9a968e",marginTop:2}}>非會員 ${avgG.toLocaleString()}</div>
+                </div>
+              </div>
+              {tips.length > 0 && (
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {tips.map(function(x,i){
+                    return (
+                      <div key={i} style={{background:"#fff",border:"1px solid #ece8e2",borderLeft:"3px solid "+x.c,borderRadius:7,padding:"8px 11px",fontSize:11,color:"#4a4038",display:"flex",gap:7}}>
+                        <span style={{flexShrink:0}}>{x.t}</span>
+                        <span>{x.s}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* 大方向建議 */}
         <div style={section}>
@@ -9771,8 +9988,8 @@ function POSSystem() {
             {activeTab==="orders"    && <OrdersDrawer orders={orders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedStocks={sharedStocks} sharedAddLog={sharedAddLog}/>}
             {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers}/>}
             {activeTab==="purchase"  && <PurchasePanel purchases={purchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
-            {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={orders} products={sharedProducts}/>}
-            {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={orders} products={sharedProducts} stocks={sharedStocks}/>}
+            {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={orders} products={sharedProducts} members={members}/>}
+            {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={orders} products={sharedProducts} stocks={sharedStocks} members={members}/>}
             {activeTab==="consign"   && isManager && <ConsignSettlement orders={orders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
             {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={sharedStockLog} sharedStocks={sharedStocks} orders={orders}/>}
             {activeTab==="expense"   && isManager && <ExpensePanel expenses={expenses} setExpenses={saveExpenses} orders={orders} products={sharedProducts} currentStaff={currentStaff}/>}
