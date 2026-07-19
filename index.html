@@ -7975,6 +7975,20 @@ function POSSystem() {
   var cps=useState(null);   var customPriceItem=cps[0],setCustomPriceItem=cps[1];
   var cpvs=useState("");    var customPriceVal=cpvs[0],setCustomPriceVal=cpvs[1];
   var ocs=useState(false);  var orderPlaced=ocs[0],setOrderPlaced=ocs[1];
+  // 結帳完成後多出「列印收據／下一筆」按鈕，內容變高可能超出畫面 → 自動捲到底部
+  var payAreaRef = useRef(null);
+  useEffect(function(){
+    if (!orderPlaced) return;
+    var t = setTimeout(function(){
+      try {
+        var el = payAreaRef.current;
+        if (el && el.scrollHeight > el.clientHeight) {
+          el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+        }
+      } catch(e) {}
+    }, 120);
+    return function(){ clearTimeout(t); };
+  }, [orderPlaced]);
   var tabs=useState("pos"); var activeTab=tabs[0],setActiveTab=tabs[1];
   var mbrs=useState([]); var members=mbrs[0],setMembers=mbrs[1];  // 初始空陣列，由 storage 載入
   var ords=useState([]);    var orders=ords[0],setOrders=ords[1];
@@ -9527,7 +9541,7 @@ function POSSystem() {
           </div>
 
           {/* ── 折扣 + 金額小計 + 付款（固定底部，內部可捲動）── */}
-          <div style={{flexShrink:0,borderTop:"1px solid #d8d4cc",display:"flex",flexDirection:"column",overflowY:"auto",maxHeight:"60vh"}}>
+          <div ref={payAreaRef} style={{flexShrink:0,borderTop:"1px solid #d8d4cc",display:"flex",flexDirection:"column",overflowY:"auto",maxHeight:"72vh"}}>
 
             {/* 折扣 */}
             <div style={{padding:"6px 13px",borderBottom:"1px solid #e8e4de"}}>
@@ -9709,7 +9723,7 @@ function POSSystem() {
               )}
             </div>
             {/* 結帳按鈕 — 黏在付款區底部 */}
-            <div style={{padding:"8px 13px 12px",background:"#eeece8",position:"sticky",bottom:0}}>
+            <div style={{padding:"8px 13px 12px",background:"#eeece8",position:"sticky",bottom:0,zIndex:5,boxShadow:"0 -3px 8px rgba(0,0,0,0.06)"}}>
               <button onClick={handleCheckout} disabled={!cart.length || !splitOk}
                 style={{width:"100%",padding:"13px 0",borderRadius:9,border:"none",
                   background:!cart.length?"#e0dcd6":!splitOk?"#e8e4de":orderPlaced?"#3a7a30":"#b8910a",
