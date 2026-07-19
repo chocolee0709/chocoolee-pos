@@ -3823,24 +3823,70 @@ function PurchasePanel(props) {
       return;
     }
     var allReceived = true;
+    var shortItems = []; // 短少的品項（供分拆補貨單用）
     po.items = po.items.map(function(item){
       var goodTotal = (item.receivedQty || 0) - (item.damagedQty || 0);
       var newStocked = Math.max(item.stockedQty||0, goodTotal); // 累積已入庫
-      if (newStocked < item.qty) allReceived = false; // 還沒到齊
+      if (newStocked < item.qty) {
+        allReceived = false;
+        shortItems.push(Object.assign({}, item, {
+          qty: item.qty - newStocked,   // 只帶「還缺的數量」
+          receivedQty: 0, damagedQty: 0, stockedQty: 0
+        }));
+      }
       return Object.assign({}, item, {stockedQty:newStocked});
     });
-    // 全到齊 → completed；否則 → 退回 pending（待收貨），等剩餘到貨再簽收
-    if (allReceived) {
+
+    // ── 短少處理：由店長選擇後續方式（避免退回待收貨造成重複入庫）──
+    var newBackorderPo = null;
+    if (!allReceived) {
+      var shortMsg = shortItems.map(function(it){ return "・" + it.name + " 缺 " + it.qty; }).join("\n");
+      var choice = prompt(
+        "⚠️ 本次到貨數量短少：\n" + shortMsg + "\n\n" +
+        "請選擇處理方式（輸入數字）：\n" +
+        "1 = 廠商不再補貨 → 依實收數量入庫，本單結案\n" +
+        "2 = 待廠商補寄 → 短少品項另開新採購單，本單結案\n" +
+        "（取消則不做任何變更）", "1");
+      if (choice === null) return; // 取消：完全不動
+      choice = String(choice).trim();
+      if (choice !== "1" && choice !== "2") { alert("請輸入 1 或 2"); return; }
       po.status = "completed";
+      po.shortClosed = true;
+      po.shortNote = (choice === "1") ? "廠商不補貨，依實收結案" : "短少已另開補貨單";
+      if (choice === "2") {
+        // 產生補貨採購單（沿用原單品項，數量為短少數）
+        var d2 = new Date();
+        var ymd = d2.getFullYear() + String(d2.getMonth()+1).padStart(2,"0") + String(d2.getDate()).padStart(2,"0");
+        var maxSeq = 0;
+        (props.purchases||[]).forEach(function(p){
+          var parts = String(p.no||"").split("-");
+          var n = parseInt(parts[parts.length-1], 10);
+          if (!isNaN(n) && n > maxSeq) maxSeq = n;
+        });
+        newBackorderPo = {
+          no: "PO-" + ymd + "-" + String(maxSeq+1).padStart(3,"0"),
+          date: d2.toISOString().slice(0,10),
+          eta: "", status: "pending",
+          note: "【補貨單】原採購單 " + po.no + " 短少補寄" + (po.note ? "\n" + po.note : ""),
+          items: shortItems,
+          fromPo: po.no
+        };
+      }
     } else {
-      po.status = "pending";
-      po.partialReceived = true; // 標記局部簽收過
+      po.status = "completed";
     }
 
-    setPurchases(function(prev){ return prev.map(function(p){ return p.no === po.no ? po : p; }); });
+    setPurchases(function(prev){
+      var updated = prev.map(function(p){ return p.no === po.no ? po : p; });
+      if (newBackorderPo) updated = [newBackorderPo].concat(updated);
+      return updated;
+    });
     setMode("list"); setSelPo(null);
-    if (!allReceived) {
-      alert("✓ 已入庫本次到貨部份\n\n此採購單尚有未到貨項目，已退回「待收貨」，等剩餘到貨再簽收。");
+    if (newBackorderPo) {
+      alert("✓ 已依實收數量入庫，本採購單結案\n\n📋 已建立補貨單：" + newBackorderPo.no +
+            "\n（含短少品項，待廠商補寄後再收貨驗收）");
+    } else if (po.shortClosed) {
+      alert("✓ 已依實收數量入庫，本採購單結案\n\n（廠商不再補貨，短少部分不另計）");
     } else if (dupWarnings.length > 0) {
       alert("✓ 採購單已完成，庫存已更新\n\n⚠️ 偵測到重複貨號，已自動改號避免覆蓋資料：\n" + dupWarnings.join("\n") + "\n\n請到商品庫存確認並調整這些貨號。");
     } else {
@@ -3932,6 +3978,16 @@ function PurchasePanel(props) {
                       <span style={{fontSize:11,color:"#9a968e",transform:isExpanded?"rotate(90deg)":"none",transition:"transform 0.15s",display:"inline-block"}}>▶</span>
                       <span style={{fontSize:13,fontWeight:700,color:"#2a2520"}}>{po.no}</span>
                       {statusBadge(po.status)}
+                      {po.shortClosed && (
+                        <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,background:"#fdf0e6",color:"#c0703a"}}>
+                          短少結案
+                        </span>
+                      )}
+                      {po.fromPo && (
+                        <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,background:"#eef3fb",color:"#4a7ab8"}}>
+                          補貨單
+                        </span>
+                      )}
                     </div>
                     <div style={{fontSize:11,color:"#7a7068",paddingLeft:18}}>
                       {po.date} · {itemCount} 項 / {totalQty} 件
