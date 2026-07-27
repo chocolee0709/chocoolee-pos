@@ -160,10 +160,13 @@
                 var myStore = (function(){ try { return localStorage.getItem("chocoolee-store") || "yl"; } catch(e){ return "yl"; } })();
                 var myStocksNode = myStore === "yl" ? "stocks" : "stocks-" + myStore;
                 if (key === "stores") {
-                  // 分店清單同步
+                  // 分店清單同步（並通知畫面更新，否則調轉按鈕不會出現）
                   try {
                     var stArr = typeof data[key]==="string" ? JSON.parse(data[key]) : data[key];
-                    if (stArr && stArr.length) localStorage.setItem("chocoolee-stores", JSON.stringify(stArr));
+                    if (stArr && stArr.length) {
+                      localStorage.setItem("chocoolee-stores", JSON.stringify(stArr));
+                      changed.push("stores");
+                    }
                   } catch(e){}
                   return;
                 }
@@ -8697,6 +8700,12 @@ function POSSystem() {
         } catch(e) {}
       },
       stocklog:   setSharedStockLog,
+      stores:     function(val) {
+        try {
+          var arr = typeof val === "string" ? JSON.parse(val) : val;
+          if (arr && arr.length) setStoreList(arr);
+        } catch(e) {}
+      },
       shiftlog:   setShiftLog,
       expenses:   setExpenses,
       history:    setHistory,
