@@ -1059,6 +1059,17 @@ function getStoreName(code) {
 }
 // 店別 → 庫存節點名（員林店沿用 "stocks" 相容現有資料）
 function stocksNodeOf(code) { return code === "yl" ? "stocks" : "stocks-" + code; }
+// 非員林店：本店 stocks 沒有的商品一律補 0
+// （否則顯示層會 fallback 到商品主檔的 p.stock——那是員林店的舊種子數字）
+function fillZeroForStore(stocksObj) {
+  if (getMyStoreCode() === "yl") return stocksObj;
+  var out = Object.assign({}, stocksObj || {});
+  try {
+    var prods = JSON.parse(localStorage.getItem("chocoolee-products") || "[]");
+    prods.forEach(function(p){ if (p && p.id !== undefined && out[p.id] === undefined) out[p.id] = 0; });
+  } catch(e) {}
+  return out;
+}
 
 const CAT_STRUCT = {
   "居家香氛":["旅行蠟燭","經典蠟燭","噴霧","擴香","精油","香氛週邊","禮盒","擴香石"],
@@ -8699,6 +8710,7 @@ function POSSystem() {
         try {
           var obj = typeof val === "string" ? JSON.parse(val) : val;
           if (!obj || typeof obj !== "object") return;
+          obj = fillZeroForStore(obj); // 非員林店：缺的商品補 0（不 fallback 到主檔種子數字）
           // 剛切換店別：直接採用該店資料，不做「保留本機」合併（本機是原店的殘留）
           var fresh = false;
           try { fresh = localStorage.getItem("chocoolee-store-fresh") === "1"; } catch(e){}
@@ -8851,7 +8863,18 @@ function POSSystem() {
     };
 
     function loadOne(key, setter) {
-      function apply(v) { try{ if(v) setter(JSON.parse(v)); }catch(e){} }
+      function apply(v) {
+        try{
+          if(!v) {
+            // 分店：庫存空資料也要套補零（新店首次，全部商品顯示 0）
+            if (key === "stocks" && getMyStoreCode() !== "yl") setter(fillZeroForStore({}));
+            return;
+          }
+          var parsed = JSON.parse(v);
+          if (key === "stocks") parsed = fillZeroForStore(parsed);
+          setter(parsed);
+        }catch(e){}
+      }
       try {
         if (window.storage) {
           window.storage.get("chocoolee-"+key)
