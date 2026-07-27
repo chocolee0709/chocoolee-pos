@@ -406,6 +406,22 @@
                 changed.push(key);
               } catch(e){}
             });
+            // ── 分店：若 Firebase 上還沒有本店的庫存節點（新店首次使用），
+            //    本機庫存必須是空的（不可殘留原店資料）
+            try {
+              var _myStore = localStorage.getItem("chocoolee-store") || "yl";
+              var _myNode = _myStore === "yl" ? "stocks" : "stocks-" + _myStore;
+              if (data[_myNode] === undefined) {
+                var _freshFlag = localStorage.getItem("chocoolee-store-fresh") === "1";
+                var _curStocks = localStorage.getItem("chocoolee-stocks");
+                if (_freshFlag || (_myStore !== "yl" && _curStocks && _curStocks !== "{}")) {
+                  // 新店且無雲端資料：以空庫存開始
+                  localStorage.setItem("chocoolee-stocks", "{}");
+                  localStorage.removeItem("chocoolee-store-fresh");
+                  changed.push("stocks");
+                }
+              }
+            } catch(e){}
             if (changed.length > 0 && window.__reactSetters) {
               var needProductRefresh = false;
               changed.forEach(function(key) {
@@ -8513,7 +8529,13 @@ function POSSystem() {
   var cst=useState(getMyStoreCode()); var currentStore=cst[0],setCurrentStore=cst[1];
   var stl=useState(getStores()); var storeList=stl[0],setStoreList=stl[1];
   function bindStore(code){
-    try { localStorage.setItem("chocoolee-store", code); } catch(e){}
+    try {
+      localStorage.setItem("chocoolee-store", code);
+      // 清空本機庫存資料（每家店的庫存獨立，不可帶著原店資料過去）
+      localStorage.setItem("chocoolee-stocks", "{}");
+      localStorage.removeItem("chocoolee-pending-stocks");
+      localStorage.setItem("chocoolee-store-fresh", "1"); // 標記：載入時直接用該店資料，不做保留合併
+    } catch(e){}
     setCurrentStore(code);
     alert("已切換為「"+getStoreName(code)+"」\n\n頁面將重新載入以下載該店庫存。");
     location.reload();
@@ -8522,7 +8544,11 @@ function POSSystem() {
   var ords=useState([]);    var orders=ords[0],setOrders=ords[1];
   var purs=useState([]);    var purchases=purs[0],setPurchases=purs[1];
   var lgs2=useState([]);    var sharedStockLog=lgs2[0],setSharedStockLog=lgs2[1];
-  var sts2=useState(function(){var m={};PRODUCTS.forEach(function(p){m[p.id]=p.stock;});return m;});
+  var sts2=useState(function(){
+    // 非員林店或剛切換店別：從空庫存開始（等 Firebase 下載該店資料），
+    // 避免內建種子資料污染新店庫存
+    return {};
+  });
   var sharedStocks=sts2[0],setSharedStocks=sts2[1];
   var prd2=useState(PRODUCTS); var sharedProducts=prd2[0], setSharedProducts=prd2[1];
   var shl=useState([]);     var shiftLog=shl[0],setShiftLog=shl[1];
@@ -8652,6 +8678,14 @@ function POSSystem() {
         try {
           var obj = typeof val === "string" ? JSON.parse(val) : val;
           if (!obj || typeof obj !== "object") return;
+          // 剛切換店別：直接採用該店資料，不做「保留本機」合併（本機是原店的殘留）
+          var fresh = false;
+          try { fresh = localStorage.getItem("chocoolee-store-fresh") === "1"; } catch(e){}
+          if (fresh) {
+            try { localStorage.removeItem("chocoolee-store-fresh"); } catch(e){}
+            setSharedStocks(obj);
+            return;
+          }
           setSharedStocks(function(prev){
             // Firebase 為主，但保留本機有而 Firebase 沒有的庫存（新商品）
             var merged = Object.assign({}, obj);
