@@ -1602,9 +1602,10 @@ function CatalogPanel(props) {
     var mQ = !q || p.name.indexOf(q)>=0 || p.sku.indexOf(q)>=0;
     var mM = !filterMain || p.main===filterMain;
     var mS = !filterSub  || p.sub===filterSub;
+    var isOff = !!(p.delisted || (p.storeOff && p.storeOff[props.currentStore]));
     var mL = filterListing === "" ? true
-           : filterListing === "on" ? !p.delisted
-           : !!p.delisted;
+           : filterListing === "on" ? !isOff
+           : isOff;
     return mQ && mM && mS && mL;
   });
   // 依貨號自然排序（保留前導零、數字+字母組合）
@@ -2373,19 +2374,30 @@ function CatalogPanel(props) {
               <div><label style={lbl}>條碼</label><input value={editForm.barcode||"" } onChange={function(e){setEF("barcode",e.target.value);}} style={inp}/></div>
               {isManager && (
                 <div style={{gridColumn:"1 / -1"}}>
-                  <label style={lbl}>上架狀態 🔒</label>
-                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                    <button onClick={function(){setEF("delisted", !editForm.delisted);}}
-                      style={{
-                        background: editForm.delisted ? "#f0ede8" : "#e8f5ec",
-                        border: "1px solid " + (editForm.delisted ? "#c0bab0" : "#7ab88e"),
-                        borderRadius:6,padding:"6px 14px",fontSize:12,fontWeight:700,cursor:"pointer",
-                        color: editForm.delisted ? "#8a8478" : "#2a7a4a"
-                      }}>
-                      {editForm.delisted ? "🚫 已下架" : "✓ 上架中"}
-                    </button>
+                  <label style={lbl}>上架狀態 🔒（各店獨立）</label>
+                  <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                    {(props.storeList||[{code:"yl",name:"員林店"}]).map(function(st){
+                      var off = editForm.delisted || (editForm.storeOff && editForm.storeOff[st.code]);
+                      return (
+                        <button key={st.code} onClick={function(){
+                          setEF("delisted", false); // 改用各店開關後，清除全域下架旗標
+                          var so = Object.assign({}, editForm.storeOff||{});
+                          so[st.code] = !off;
+                          if (!so[st.code]) delete so[st.code];
+                          setEF("storeOff", so);
+                        }}
+                          style={{
+                            background: off ? "#f0ede8" : "#e8f5ec",
+                            border: "1px solid " + (off ? "#c0bab0" : "#7ab88e"),
+                            borderRadius:6,padding:"6px 12px",fontSize:11,fontWeight:700,cursor:"pointer",
+                            color: off ? "#8a8478" : "#2a7a4a"
+                          }}>
+                          {st.name}：{off ? "🚫 下架" : "✓ 上架"}
+                        </button>
+                      );
+                    })}
                     <span style={{fontSize:10,color:"#9a968e"}}>
-                      {editForm.delisted ? "收銀台不顯示，庫存與報表仍照常計算" : "點擊可下架（暫不進貨的商品）"}
+                      各店可獨立上下架；下架店的收銀台不顯示，庫存與報表照常
                     </span>
                   </div>
                 </div>
@@ -2473,10 +2485,10 @@ function CatalogPanel(props) {
                           onMouseEnter={function(e){e.currentTarget.style.background="#e8e4de";e.currentTarget.style.color="#b8910a";}}
                           onMouseLeave={function(e){e.currentTarget.style.background="#f5f4f0";e.currentTarget.style.color="#c8c4bc";}}>📦</div>
                       )}
-                      {p.delisted && (
+                      {(p.delisted || (p.storeOff && p.storeOff[props.currentStore])) && (
                         <span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,background:"#f0ede8",color:"#8a8478",flexShrink:0}}>下架</span>
                       )}
-                      <span style={{color:p.delisted?"#9a968e":"#2a2520",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+                      <span style={{color:(p.delisted||(p.storeOff&&p.storeOff[props.currentStore]))?"#9a968e":"#2a2520",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
                     </div>
                   </td>
                   <td style={{padding:"7px 8px 7px 0",fontSize:10,borderBottom:"1px solid #f0ede8"}}>
@@ -3573,7 +3585,7 @@ function MembersDrawer(props) {
     var points = calcPoints(spent);
     var now = new Date().toISOString();
     if (editId === "new") {
-      setMembers(function(prev){ return prev.concat([{id:Date.now(),name:form.name,phone:form.phone,email:form.email,spent:spent,highCount:highCount,level:level,points:points,note:form.note,joinDate:localDate(),updatedAt:now}]); });
+      setMembers(function(prev){ return prev.concat([{id:Date.now(),name:form.name,phone:form.phone,email:form.email,spent:spent,highCount:highCount,level:level,points:points,note:form.note,joinDate:localDate(),store:(props.currentStore||"yl"),updatedAt:now}]); });
     } else {
       setMembers(function(prev){ return prev.map(function(m){ return m.id===editId ? Object.assign({},m,{name:form.name,phone:form.phone,email:form.email,spent:spent,highCount:highCount,level:level,points:points,note:form.note,updatedAt:now}) : m; }); });
     }
@@ -3913,8 +3925,13 @@ function PurchasePanel(props) {
   }).sort(function(a,b){ return (b.date||"").localeCompare(a.date||""); });
 
   function newPurchase() {
+    var myStore = getMyStoreCode();
+    var poNo = myStore === "yl"
+      ? "PO-" + localDate().split("-").join("") + "-" + String(purchases.length+1).padStart(3,"0")
+      : "PO-" + myStore.toUpperCase() + "-" + localDate().split("-").join("") + "-" + String(purchases.length+1).padStart(3,"0");
     setSelPo({
-      no: "PO-" + localDate().split("-").join("") + "-" + String(purchases.length+1).padStart(3,"0"),
+      no: poNo,
+      store: myStore,
       date: localDate(),
       eta: "",
       items: [],
@@ -4191,7 +4208,8 @@ function PurchasePanel(props) {
           if (!isNaN(n) && n > maxSeq) maxSeq = n;
         });
         newBackorderPo = {
-          no: "PO-" + ymd + "-" + String(maxSeq+1).padStart(3,"0"),
+          no: (getMyStoreCode()==="yl" ? "PO-" : "PO-"+getMyStoreCode().toUpperCase()+"-") + ymd + "-" + String(maxSeq+1).padStart(3,"0"),
+          store: getMyStoreCode(),
           date: d2.toISOString().slice(0,10),
           eta: "", status: "pending",
           note: "【補貨單】原採購單 " + po.no + " 短少補寄" + (po.note ? "\n" + po.note : ""),
@@ -9213,7 +9231,8 @@ function POSSystem() {
 
   var filtered = useMemo(function() {
     var arr = sharedProducts.filter(function(p) {
-      if (p.delisted) return false; // 已下架商品不在收銀台顯示（庫存與報表仍照常計算）
+      if (p.delisted) return false; // 全店下架（舊欄位相容）
+      if (p.storeOff && p.storeOff[currentStore]) return false; // 本店下架（各店獨立上下架）
       if (!activeMain && p.main === "業外收入") return false;
       var mM = !activeMain || p.main === activeMain;
       var mS = !activeSub  || p.sub  === activeSub;
@@ -9367,7 +9386,11 @@ function POSSystem() {
     var now = new Date();
     var dateStr = localDate(now);
     var timeStr = localTime(now);
-    var orderNo = "ORD-"+dateStr.split("-").join("")+"-"+String(orders.length+1).padStart(4,"0");
+    // 訂單號：員林店維持原格式；其他店加店碼（避免多店同日撞號）
+    var storeOrderCount = orders.filter(function(o){ return (o.store||"yl") === currentStore; }).length;
+    var orderNo = currentStore === "yl"
+      ? "ORD-"+dateStr.split("-").join("")+"-"+String(storeOrderCount+1).padStart(4,"0")
+      : "ORD-"+currentStore.toUpperCase()+"-"+dateStr.split("-").join("")+"-"+String(storeOrderCount+1).padStart(4,"0");
     // Build order record
     var newOrder = {
       no: orderNo,
@@ -9462,6 +9485,10 @@ function POSSystem() {
   var mainColor = activeMain ? (CAT_COLORS[activeMain] || "#b8910a") : "#b8910a";
   var lowCount  = sharedProducts.filter(function(p){var st=sharedStocks[p.id]!==undefined?sharedStocks[p.id]:p.stock;return st<=5;}).length;
   var isManager = adminMode; // 管理者模式才看得到營收/毛利/成本
+  // ── 分店：各面板只看本店資料（無 store 欄位的舊資料視為員林店）──
+  var storeOrders = orders.filter(function(o){ return (o.store||"yl") === currentStore; });
+  var storeStockLog = sharedStockLog.filter(function(l){ return (l.store||"yl") === currentStore; });
+  var storePurchases = purchases.filter(function(p){ return (p.store||"yl") === currentStore; });
   var inp = {background:"#ffffff",border:"1px solid #2e2a22",borderRadius:6,padding:"7px 10px",color:"#2a2520",fontSize:12,outline:"none"};
 
   return (
@@ -10389,15 +10416,15 @@ function POSSystem() {
         {/* ════ 商品 / 庫存 / 訂單 / 會員 ════ */}
         {activeTab !== "pos" && (
           <div style={{flex:1,overflow:"hidden",padding:"16px 20px",display:"flex",flexDirection:"column"}}>
-            {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={sharedStockLog} sharedAddLog={sharedAddLog} currentStore={currentStore} storeList={storeList}/>}
-            {activeTab==="orders"    && <OrdersDrawer orders={orders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedStocks={sharedStocks} sharedAddLog={sharedAddLog}/>}
-            {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers}/>}
-            {activeTab==="purchase"  && <PurchasePanel purchases={purchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
-            {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={orders} products={sharedProducts} members={members}/>}
-            {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={orders} products={sharedProducts} stocks={sharedStocks} members={members}/>}
-            {activeTab==="consign"   && isManager && <ConsignSettlement orders={orders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
-            {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={sharedStockLog} sharedStocks={sharedStocks} orders={orders}/>}
-            {activeTab==="expense"   && isManager && <ExpensePanel expenses={expenses} setExpenses={saveExpenses} orders={orders} products={sharedProducts} currentStaff={currentStaff}/>}
+            {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={storeStockLog} sharedAddLog={sharedAddLog} currentStore={currentStore} storeList={storeList}/>}
+            {activeTab==="orders"    && <OrdersDrawer orders={storeOrders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedStocks={sharedStocks} sharedAddLog={sharedAddLog}/>}
+            {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers} currentStore={currentStore} storeList={storeList}/>}
+            {activeTab==="purchase"  && <PurchasePanel purchases={storePurchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
+            {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={storeOrders} products={sharedProducts} members={members}/>}
+            {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={storeOrders} products={sharedProducts} stocks={sharedStocks} members={members}/>}
+            {activeTab==="consign"   && isManager && <ConsignSettlement orders={storeOrders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
+            {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={storeStockLog} sharedStocks={sharedStocks} orders={storeOrders}/>}
+            {activeTab==="expense"   && isManager && <ExpensePanel expenses={expenses} setExpenses={saveExpenses} orders={storeOrders} products={sharedProducts} currentStaff={currentStaff}/>}
             {activeTab==="history"   && isManager && <HistoryPanel history={history} setHistory={saveHistory}/>}
             {activeTab==="attendance"&& <AttendanceReport shiftLog={shiftLog} setShiftLog={saveShiftLog} staffRates={staffRates} setStaffRates={setStaffRates} schedule={schedule} setSchedule={setSchedule} isManager={isManager} currentStaff={currentStaff}/>}
             {(activeTab==="analytics"||activeTab==="smart"||activeTab==="consign"||activeTab==="stockflow") && !isManager && (
