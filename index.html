@@ -155,6 +155,45 @@
             Object.keys(data).forEach(function(key){
               try {
                 if (key === "deletedskus") return; // 已先處理
+                // ── 分店：庫存節點映射 ──
+                // 本店代碼（yl 沿用 "stocks" 節點；其他店用 "stocks-{code}"）
+                var myStore = (function(){ try { return localStorage.getItem("chocoolee-store") || "yl"; } catch(e){ return "yl"; } })();
+                var myStocksNode = myStore === "yl" ? "stocks" : "stocks-" + myStore;
+                if (key === "stores") {
+                  // 分店清單同步
+                  try {
+                    var stArr = typeof data[key]==="string" ? JSON.parse(data[key]) : data[key];
+                    if (stArr && stArr.length) localStorage.setItem("chocoolee-stores", JSON.stringify(stArr));
+                  } catch(e){}
+                  return;
+                }
+                if (key.indexOf("stocks") === 0 && key.indexOf("stocklog") !== 0) {
+                  if (key !== myStocksNode) return; // 別店的庫存節點：不寫入本機（避免覆蓋本店資料）
+                  // 本店的庫存節點 → 以下沿用原本 "stocks" 的處理（key 統一改為 stocks）
+                  key = "stocks";
+                  var newVal = typeof data[myStocksNode]==="string" ? data[myStocksNode] : JSON.stringify(data[myStocksNode]);
+                  var oldVal = localStorage.getItem("chocoolee-stocks");
+                  // 套用 pending 保護後寫入（與原 stocks 處理一致）
+                  try {
+                    var fbStocksDl2 = JSON.parse(newVal) || {};
+                    var pendRaw2 = localStorage.getItem("chocoolee-pending-stocks");
+                    var pend2 = pendRaw2 ? JSON.parse(pendRaw2) : null;
+                    if (pend2 && Object.keys(pend2).length > 0) {
+                      Object.keys(pend2).forEach(function(k){
+                        if (pend2[k] === null) delete fbStocksDl2[k];
+                        else fbStocksDl2[k] = pend2[k];
+                      });
+                      localStorage.setItem("chocoolee-stocks", JSON.stringify(fbStocksDl2));
+                    } else {
+                      localStorage.setItem("chocoolee-stocks", newVal);
+                    }
+                    changed.push("stocks");
+                  } catch(e) {
+                    localStorage.setItem("chocoolee-stocks", newVal);
+                    changed.push("stocks");
+                  }
+                  return;
+                }
                 // product-images：不存 localStorage（圖片永遠從 Firebase 即時讀取）
                 // 這樣 localStorage 永遠不會滿，且圖片一定是最新的
                 if (key === "product-images") {
@@ -509,6 +548,60 @@
   };
 
   // stocklog 合併推送（用 id 為 key，避免多台裝置互相覆蓋）
+  // 分店清單推送（新增分店時）
+  window.pushStores = function(stores) {
+    getToken(function(token){
+      if (!token) return;
+      fetch(FB + "/chocoolee/stores.json?auth=" + token, {
+        method:"PUT", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(stores)
+      }).then(function(r){ if(r.ok) showToast("☁️ 分店清單已同步"); });
+    });
+  };
+
+  // 讀取多家店的庫存（唯讀，供「各店分佈」顯示）
+  window.fetchStoreStocks = function(codes, callback) {
+    getToken(function(token){
+      if (!token) { callback(null); return; }
+      var result = {};
+      var pending = codes.length;
+      if (!pending) { callback(result); return; }
+      codes.forEach(function(code){
+        var node = code === "yl" ? "stocks" : "stocks-" + code;
+        fetch(FB + "/chocoolee/" + node + ".json?auth=" + token)
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            try { result[code] = typeof d === "string" ? JSON.parse(d) : (d || {}); }
+            catch(e) { result[code] = {}; }
+          })
+          .catch(function(){ result[code] = {}; })
+          .then(function(){ pending--; if (pending === 0) callback(result); });
+      });
+    });
+  };
+
+  // 調轉：把某商品 +qty 寫入他店庫存節點（讀→改→寫，回傳該店調整後數量）
+  window.transferStockToStore = function(storeCode, productId, qty, callback) {
+    getToken(function(token){
+      if (!token) { callback(false, null); return; }
+      var node = storeCode === "yl" ? "stocks" : "stocks-" + storeCode;
+      fetch(FB + "/chocoolee/" + node + ".json?auth=" + token)
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          var st = {};
+          try { st = typeof d === "string" ? JSON.parse(d) : (d || {}); } catch(e){}
+          var before = st[productId] !== undefined ? Number(st[productId]) : 0;
+          var after = before + qty;
+          st[productId] = after;
+          return fetch(FB + "/chocoolee/" + node + ".json?auth=" + token, {
+            method:"PUT", headers:{"Content-Type":"application/json"},
+            body: JSON.stringify(st)
+          }).then(function(r){ callback(r.ok, r.ok ? after : null); });
+        })
+        .catch(function(){ callback(false, null); });
+    });
+  };
+
   window.pushStockLogMerged = function(localArr) {
     function doMerge(retry) {
       getToken(function(token){
@@ -558,6 +651,12 @@
 
   // stocks 合併推送（只推「本裝置實際變動」的 key，其他 key 保留 Firebase 值，
   // 避免整包覆蓋掉其他裝置剛推上去的庫存變動）
+  // 分店：推到本店的庫存節點（yl="stocks"，其他店="stocks-{code}"），店與店天生隔離
+  function myStocksNodeName() {
+    var c = "yl";
+    try { c = localStorage.getItem("chocoolee-store") || "yl"; } catch(e){}
+    return c === "yl" ? "stocks" : "stocks-" + c;
+  }
   window.pushStocksMerged = function(localStocks) {
     function doMerge(retry) {
       getToken(function(token){
@@ -565,7 +664,8 @@
           if (retry > 0) setTimeout(function(){ doMerge(retry-1); }, 3000);
           return;
         }
-        fetch(FB + "/chocoolee/stocks.json?auth=" + token)
+        var nodeName = myStocksNodeName();
+        fetch(FB + "/chocoolee/" + nodeName + ".json?auth=" + token)
           .then(function(r){ return r.json(); })
           .then(function(fbData){
             var fbStocks = {};
@@ -588,7 +688,7 @@
               // 無 delta 記錄（如初始化/手動全量）：保守用本機覆蓋
               merged = Object.assign({}, fbStocks, localStocks);
             }
-            return fetch(FB + "/chocoolee/stocks.json?auth=" + token, {
+            return fetch(FB + "/chocoolee/" + nodeName + ".json?auth=" + token, {
               method:"PUT", headers:{"Content-Type":"application/json"},
               body: JSON.stringify(merged)
             });
@@ -918,6 +1018,28 @@ function localTime(d) {
   var dt = d ? new Date(d) : new Date();
   return String(dt.getHours()).padStart(2,"0") + ":" + String(dt.getMinutes()).padStart(2,"0");
 }
+
+// ── 分店系統 ──────────────────────────────────────────────────────
+// 每家店的庫存是獨立節點：員林店(yl)沿用原本的 "stocks"（零遷移），
+// 其他店用 "stocks-{code}"。stocklog/orders 每筆加 store 欄位。
+var DEFAULT_STORES = [ {code:"yl", name:"員林店"} ];
+function getStores() {
+  try {
+    var raw = localStorage.getItem("chocoolee-stores");
+    var arr = raw ? JSON.parse(raw) : null;
+    if (arr && arr.length) return arr;
+  } catch(e) {}
+  return DEFAULT_STORES;
+}
+function getMyStoreCode() {
+  try { return localStorage.getItem("chocoolee-store") || "yl"; } catch(e) { return "yl"; }
+}
+function getStoreName(code) {
+  var s = getStores().find(function(x){ return x.code === code; });
+  return s ? s.name : code;
+}
+// 店別 → 庫存節點名（員林店沿用 "stocks" 相容現有資料）
+function stocksNodeOf(code) { return code === "yl" ? "stocks" : "stocks-" + code; }
 
 const CAT_STRUCT = {
   "居家香氛":["旅行蠟燭","經典蠟燭","噴霧","擴香","精油","香氛週邊","禮盒","擴香石"],
@@ -1327,6 +1449,79 @@ function CatalogPanel(props) {
 
   // ── 庫存調整 inline ──
   function openAdjust(p){ setAdjustId(p.id); setDelta(0); setEditId(null); setEditForm(null); }
+
+  // ── 分店庫存調轉 ──
+  var tfp = useState(null); var transferProd = tfp[0], setTransferProd = tfp[1];
+  var tft = useState(""); var transferTo = tft[0], setTransferTo = tft[1];
+  var tfq = useState(""); var transferQty = tfq[0], setTransferQty = tfq[1];
+  var tfb = useState(false); var transferBusy = tfb[0], setTransferBusy = tfb[1];
+  var tfd = useState(null); var distData = tfd[0], setDistData = tfd[1]; // 各店分佈 {code: qty}
+  function openTransfer(p){
+    setTransferProd(p); setTransferQty("");
+    var others = (props.storeList||[]).filter(function(s){ return s.code !== props.currentStore; });
+    setTransferTo(others.length ? others[0].code : "");
+    setDistData(null);
+    // 下載各店庫存分佈（唯讀）
+    if (window.fetchStoreStocks) {
+      window.fetchStoreStocks((props.storeList||[]).map(function(s){return s.code;}), function(result){
+        if (result) {
+          var d = {};
+          Object.keys(result).forEach(function(code){
+            var st = result[code] || {};
+            d[code] = st[p.id] !== undefined ? st[p.id] : 0;
+          });
+          // 本店用即時 state（最準）
+          d[props.currentStore] = stocks[p.id] !== undefined ? stocks[p.id] : (p.stock||0);
+          setDistData(d);
+        }
+      });
+    }
+  }
+  function doTransfer(){
+    var p = transferProd;
+    if (!p || transferBusy) return;
+    var qty = Number(transferQty) || 0;
+    var cur = stocks[p.id] !== undefined ? stocks[p.id] : (p.stock||0);
+    if (qty <= 0) { alert("請輸入調轉數量"); return; }
+    if (qty > cur) { alert("調轉數量不可超過本店現有庫存（" + cur + "）"); return; }
+    if (!transferTo || transferTo === props.currentStore) { alert("請選擇調入店"); return; }
+    var fromName = getStoreName(props.currentStore);
+    var toName = getStoreName(transferTo);
+    if (!confirm("確認調轉？\n\n" + p.name + " × " + qty + "\n" + fromName + " → " + toName +
+                 "\n\n" + fromName + "：" + cur + " → " + (cur-qty))) return;
+    setTransferBusy(true);
+    // 1. 他店 +qty（直接讀改寫 Firebase 該店節點）
+    window.transferStockToStore(transferTo, p.id, qty, function(ok, toAfter){
+      if (!ok) {
+        setTransferBusy(false);
+        alert("❌ 調轉失敗（無法更新「" + toName + "」庫存），請確認網路後重試。\n本店庫存未變動。");
+        return;
+      }
+      // 2. 本店 −qty（走正常 saveStocks 流程：delta 推送＋pending 保護）
+      setStocks(function(prev){
+        var next = Object.assign({}, prev);
+        next[p.id] = (next[p.id] !== undefined ? next[p.id] : (p.stock||0)) - qty;
+        return next;
+      });
+      // 3. 寫兩筆調轉 log（各標店別）
+      var now = new Date();
+      var ds = localDate(now), ts = localTime(now);
+      addLog([
+        { id: Date.now(), date: ds, time: ts, productId: p.id, sku: p.sku, name: p.name,
+          main: p.main, sub: p.sub, store: props.currentStore,
+          reason: "調撥出庫（→ " + toName + "）", change: -qty, before: cur, after: cur - qty,
+          operator: (props.currentStaff && props.currentStaff.name) || "—" },
+        { id: Date.now()+1, date: ds, time: ts, productId: p.id, sku: p.sku, name: p.name,
+          main: p.main, sub: p.sub, store: transferTo,
+          reason: "調撥入庫（← " + fromName + "）", change: qty,
+          before: (toAfter !== null ? toAfter - qty : null), after: toAfter,
+          operator: (props.currentStaff && props.currentStaff.name) || "—" }
+      ]);
+      setTransferBusy(false);
+      setTransferProd(null);
+      alert("✓ 調轉完成\n\n" + fromName + "：" + cur + " → " + (cur-qty) + "\n" + toName + "：+" + qty);
+    });
+  }
   function doAdjust(){
     var prod = products.find(function(p){ return p.id===adjustId; });
     var before = stocks[adjustId]!==undefined ? stocks[adjustId] : (prod?prod.stock:0);
@@ -2287,6 +2482,12 @@ function CatalogPanel(props) {
                       style={{display:"block",margin:"2px auto 0",background:"none",border:"1px solid #d8d4cc",borderRadius:4,padding:"1px 7px",color:"#b8910a",fontSize:9,cursor:"pointer"}}>
                       調整
                     </button>
+                    {isManager && (props.storeList||[]).length > 1 && (
+                      <button onClick={function(){openTransfer(p);}}
+                        style={{display:"block",margin:"2px auto 0",background:"none",border:"1px solid #c8d8e8",borderRadius:4,padding:"1px 7px",color:"#4a7ab8",fontSize:9,cursor:"pointer"}}>
+                        調轉
+                      </button>
+                    )}
                   </td>
                   {isManager && (
                     <td style={{padding:"7px 4px",textAlign:"center",borderBottom:"1px solid #f0ede8"}}>
@@ -2325,6 +2526,78 @@ function CatalogPanel(props) {
       {showPrint && printItems.length>0 && (
         <PrintModal items={printItems} onClose={function(){setShowPrint(false);setSelected(new Set());}}/>
       )}
+
+      {/* ── 分店調轉 Modal ── */}
+      {transferProd && (function(){
+        var p = transferProd;
+        var cur = stocks[p.id] !== undefined ? stocks[p.id] : (p.stock||0);
+        var others = (props.storeList||[]).filter(function(s){ return s.code !== props.currentStore; });
+        return (
+          <div style={{position:"fixed",inset:0,background:"rgba(30,26,20,0.5)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}
+            onClick={function(){ if(!transferBusy) setTransferProd(null); }}>
+            <div onClick={function(e){e.stopPropagation();}}
+              style={{background:"#faf9f7",borderRadius:14,padding:20,width:"100%",maxWidth:400,boxShadow:"0 12px 48px rgba(0,0,0,0.25)"}}>
+              <div style={{fontSize:15,fontWeight:700,color:"#2a2520",marginBottom:2}}>⇄ 分店庫存調轉</div>
+              <div style={{fontSize:12,color:"#7a7068",marginBottom:12}}>{p.sku}　{p.name}</div>
+
+              {/* 各店分佈 */}
+              <div style={{background:"#fff",border:"1px solid #ece8e2",borderRadius:9,padding:"10px 12px",marginBottom:12}}>
+                <div style={{fontSize:10,color:"#9a968e",marginBottom:6}}>各店庫存分佈</div>
+                {distData === null ? (
+                  <div style={{fontSize:11,color:"#c8c4bc"}}>載入中...</div>
+                ) : (
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                    {(props.storeList||[]).map(function(s){
+                      var v = distData[s.code] !== undefined ? distData[s.code] : "—";
+                      var isMe = s.code === props.currentStore;
+                      return (
+                        <div key={s.code} style={{flex:1,minWidth:80,textAlign:"center",padding:"6px 8px",borderRadius:7,
+                          background:isMe?"#fffef0":"#faf9f7",border:isMe?"1px solid #b8910a":"1px solid #ece8e2"}}>
+                          <div style={{fontSize:10,color:isMe?"#b8910a":"#9a968e",fontWeight:isMe?700:400}}>{s.name}{isMe?"（本店）":""}</div>
+                          <div style={{fontSize:17,fontWeight:800,color:"#2a2520"}}>{v}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* 調轉設定 */}
+              <div style={{display:"flex",gap:8,alignItems:"flex-end",marginBottom:14}}>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:10,color:"#7a7068",display:"block",marginBottom:3}}>調入店</label>
+                  <select value={transferTo} onChange={function(e){setTransferTo(e.target.value);}}
+                    style={{width:"100%",background:"#fff",border:"1px solid #d8d4cc",borderRadius:6,padding:"7px 9px",fontSize:12}}>
+                    {others.map(function(s){
+                      return <option key={s.code} value={s.code}>{s.name}</option>;
+                    })}
+                  </select>
+                </div>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:10,color:"#7a7068",display:"block",marginBottom:3}}>
+                    數量（本店現有 {cur}）
+                  </label>
+                  <input type="number" min="1" max={cur} value={transferQty}
+                    onChange={function(e){setTransferQty(e.target.value);}}
+                    placeholder="0"
+                    style={{width:"100%",background:"#fff",border:"1px solid #d8d4cc",borderRadius:6,padding:"7px 9px",fontSize:13,boxSizing:"border-box"}}/>
+                </div>
+              </div>
+
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                <button onClick={function(){setTransferProd(null);}} disabled={transferBusy}
+                  style={{background:"none",border:"1px solid #d8d4cc",borderRadius:7,padding:"8px 16px",fontSize:12,color:"#7a7068",cursor:"pointer"}}>
+                  取消
+                </button>
+                <button onClick={doTransfer} disabled={transferBusy}
+                  style={{background:transferBusy?"#d8d4cc":"#4a7ab8",border:"none",borderRadius:7,padding:"8px 20px",fontSize:12,fontWeight:700,color:"#fff",cursor:transferBusy?"default":"pointer"}}>
+                  {transferBusy ? "處理中..." : "確認調轉"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── 匯入盤點預覽 Modal ── */}
       {importPreview && (
@@ -8236,6 +8509,15 @@ function POSSystem() {
     return function(){ clearTimeout(t); };
   }, [orderPlaced]);
   var tabs=useState("pos"); var activeTab=tabs[0],setActiveTab=tabs[1];
+  // ── 分店：本機綁定的店別 ──
+  var cst=useState(getMyStoreCode()); var currentStore=cst[0],setCurrentStore=cst[1];
+  var stl=useState(getStores()); var storeList=stl[0],setStoreList=stl[1];
+  function bindStore(code){
+    try { localStorage.setItem("chocoolee-store", code); } catch(e){}
+    setCurrentStore(code);
+    alert("已切換為「"+getStoreName(code)+"」\n\n頁面將重新載入以下載該店庫存。");
+    location.reload();
+  }
   var mbrs=useState([]); var members=mbrs[0],setMembers=mbrs[1];  // 初始空陣列，由 storage 載入
   var ords=useState([]);    var orders=ords[0],setOrders=ords[1];
   var purs=useState([]);    var purchases=purs[0],setPurchases=purs[1];
@@ -8817,7 +9099,13 @@ function POSSystem() {
     });
   }
 
-  function sharedAddLog(entries){ saveStockLog(function(prev){ return prev.concat(entries); }); }
+  function sharedAddLog(entries){
+    // 每筆異動記錄標記店別（分店系統）
+    var tagged = (Array.isArray(entries)?entries:[entries]).map(function(e){
+      return (e && e.store===undefined) ? Object.assign({},e,{store:currentStore}) : e;
+    });
+    saveStockLog(function(prev){ return prev.concat(tagged); });
+  }
 
   // 打上班卡：加入在班陣列（不踢掉其他人）
   function handleLogin(staff) {
@@ -9040,6 +9328,7 @@ function POSSystem() {
     // Build order record
     var newOrder = {
       no: orderNo,
+      store: currentStore,
       date: dateStr,
       time: timeStr,
       member: foundMember ? foundMember.name : "—",
@@ -9147,7 +9436,7 @@ function POSSystem() {
               style={{height:34,width:"auto",objectFit:"contain"}}/>
             <div style={{textAlign:"left"}}>
               <div style={{fontWeight:700,fontSize:12,letterSpacing:"0.05em",color:"#2a2520",lineHeight:1.3}}>巧克莉莉選物店</div>
-              <div style={{fontSize:10,color:"#9a968e",letterSpacing:"0.04em"}}>員林店</div>
+              <div style={{fontSize:10,color:"#b8910a",fontWeight:700,letterSpacing:"0.04em"}}>{getStoreName(currentStore)}</div>
             </div>
             <span style={{fontSize:10,color:"#b8b0a4",marginLeft:2}}>{showMenu?"▲":"▼"}</span>
           </button>
@@ -9185,6 +9474,50 @@ function POSSystem() {
                   })}
                 </div>
               </div>
+
+              {/* 分店（店長可切換本機店別/新增分店） */}
+              {isManager && (
+                <div style={{padding:"10px 14px",borderBottom:"1px solid #f0ede8"}}>
+                  <div style={{fontSize:10,color:"#9a968e",marginBottom:5}}>本機店別（收銀/盤點都記在此店）</div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                    {storeList.map(function(s){
+                      var isCur = s.code === currentStore;
+                      return (
+                        <div key={s.code} onClick={function(){
+                          if (isCur) return;
+                          if (!confirm("將本機切換為「"+s.name+"」？\n\n之後這台裝置的收銀、盤點、進貨都會記在「"+s.name+"」。")) return;
+                          setShowMenu(false);
+                          bindStore(s.code);
+                        }}
+                          style={{display:"flex",alignItems:"center",gap:5,padding:"4px 9px",borderRadius:20,cursor:isCur?"default":"pointer",
+                            background:isCur?"#fffef0":"#f0ede8",border:isCur?"1px solid #b8910a":"1px solid #d8d4cc"}}>
+                          <span style={{fontSize:11,fontWeight:700,color:isCur?"#b8910a":"#2a2520"}}>{s.name}</span>
+                          {isCur && <span style={{fontSize:8,color:"#b8910a",fontWeight:700}}>本機</span>}
+                        </div>
+                      );
+                    })}
+                    <div onClick={function(){
+                      var name = prompt("新分店名稱（例如：彰化店）");
+                      if (!name || !name.trim()) return;
+                      name = name.trim();
+                      var code = prompt("店別代碼（英文小寫，例如：ch）\n※設定後不可更改");
+                      if (!code || !code.trim()) return;
+                      code = code.trim().toLowerCase();
+                      if (storeList.some(function(x){return x.code===code||x.name===name;})) { alert("代碼或名稱已存在"); return; }
+                      var next = storeList.concat([{code:code,name:name}]);
+                      setStoreList(next);
+                      try { localStorage.setItem("chocoolee-stores", JSON.stringify(next)); } catch(e){}
+                      if (window.pushStores) window.pushStores(next);
+                      alert("✓ 已新增「"+name+"」\n\n新店裝置開啟系統後，由店長在此選單切換為該店即可。");
+                      setShowMenu(false);
+                    }}
+                      style={{display:"flex",alignItems:"center",gap:4,padding:"4px 9px",borderRadius:20,cursor:"pointer",
+                        background:"#fff",border:"1px dashed #b8910a"}}>
+                      <span style={{fontSize:11,fontWeight:700,color:"#b8910a"}}>＋ 新增分店</span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* 教育訓練 */}
               <button onClick={function(){setTrainingMode(function(t){return !t;});setShowMenu(false);}}
@@ -10013,7 +10346,7 @@ function POSSystem() {
         {/* ════ 商品 / 庫存 / 訂單 / 會員 ════ */}
         {activeTab !== "pos" && (
           <div style={{flex:1,overflow:"hidden",padding:"16px 20px",display:"flex",flexDirection:"column"}}>
-            {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={sharedStockLog} sharedAddLog={sharedAddLog}/>}
+            {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={sharedStockLog} sharedAddLog={sharedAddLog} currentStore={currentStore} storeList={storeList}/>}
             {activeTab==="orders"    && <OrdersDrawer orders={orders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedStocks={sharedStocks} sharedAddLog={sharedAddLog}/>}
             {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers}/>}
             {activeTab==="purchase"  && <PurchasePanel purchases={purchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
