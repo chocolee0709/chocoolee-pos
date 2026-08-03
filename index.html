@@ -218,6 +218,25 @@
                   }
                   return;
                 }
+                if (key === "purchase-images") {
+                  // 採購單品項照片：暫存到記憶體（不存 localStorage），避免空間問題
+                  if (!window.__fbPOImages) window.__fbPOImages = {};
+                  if (data[key] && typeof data[key] === "object") {
+                    var poImgs = data[key];
+                    Object.keys(poImgs).forEach(function(imgKey){
+                      var fbImg = poImgs[imgKey];
+                      if (fbImg && typeof fbImg === "string" && fbImg.startsWith("data:")) {
+                        window.__fbPOImages[imgKey] = fbImg;
+                      }
+                    });
+                    // 觸發採購單重新渲染以顯示新圖
+                    if (window.__reactSetters && window.__reactSetters.purchases) {
+                      var puv = localStorage.getItem("chocoolee-purchases");
+                      if (puv) window.__reactSetters.purchases(puv);
+                    }
+                  }
+                  return;
+                }
                 var newVal = typeof data[key] === "string" ? data[key] : JSON.stringify(data[key]);
                 var oldVal = localStorage.getItem("chocoolee-" + key);
                 if (newVal === oldVal) return;
@@ -1059,6 +1078,14 @@ function getStoreName(code) {
 }
 // 店別 → 庫存節點名（員林店沿用 "stocks" 相容現有資料）
 function stocksNodeOf(code) { return code === "yl" ? "stocks" : "stocks-" + code; }
+// 採購單品項照片：走獨立 Firebase 節點（不進 localStorage/主陣列），避免
+// 「空間不足自動清理」誤刪照片、也避免多裝置互蓋時照片遺失
+function resolvePOImage(poNo, idx, itemImage) {
+  if (itemImage && itemImage.indexOf("data:") === 0) return itemImage; // 剛拍還沒同步完成，直接顯示
+  var key = String(poNo) + "_" + idx;
+  if (window.__fbPOImages && window.__fbPOImages[key]) return window.__fbPOImages[key];
+  return "";
+}
 // 非員林店：本店 stocks 沒有的商品一律補 0
 // （否則顯示層會 fallback 到商品主檔的 p.stock——那是員林店的舊種子數字）
 function fillZeroForStore(stocksObj) {
@@ -4107,7 +4134,7 @@ function PurchasePanel(props) {
       return newSku;
     }
 
-    po.items.forEach(function(item) {
+    po.items.forEach(function(item, poItemIdx) {
       // 局部簽收：本次實收良品 = (本次實收 − 破損) − 之前已入庫
       var goodTotal = (item.receivedQty || 0) - (item.damagedQty || 0);
       var alreadyStocked = item.stockedQty || 0;
@@ -4137,7 +4164,7 @@ function PurchasePanel(props) {
             price: item.price || 0, cost: item.cost || 0,
             main: item.main || "生活選物", sub: item.sub || "生活小物",
             barcode: item.barcode || String(newId).slice(-9),
-            image: item.image || "", stock: 0,
+            image: resolvePOImage(po.no, poItemIdx, item.image) || "", stock: 0,
             mainEdited: true,  // 防止 mergeProducts 覆蓋分類
             updatedAt: new Date().toISOString()
           };
@@ -4442,8 +4469,8 @@ function PurchasePanel(props) {
                             return (
                               <tr key={ii} style={{borderBottom:"1px solid #f0ede8"}}>
                                 <td style={{padding:"4px 6px"}}>
-                                  {item.image ? (
-                                    <img src={item.image} alt="" style={{width:30,height:30,objectFit:"cover",borderRadius:4}}/>
+                                  {resolvePOImage(po.no, ii, item.image) ? (
+                                    <img src={resolvePOImage(po.no, ii, item.image)} alt="" style={{width:30,height:30,objectFit:"cover",borderRadius:4}}/>
                                   ) : (
                                     <div style={{width:30,height:30,borderRadius:4,background:"#f0ede8",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#c8c4bc"}}>📦</div>
                                   )}
@@ -4609,8 +4636,8 @@ function PurchaseEditor(props) {
                 return (
                   <tr key={idx} style={{borderBottom:"1px solid #f0ede8"}}>
                     <td style={{padding:"4px",textAlign:"center"}}>
-                      {item.image ? (
-                        <img src={item.image} alt="" style={{width:60,height:60,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de"}}/>
+                      {resolvePOImage(po.no, idx, item.image) ? (
+                        <img src={resolvePOImage(po.no, idx, item.image)} alt="" style={{width:60,height:60,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de"}}/>
                       ) : (
                         <div style={{width:60,height:60,borderRadius:6,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#d8d4cc"}}>📦</div>
                       )}
@@ -4684,9 +4711,9 @@ function PurchaseEditor(props) {
 
                 {/* 圖片 */}
                 <div style={{display:"flex",justifyContent:"center",marginBottom:14}}>
-                  {item.image ? (
+                  {resolvePOImage(po.no, editingIdx, item.image) ? (
                     <div style={{position:"relative"}}>
-                      <img src={item.image} alt="" style={{width:120,height:120,objectFit:"cover",borderRadius:8,border:"1px solid #e8e4de"}}/>
+                      <img src={resolvePOImage(po.no, editingIdx, item.image)} alt="" style={{width:120,height:120,objectFit:"cover",borderRadius:8,border:"1px solid #e8e4de"}}/>
                       {item.isNew && (
                         <label style={{position:"absolute",bottom:4,right:4,background:"#fff",borderRadius:6,padding:"3px 8px",fontSize:10,cursor:"pointer",border:"1px solid #d8d4cc"}}>
                           🖼 換圖
@@ -5230,8 +5257,8 @@ function PurchaseReceiver(props) {
               return (
                 <tr key={idx} style={{borderBottom:"1px solid #f0ede8"}}>
                   <td style={{padding:"6px 4px",textAlign:"center"}}>
-                    {item.image ? (
-                      <img src={item.image} alt="" style={{width:80,height:80,objectFit:"cover",borderRadius:8,border:"1px solid #e8e4de"}}/>
+                    {resolvePOImage(po.no, idx, item.image) ? (
+                      <img src={resolvePOImage(po.no, idx, item.image)} alt="" style={{width:80,height:80,objectFit:"cover",borderRadius:8,border:"1px solid #e8e4de"}}/>
                     ) : (
                       <div style={{width:80,height:80,borderRadius:8,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:26,color:"#d8d4cc"}}>📦</div>
                     )}
@@ -8428,6 +8455,44 @@ function pushImageWithRetry(imgId, imgData, retries) {
   });
 }
 
+// 採購單品項照片：獨立節點 purchase-images/{poNo}_{idx}（同商品照片機制，
+// 不進 localStorage 主陣列，避免空間不足清理誤刪、也避免多裝置互蓋遺失）
+function pushPOImageWithRetry(imgKey, imgData, retries) {
+  retries = retries || 0;
+  if (!window.__pendingPOImages) window.__pendingPOImages = {};
+  window.__pendingPOImages[imgKey] = true;
+  function fail(msg) {
+    delete window.__pendingPOImages[imgKey];
+    if (window.showToast) window.showToast(msg, true);
+  }
+  if (!window.getFirebaseToken) {
+    if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 1500);
+    else fail("⚠️ 採購單照片推送失敗（無法取得 token）");
+    return;
+  }
+  window.getFirebaseToken(function(token){
+    if (!token) {
+      if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 2000);
+      else fail("⚠️ 採購單照片推送失敗（無 token）");
+      return;
+    }
+    fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/purchase-images/" + imgKey + ".json?auth=" + token, {
+      method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(imgData)
+    }).then(function(r){
+      if (!r.ok) {
+        if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 2000);
+        else fail("⚠️ 採購單照片推送失敗 (" + r.status + ")");
+        return;
+      }
+      delete window.__pendingPOImages[imgKey];
+      if (window.showToast) window.showToast("🖼 採購單照片已儲存到雲端");
+    }).catch(function(){
+      if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 2000);
+      else fail("⚠️ 採購單照片推送失敗（網路錯誤）");
+    });
+  });
+}
+
 // ── 已刪除貨號黑名單（貨號 → 刪除時間 map，相容舊陣列格式）──
 // 判斷邏輯：商品的 updatedAt 比「刪除時間」新 → 顯示（刪除後重新啟用）
 function readDeletedMap() {
@@ -8485,6 +8550,34 @@ function saveData(key, value) {
           return p;
         });
         serialized = JSON.stringify(prodsNoImage);
+      } catch(e) {}
+    }
+
+    if (key === "purchases") {
+      try {
+        var purs = typeof value === "string" ? JSON.parse(value) : value;
+        var pursNoImage = purs.map(function(po) {
+          if (!po || !po.items) return po;
+          var changedItems = false;
+          var newItems = po.items.map(function(it, idx) {
+            if (it && it.image && it.image.indexOf("data:") === 0) {
+              var imgKey = String(po.no) + "_" + idx;
+              // 照片：只推 Firebase 獨立節點，不進 purchases 主陣列/localStorage
+              // （避免暴增佔用空間，也避免「空間不足自動清理」誤刪照片導致多裝置遺失）
+              if (!window.__fbPOImages) window.__fbPOImages = {};
+              var oldImg = window.__fbPOImages[imgKey];
+              if (oldImg !== it.image) {
+                window.__fbPOImages[imgKey] = it.image;
+                pushPOImageWithRetry(imgKey, it.image);
+              }
+              changedItems = true;
+              return Object.assign({}, it, {image: "__img__"});
+            }
+            return it;
+          });
+          return changedItems ? Object.assign({}, po, {items: newItems}) : po;
+        });
+        serialized = JSON.stringify(pursNoImage);
       } catch(e) {}
     }
 
