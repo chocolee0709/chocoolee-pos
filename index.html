@@ -1080,8 +1080,15 @@ function getStoreName(code) {
 function stocksNodeOf(code) { return code === "yl" ? "stocks" : "stocks-" + code; }
 // 採購單品項照片：走獨立 Firebase 節點（不進 localStorage/主陣列），避免
 // 「空間不足自動清理」誤刪照片、也避免多裝置互蓋時照片遺失
-function resolvePOImage(poNo, idx, itemImage) {
+function resolvePOImage(poNo, idx, item) {
+  if (!item) return "";
+  var itemImage = typeof item === "string" ? item : item.image;
   if (itemImage && itemImage.indexOf("data:") === 0) return itemImage; // 剛拍還沒同步完成，直接顯示
+  // 短少轉補貨單等情況：照片實際還留在「原單號」的位置，不用等它被重新上傳，
+  // 直接透過指標查詢（原單照片永久保留在雲端，指標永遠有效）
+  if (item && item.srcImgKey && window.__fbPOImages && window.__fbPOImages[item.srcImgKey]) {
+    return window.__fbPOImages[item.srcImgKey];
+  }
   var key = String(poNo) + "_" + idx;
   if (window.__fbPOImages && window.__fbPOImages[key]) return window.__fbPOImages[key];
   return "";
@@ -4164,7 +4171,7 @@ function PurchasePanel(props) {
             price: item.price || 0, cost: item.cost || 0,
             main: item.main || "生活選物", sub: item.sub || "生活小物",
             barcode: item.barcode || String(newId).slice(-9),
-            image: resolvePOImage(po.no, poItemIdx, item.image) || "", stock: 0,
+            image: resolvePOImage(po.no, poItemIdx, item) || "", stock: 0,
             mainEdited: true,  // 防止 mergeProducts 覆蓋分類
             updatedAt: new Date().toISOString()
           };
@@ -4255,14 +4262,15 @@ function PurchasePanel(props) {
       var newStocked = Math.max(item.stockedQty||0, goodTotal); // 累積已入庫
       if (newStocked < item.qty) {
         allReceived = false;
-        // 照片綁在「原單號_序號」，換成新補貨單時單號會變，
-        // 這裡先解析出真正的圖片資料（而非 __img__ 標記），
-        // 之後存新補貨單時會自動用新單號重新推送到獨立節點
-        var realImage = resolvePOImage(po.no, itemIdx, item.image);
+        // 照片：不在轉單當下急著解析內容（可能因記憶體快取尚未載入而失敗），
+        // 改留一個指向「原單照片位置」的指標，顯示時再查——原單照片永久保留在
+        // 雲端不會被搬移/刪除，指標永遠有效，也徹底避開時序競爭問題
+        var srcKey = po.no + "_" + itemIdx;
         shortItems.push(Object.assign({}, item, {
           qty: item.qty - newStocked,   // 只帶「還缺的數量」
           receivedQty: 0, damagedQty: 0, stockedQty: 0,
-          image: realImage || ""
+          image: (item.image && item.image.indexOf("data:")===0) ? item.image : "",
+          srcImgKey: srcKey
         }));
       }
       return Object.assign({}, item, {stockedQty:newStocked});
@@ -4474,8 +4482,8 @@ function PurchasePanel(props) {
                             return (
                               <tr key={ii} style={{borderBottom:"1px solid #f0ede8"}}>
                                 <td style={{padding:"4px 6px"}}>
-                                  {resolvePOImage(po.no, ii, item.image) ? (
-                                    <img src={resolvePOImage(po.no, ii, item.image)} alt="" style={{width:30,height:30,objectFit:"cover",borderRadius:4}}/>
+                                  {resolvePOImage(po.no, ii, item) ? (
+                                    <img src={resolvePOImage(po.no, ii, item)} alt="" style={{width:30,height:30,objectFit:"cover",borderRadius:4}}/>
                                   ) : (
                                     <div style={{width:30,height:30,borderRadius:4,background:"#f0ede8",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#c8c4bc"}}>📦</div>
                                   )}
@@ -4641,8 +4649,8 @@ function PurchaseEditor(props) {
                 return (
                   <tr key={idx} style={{borderBottom:"1px solid #f0ede8"}}>
                     <td style={{padding:"4px",textAlign:"center"}}>
-                      {resolvePOImage(po.no, idx, item.image) ? (
-                        <img src={resolvePOImage(po.no, idx, item.image)} alt="" style={{width:60,height:60,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de"}}/>
+                      {resolvePOImage(po.no, idx, item) ? (
+                        <img src={resolvePOImage(po.no, idx, item)} alt="" style={{width:60,height:60,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de"}}/>
                       ) : (
                         <div style={{width:60,height:60,borderRadius:6,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#d8d4cc"}}>📦</div>
                       )}
@@ -4716,9 +4724,9 @@ function PurchaseEditor(props) {
 
                 {/* 圖片 */}
                 <div style={{display:"flex",justifyContent:"center",marginBottom:14}}>
-                  {resolvePOImage(po.no, editingIdx, item.image) ? (
+                  {resolvePOImage(po.no, editingIdx, item) ? (
                     <div style={{position:"relative"}}>
-                      <img src={resolvePOImage(po.no, editingIdx, item.image)} alt="" style={{width:120,height:120,objectFit:"cover",borderRadius:8,border:"1px solid #e8e4de"}}/>
+                      <img src={resolvePOImage(po.no, editingIdx, item)} alt="" style={{width:120,height:120,objectFit:"cover",borderRadius:8,border:"1px solid #e8e4de"}}/>
                       {item.isNew && (
                         <label style={{position:"absolute",bottom:4,right:4,background:"#fff",borderRadius:6,padding:"3px 8px",fontSize:10,cursor:"pointer",border:"1px solid #d8d4cc"}}>
                           🖼 換圖
@@ -5262,8 +5270,8 @@ function PurchaseReceiver(props) {
               return (
                 <tr key={idx} style={{borderBottom:"1px solid #f0ede8"}}>
                   <td style={{padding:"6px 4px",textAlign:"center"}}>
-                    {resolvePOImage(po.no, idx, item.image) ? (
-                      <img src={resolvePOImage(po.no, idx, item.image)} alt="" style={{width:80,height:80,objectFit:"cover",borderRadius:8,border:"1px solid #e8e4de"}}/>
+                    {resolvePOImage(po.no, idx, item) ? (
+                      <img src={resolvePOImage(po.no, idx, item)} alt="" style={{width:80,height:80,objectFit:"cover",borderRadius:8,border:"1px solid #e8e4de"}}/>
                     ) : (
                       <div style={{width:80,height:80,borderRadius:8,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:26,color:"#d8d4cc"}}>📦</div>
                     )}
