@@ -4250,14 +4250,19 @@ function PurchasePanel(props) {
     }
     var allReceived = true;
     var shortItems = []; // 短少的品項（供分拆補貨單用）
-    po.items = po.items.map(function(item){
+    po.items = po.items.map(function(item, itemIdx){
       var goodTotal = (item.receivedQty || 0) - (item.damagedQty || 0);
       var newStocked = Math.max(item.stockedQty||0, goodTotal); // 累積已入庫
       if (newStocked < item.qty) {
         allReceived = false;
+        // 照片綁在「原單號_序號」，換成新補貨單時單號會變，
+        // 這裡先解析出真正的圖片資料（而非 __img__ 標記），
+        // 之後存新補貨單時會自動用新單號重新推送到獨立節點
+        var realImage = resolvePOImage(po.no, itemIdx, item.image);
         shortItems.push(Object.assign({}, item, {
           qty: item.qty - newStocked,   // 只帶「還缺的數量」
-          receivedQty: 0, damagedQty: 0, stockedQty: 0
+          receivedQty: 0, damagedQty: 0, stockedQty: 0,
+          image: realImage || ""
         }));
       }
       return Object.assign({}, item, {stockedQty:newStocked});
@@ -8455,44 +8460,6 @@ function pushImageWithRetry(imgId, imgData, retries) {
   });
 }
 
-// 採購單品項照片：獨立節點 purchase-images/{poNo}_{idx}（同商品照片機制，
-// 不進 localStorage 主陣列，避免空間不足清理誤刪、也避免多裝置互蓋遺失）
-function pushPOImageWithRetry(imgKey, imgData, retries) {
-  retries = retries || 0;
-  if (!window.__pendingPOImages) window.__pendingPOImages = {};
-  window.__pendingPOImages[imgKey] = true;
-  function fail(msg) {
-    delete window.__pendingPOImages[imgKey];
-    if (window.showToast) window.showToast(msg, true);
-  }
-  if (!window.getFirebaseToken) {
-    if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 1500);
-    else fail("⚠️ 採購單照片推送失敗（無法取得 token）");
-    return;
-  }
-  window.getFirebaseToken(function(token){
-    if (!token) {
-      if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 2000);
-      else fail("⚠️ 採購單照片推送失敗（無 token）");
-      return;
-    }
-    fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/purchase-images/" + imgKey + ".json?auth=" + token, {
-      method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(imgData)
-    }).then(function(r){
-      if (!r.ok) {
-        if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 2000);
-        else fail("⚠️ 採購單照片推送失敗 (" + r.status + ")");
-        return;
-      }
-      delete window.__pendingPOImages[imgKey];
-      if (window.showToast) window.showToast("🖼 採購單照片已儲存到雲端");
-    }).catch(function(){
-      if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 2000);
-      else fail("⚠️ 採購單照片推送失敗（網路錯誤）");
-    });
-  });
-}
-
 // ── 已刪除貨號黑名單（貨號 → 刪除時間 map，相容舊陣列格式）──
 // 判斷邏輯：商品的 updatedAt 比「刪除時間」新 → 顯示（刪除後重新啟用）
 function readDeletedMap() {
@@ -8550,34 +8517,6 @@ function saveData(key, value) {
           return p;
         });
         serialized = JSON.stringify(prodsNoImage);
-      } catch(e) {}
-    }
-
-    if (key === "purchases") {
-      try {
-        var purs = typeof value === "string" ? JSON.parse(value) : value;
-        var pursNoImage = purs.map(function(po) {
-          if (!po || !po.items) return po;
-          var changedItems = false;
-          var newItems = po.items.map(function(it, idx) {
-            if (it && it.image && it.image.indexOf("data:") === 0) {
-              var imgKey = String(po.no) + "_" + idx;
-              // 照片：只推 Firebase 獨立節點，不進 purchases 主陣列/localStorage
-              // （避免暴增佔用空間，也避免「空間不足自動清理」誤刪照片導致多裝置遺失）
-              if (!window.__fbPOImages) window.__fbPOImages = {};
-              var oldImg = window.__fbPOImages[imgKey];
-              if (oldImg !== it.image) {
-                window.__fbPOImages[imgKey] = it.image;
-                pushPOImageWithRetry(imgKey, it.image);
-              }
-              changedItems = true;
-              return Object.assign({}, it, {image: "__img__"});
-            }
-            return it;
-          });
-          return changedItems ? Object.assign({}, po, {items: newItems}) : po;
-        });
-        serialized = JSON.stringify(pursNoImage);
       } catch(e) {}
     }
 
