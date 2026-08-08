@@ -4175,6 +4175,7 @@ function PurchasePanel(props) {
             id: newId, sku: finalSku, name: item.name,
             price: item.price || 0, cost: item.cost || 0,
             main: item.main || "生活選物", sub: item.sub || "生活小物",
+            material: item.material || "",
             barcode: item.barcode || String(newId).slice(-9),
             image: resolvePOImage(po.no, poItemIdx, item) || "", stock: 0,
             mainEdited: true,  // 防止 mergeProducts 覆蓋分類
@@ -4934,7 +4935,7 @@ function ItemPicker(props) {
   var fs2 = useState(""); var fSub = fs2[0], setFSub = fs2[1];
 
   var defaultMain = Object.keys(CAT_STRUCT)[0];
-  var newItem = useState({sku:"",name:"",main:defaultMain,sub:CAT_STRUCT[defaultMain][0],cost:0,price:0,qty:1,image:""});
+  var newItem = useState({sku:"",name:"",main:defaultMain,sub:CAT_STRUCT[defaultMain][0],cost:0,price:0,qty:1,image:"",material:""});
   var nf = newItem[0], setNf = newItem[1];
 
   // 圖片上傳處理（縮成 250x250 + 65% 品質）
@@ -5145,6 +5146,8 @@ function ItemPicker(props) {
                 <div><label style={lbl}>售價</label>
                   <input type="number" min="0" value={nf.price} onChange={function(e){setNfField("price",Number(e.target.value)||0);}} style={inp}/></div>
               </div>
+              <div><label style={lbl}>材質</label>
+                <input value={nf.material||""} onChange={function(e){setNfField("material",e.target.value);}} placeholder="例：不鏽鋼、木質、矽膠（選填）" style={inp}/></div>
               <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:4}}>
                 <button onClick={props.onCancel} style={{background:"none",border:"1px solid #d8d4cc",borderRadius:5,padding:"6px 14px",color:"#7a7068",fontSize:12,cursor:"pointer"}}>取消</button>
                 <button onClick={function(){
