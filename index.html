@@ -1351,7 +1351,7 @@ function PrintModal(props) {
 
 
 // ── Catalog Panel (商品庫存合併頁) ────────────────────────────────────
-var EMPTY_PRODUCT = {sku:"",name:"",price:0,cost:0,main:"居家香氛",sub:"",barcode:"",image:""};
+var EMPTY_PRODUCT = {sku:"",name:"",price:0,cost:0,main:"居家香氛",sub:"",barcode:"",image:"",material:""};
 var PROD_PAGE_SIZE = 20;
 
 function CatalogPanel(props) {
@@ -1644,7 +1644,7 @@ function CatalogPanel(props) {
 
   // ── 篩選結果 & 分頁 ──
   var filtered = products.filter(function(p){
-    var mQ = !q || p.name.indexOf(q)>=0 || p.sku.indexOf(q)>=0;
+    var mQ = !q || p.name.indexOf(q)>=0 || p.sku.indexOf(q)>=0 || (p.material||"").indexOf(q)>=0;
     var mM = !filterMain || p.main===filterMain;
     var mS = !filterSub  || p.sub===filterSub;
     var isOff = !!(p.delisted || (p.storeOff && p.storeOff[props.currentStore]));
@@ -2329,6 +2329,9 @@ function CatalogPanel(props) {
               <div><label style={lbl}>條碼（留空自動）</label>
                 <input value={newForm.barcode||""} onChange={function(e){setNF("barcode",e.target.value);}} placeholder="自動產生" style={inp}/>
               </div>
+              <div><label style={lbl}>材質</label>
+                <input value={newForm.material||""} onChange={function(e){setNF("material",e.target.value);}} placeholder="例：不鏽鋼、木質、矽膠" style={inp}/>
+              </div>
             </div>
           </div>
           <div style={{display:"flex",gap:8,justifyContent:"flex-end",alignItems:"center"}}>
@@ -2417,6 +2420,7 @@ function CatalogPanel(props) {
                 </select>
               </div>
               <div><label style={lbl}>條碼</label><input value={editForm.barcode||"" } onChange={function(e){setEF("barcode",e.target.value);}} style={inp}/></div>
+              <div><label style={lbl}>材質</label><input value={editForm.material||""} onChange={function(e){setEF("material",e.target.value);}} placeholder="例：不鏽鋼、木質、矽膠" style={inp}/></div>
               {isManager && (
                 <div style={{gridColumn:"1 / -1"}}>
                   <label style={lbl}>上架狀態 🔒（各店獨立）</label>
@@ -2539,6 +2543,7 @@ function CatalogPanel(props) {
                   <td style={{padding:"7px 8px 7px 0",fontSize:10,borderBottom:"1px solid #f0ede8"}}>
                     <span style={{color:CAT_COLORS[p.main]||"#b8910a",fontWeight:600}}>{p.main}</span>
                     {p.sub&&<span style={{color:"#aaA69e"}}> / {p.sub}</span>}
+                    {p.material&&<div style={{color:"#b0a890",fontSize:9,marginTop:1}}>{p.material}</div>}
                   </td>
                   <td style={{padding:"7px 8px 7px 0",textAlign:"right",color:"#b8910a",fontWeight:700,borderBottom:"1px solid #f0ede8"}}>${p.price.toLocaleString()}</td>
                   {isManager && <td style={{padding:"7px 8px 7px 0",textAlign:"right",color:"#7a7068",borderBottom:"1px solid #f0ede8"}}>${cost.toLocaleString()}</td>}
