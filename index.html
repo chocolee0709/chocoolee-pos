@@ -4019,6 +4019,26 @@ function PurchasePanel(props) {
   }).sort(function(a,b){ return (b.date||"").localeCompare(a.date||""); });
 
   function newPurchase() {
+    // 有未完成的草稿 → 詢問是否救回（避免建到一半視窗意外關閉，資料整張消失）
+    try {
+      var draftRaw = localStorage.getItem("chocoolee-po-draft");
+      if (draftRaw) {
+        var draft = JSON.parse(draftRaw);
+        if (draft && draft.items && draft.items.length > 0) {
+          var itemSummary = draft.items.map(function(it){ return it.name; }).slice(0,3).join("、") +
+            (draft.items.length > 3 ? " 等" + draft.items.length + "項" : "");
+          var restore = confirm("發現尚未完成的採購單草稿：\n\n" + itemSummary +
+            "\n\n是否要繼續編輯？\n（選「取消」則放棄此草稿，開始建立新單）");
+          if (restore) {
+            setSelPo(draft);
+            setMode("create");
+            return;
+          } else {
+            localStorage.removeItem("chocoolee-po-draft");
+          }
+        }
+      }
+    } catch(e) {}
     var myStore = getMyStoreCode();
     var poNo = myStore === "yl"
       ? "PO-" + localDate().split("-").join("") + "-" + String(purchases.length+1).padStart(3,"0")
@@ -4562,6 +4582,23 @@ function PurchaseEditor(props) {
   var sn = useState(false); var addingNew = sn[0], setAddingNew = sn[1];
   var eim = useState(-1); var editingIdx = eim[0], setEditingIdx = eim[1];
 
+  // ── 自動草稿儲存：建單到一半視窗意外關閉也不會遺失 ──
+  // 只在還沒正式送出（status draft/pending 且還沒被寫進 purchases 清單）時保存草稿
+  var isDraftPo = po && po.status === "draft";
+  useEffect(function(){
+    if (!isDraftPo) return;
+    var hasContent = po.items && po.items.length > 0;
+    try {
+      if (hasContent) {
+        localStorage.setItem("chocoolee-po-draft", JSON.stringify(po));
+      } else {
+        localStorage.removeItem("chocoolee-po-draft");
+      }
+    } catch(e) {}
+  }, [po]);
+  // 儲存成功或取消離開時清除草稿
+  function clearDraft(){ try{ localStorage.removeItem("chocoolee-po-draft"); }catch(e){} }
+
   function updatePo(field, value) {
     setPo(Object.assign({}, po, {[field]: value}));
   }
@@ -4601,7 +4638,7 @@ function PurchaseEditor(props) {
         <button onClick={props.onCancel} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#7a7068"}}>‹</button>
         <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>📝 採購單 {po.no}</div>
         {props.onDelete && (
-          <button onClick={props.onDelete} style={{marginLeft:"auto",background:"none",border:"1px solid #d0552f",borderRadius:5,padding:"4px 10px",color:"#d0552f",fontSize:11,cursor:"pointer"}}>
+          <button onClick={function(){ clearDraft(); props.onDelete(); }} style={{marginLeft:"auto",background:"none",border:"1px solid #d0552f",borderRadius:5,padding:"4px 10px",color:"#d0552f",fontSize:11,cursor:"pointer"}}>
             🗑 刪除
           </button>
         )}
@@ -4917,6 +4954,7 @@ function PurchaseEditor(props) {
             alert("⚠️ 貨號有問題，請修正後再儲存：\n\n" + errs.join("\n"));
             return;
           }
+          clearDraft(); // 正式儲存成功，草稿不再需要
           props.onSave();
         }}
           style={{background:"#b8910a",border:"none",borderRadius:6,padding:"7px 20px",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>儲存採購單</button>
