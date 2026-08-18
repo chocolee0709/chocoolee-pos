@@ -7633,6 +7633,10 @@ function StockFlowPanel(props) {
   var stockLog  = props.stockLog || [];
   var stocks    = props.sharedStocks || {};
   var orders    = props.orders || [];
+  var purchases = props.purchases || [];
+  var currentStore = props.currentStore || "yl";
+
+  var stp = useState("flow"); var subTab = stp[0], setSubTab = stp[1]; // flow | purchase | turnover
 
   var now = new Date();
   var y = now.getFullYear(), m = String(now.getMonth()+1).padStart(2,"0"), d = String(now.getDate()).padStart(2,"0");
@@ -7800,11 +7804,27 @@ function StockFlowPanel(props) {
 
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden",padding:"14px 16px",gap:12}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0,flexWrap:"wrap"}}>
         <div style={{fontSize:16,fontWeight:800,color:"#2a2520"}}>📊 進銷存查詢</div>
-        <button onClick={exportExcel} style={{marginLeft:"auto",padding:"7px 16px",background:"#2a7a4a",border:"none",borderRadius:8,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>↓ 匯出 Excel</button>
+        <div style={{display:"flex",gap:6,marginLeft:8}}>
+          {[["flow","進銷存"],["purchase","採購金額分析"],["turnover","商品週轉率"]].map(function(t){
+            var on = subTab===t[0];
+            return (
+              <button key={t[0]} onClick={function(){setSubTab(t[0]);}}
+                style={{padding:"6px 13px",borderRadius:8,border:"1px solid "+(on?"#b8910a":"#d8d4cc"),
+                  background:on?"#b8910a":"#fff",color:on?"#fff":"#7a7068",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                {t[1]}
+              </button>
+            );
+          })}
+        </div>
+        {subTab==="flow" && <button onClick={exportExcel} style={{marginLeft:"auto",padding:"7px 16px",background:"#2a7a4a",border:"none",borderRadius:8,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>↓ 匯出 Excel</button>}
       </div>
 
+      {subTab==="purchase" && <PurchaseAmountAnalysis purchases={purchases} products={products} currentStore={currentStore}/>}
+      {subTab==="turnover" && <TurnoverAnalysis products={products} stocks={stocks} orders={orders} stockLog={stockLog}/>}
+      {subTab==="flow" && (
+      <React.Fragment>
       {/* 查詢條件 */}
       <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end",flexShrink:0,background:"#faf9f6",border:"1px solid #ece8e0",borderRadius:10,padding:"12px 14px"}}>
         <div style={{display:"flex",gap:6}}>
@@ -7897,6 +7917,261 @@ function StockFlowPanel(props) {
           </table>
         </div>
       )}
+      </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// ── 每月採購金額分析（分店、分類）───────────────────────────────────
+function PurchaseAmountAnalysis(props) {
+  var purchases = props.purchases || [];
+  var products  = props.products  || [];
+  var currentStore = props.currentStore || "yl";
+
+  var now = new Date();
+  var yms = useState(String(now.getFullYear())); var selYear = yms[0], setSelYear = yms[1];
+
+  var costBySku = {};
+  products.forEach(function(p){ if (p && p.sku) costBySku[p.sku] = Number(p.cost)||0; });
+
+  // 只算「有實際入庫」的採購（用 stockedQty 對應成本估算金額；若明細有 cost 優先用明細）
+  var monthly = {}; // "2026-01" -> { total, byMain: {分類: 金額} }
+  for (var mm=1; mm<=12; mm++){
+    var key = selYear + "-" + String(mm).padStart(2,"0");
+    monthly[key] = { total:0, byMain:{} };
+  }
+  purchases.forEach(function(po){
+    if (!po || !po.date || po.date.slice(0,4) !== selYear) return;
+    if (po.status !== "completed") return; // 只算已完成入庫的
+    var mKey = po.date.slice(0,7);
+    if (!monthly[mKey]) return;
+    (po.items||[]).forEach(function(it){
+      var qty = it.stockedQty || 0;
+      if (qty <= 0) return;
+      var cost = (it.cost!==undefined && it.cost!==null) ? Number(it.cost) : (costBySku[it.sku]||0);
+      var amt = cost * qty;
+      var main = it.main || "未分類";
+      monthly[mKey].total += amt;
+      monthly[mKey].byMain[main] = (monthly[mKey].byMain[main]||0) + amt;
+    });
+  });
+
+  var allMains = {};
+  Object.keys(monthly).forEach(function(k){ Object.keys(monthly[k].byMain).forEach(function(m){ allMains[m]=true; }); });
+  var mainList = Object.keys(allMains).sort();
+  var yearTotal = Object.keys(monthly).reduce(function(s,k){ return s+monthly[k].total; }, 0);
+  var maxMonthTotal = Math.max.apply(null, Object.keys(monthly).map(function(k){ return monthly[k].total; }).concat([1]));
+
+  var th = {padding:"8px 6px",fontSize:11,color:"#7a7068",fontWeight:600,whiteSpace:"nowrap"};
+  var td = {padding:"7px 6px",fontSize:12,borderBottom:"1px solid #f0ede8",whiteSpace:"nowrap"};
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:12,overflow:"auto"}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+        <span style={{fontSize:12,color:"#7a7068"}}>{getStoreName(currentStore)}　年度</span>
+        <select value={selYear} onChange={function(e){setSelYear(e.target.value);}}
+          style={{background:"#fff",border:"1px solid #d8d4cc",borderRadius:6,padding:"6px 10px",fontSize:12}}>
+          {[0,1,2].map(function(i){ var y=now.getFullYear()-i; return <option key={y} value={String(y)}>{y}</option>; })}
+        </select>
+        <div style={{marginLeft:"auto",fontSize:12,color:"#7a7068"}}>
+          全年採購總額：<b style={{fontSize:16,color:"#b8910a"}}>${Math.round(yearTotal).toLocaleString()}</b>
+        </div>
+      </div>
+
+      {/* 月趨勢長條 */}
+      <div style={{background:"#fff",border:"1px solid #ece8e2",borderRadius:10,padding:"14px 16px"}}>
+        <div style={{fontSize:12,fontWeight:700,color:"#7a7068",marginBottom:10}}>月採購金額趨勢</div>
+        <div style={{display:"flex",alignItems:"flex-end",gap:6,height:120}}>
+          {Object.keys(monthly).sort().map(function(k){
+            var v = monthly[k].total;
+            var h = maxMonthTotal>0 ? Math.max(2, Math.round(v/maxMonthTotal*100)) : 2;
+            return (
+              <div key={k} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                <div style={{fontSize:9,color:"#9a968e"}}>{v>0?Math.round(v/1000)+"k":""}</div>
+                <div style={{width:"100%",height:h,background:v>0?"#b8910a":"#f0ede8",borderRadius:"3px 3px 0 0"}}></div>
+                <div style={{fontSize:9,color:"#9a968e"}}>{k.slice(5)}月</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 分類 × 月份 明細表 */}
+      <div style={{background:"#fff",border:"1px solid #ece8e2",borderRadius:10,overflow:"auto",flex:1}}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{background:"#faf9f6",borderBottom:"1px solid #ece8e2"}}>
+              <th style={Object.assign({},th,{textAlign:"left"})}>分類</th>
+              {Object.keys(monthly).sort().map(function(k){
+                return <th key={k} style={Object.assign({},th,{textAlign:"right"})}>{k.slice(5)}月</th>;
+              })}
+              <th style={Object.assign({},th,{textAlign:"right",fontWeight:800})}>全年</th>
+            </tr>
+          </thead>
+          <tbody>
+            {mainList.length===0 ? (
+              <tr><td colSpan={14} style={{textAlign:"center",color:"#c8c4bc",padding:"30px 0",fontSize:12}}>此年度尚無已完成入庫的採購資料</td></tr>
+            ) : mainList.map(function(main,i){
+              var rowTotal = Object.keys(monthly).reduce(function(s,k){ return s+(monthly[k].byMain[main]||0); }, 0);
+              return (
+                <tr key={main} style={{background:i%2?"#faf9f6":"#fff"}}>
+                  <td style={Object.assign({},td,{textAlign:"left",color:CAT_COLORS[main]||"#2a2520",fontWeight:700})}>{main}</td>
+                  {Object.keys(monthly).sort().map(function(k){
+                    var v = monthly[k].byMain[main]||0;
+                    return <td key={k} style={Object.assign({},td,{textAlign:"right",color:v>0?"#2a2520":"#d8d4cc"})}>{v>0?Math.round(v).toLocaleString():"—"}</td>;
+                  })}
+                  <td style={Object.assign({},td,{textAlign:"right",fontWeight:800,color:"#b8910a"})}>{Math.round(rowTotal).toLocaleString()}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+          {mainList.length>0 && (
+            <tfoot>
+              <tr style={{background:"#f5f2ec",borderTop:"2px solid #e8e4de",fontWeight:800}}>
+                <td style={Object.assign({},td,{textAlign:"left"})}>合計</td>
+                {Object.keys(monthly).sort().map(function(k){
+                  return <td key={k} style={Object.assign({},td,{textAlign:"right"})}>{monthly[k].total>0?Math.round(monthly[k].total).toLocaleString():"—"}</td>;
+                })}
+                <td style={Object.assign({},td,{textAlign:"right",color:"#b8910a"})}>{Math.round(yearTotal).toLocaleString()}</td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── 商品週轉率分析（週轉次數 + 庫存天數）─────────────────────────────
+function TurnoverAnalysis(props) {
+  var products = props.products || [];
+  var stocks   = props.stocks   || {};
+  var orders   = props.orders   || [];
+  var stockLog = props.stockLog || [];
+
+  var pds = useState("90"); var period = pds[0], setPeriod = pds[1]; // 分析天數
+  var mfs = useState("全部"); var filterMain = mfs[0], setFilterMain = mfs[1];
+  var srt = useState("turnover"); var sortBy = srt[0], setSortBy = srt[1]; // turnover | days | slow
+
+  var periodDays = Number(period);
+  var cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - periodDays);
+  var cutoffStr = localDate(cutoff);
+
+  // 期間銷售量（依商品）
+  var soldQtyById = {};
+  orders.forEach(function(o){
+    if (o.status !== "paid" || !o.date || o.date < cutoffStr) return;
+    (o.cartSnapshot||[]).forEach(function(it){
+      if (it.main === "業外收入") return;
+      soldQtyById[it.id] = (soldQtyById[it.id]||0) + (it.qty||0);
+    });
+  });
+
+  var mainOptions = ["全部"].concat(Object.keys(CAT_STRUCT));
+
+  var rows = products.filter(function(p){
+    if (p.main === "業外收入") return false;
+    if (filterMain !== "全部" && p.main !== filterMain) return false;
+    var cur = stocks[p.id]!==undefined ? stocks[p.id] : (p.stock||0);
+    var sold = soldQtyById[p.id] || 0;
+    return cur > 0 || sold > 0;
+  }).map(function(p){
+    var cur = stocks[p.id]!==undefined ? stocks[p.id] : (p.stock||0);
+    var sold = soldQtyById[p.id] || 0;
+    // 週轉次數：期間銷售量 / 估算平均庫存（現有庫存與銷量共同估算，避免除以0）
+    var avgStock = Math.max(cur, sold>0 ? sold*0.3 : 0, 0.5);
+    var turnoverRate = sold / avgStock;
+    // 預估可賣天數：現有庫存 ÷ 期間內平均每日銷量
+    var dailySale = sold / periodDays;
+    var daysOfStock = dailySale > 0 ? cur / dailySale : (cur > 0 ? Infinity : 0);
+    return { sku:p.sku, name:p.name, main:p.main, sub:p.sub, stock:cur, sold:sold, turnoverRate:turnoverRate, daysOfStock:daysOfStock };
+  });
+
+  if (sortBy === "turnover") rows.sort(function(a,b){ return b.turnoverRate - a.turnoverRate; });
+  else if (sortBy === "slow") rows.sort(function(a,b){ return a.turnoverRate - b.turnoverRate; });
+  else rows.sort(function(a,b){
+    var ad = a.daysOfStock===Infinity ? 999999 : a.daysOfStock;
+    var bd = b.daysOfStock===Infinity ? 999999 : b.daysOfStock;
+    return bd - ad;
+  });
+
+  var fastCount = rows.filter(function(r){ return r.turnoverRate >= 1; }).length;
+  var slowCount = rows.filter(function(r){ return r.stock > 0 && r.sold === 0; }).length;
+
+  var th = {padding:"8px 6px",fontSize:11,color:"#7a7068",fontWeight:600,whiteSpace:"nowrap"};
+  var td = {padding:"7px 6px",fontSize:12,borderBottom:"1px solid #f0ede8",whiteSpace:"nowrap"};
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:12,overflow:"auto",height:"100%"}}>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",background:"#faf9f6",border:"1px solid #ece8e0",borderRadius:10,padding:"12px 14px"}}>
+        <span style={{fontSize:11,color:"#7a7068"}}>分析區間</span>
+        <select value={period} onChange={function(e){setPeriod(e.target.value);}}
+          style={{background:"#fff",border:"1px solid #d8d4cc",borderRadius:6,padding:"6px 10px",fontSize:12}}>
+          <option value="30">近30天</option>
+          <option value="90">近90天</option>
+          <option value="180">近180天</option>
+        </select>
+        <span style={{fontSize:11,color:"#7a7068",marginLeft:8}}>分類</span>
+        <select value={filterMain} onChange={function(e){setFilterMain(e.target.value);}}
+          style={{background:"#fff",border:"1px solid #d8d4cc",borderRadius:6,padding:"6px 10px",fontSize:12}}>
+          {mainOptions.map(function(m){ return <option key={m} value={m}>{m}</option>; })}
+        </select>
+        <span style={{fontSize:11,color:"#7a7068",marginLeft:8}}>排序</span>
+        <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}}
+          style={{background:"#fff",border:"1px solid #d8d4cc",borderRadius:6,padding:"6px 10px",fontSize:12}}>
+          <option value="turnover">週轉率高→低</option>
+          <option value="slow">週轉率低→高（找壓貨）</option>
+          <option value="days">庫存天數多→少</option>
+        </select>
+        <div style={{marginLeft:"auto",display:"flex",gap:14}}>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:18,fontWeight:800,color:"#2a7a4a"}}>{fastCount}</div>
+            <div style={{fontSize:9,color:"#9a968e"}}>週轉良好</div>
+          </div>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:18,fontWeight:800,color:"#c0302a"}}>{slowCount}</div>
+            <div style={{fontSize:9,color:"#9a968e"}}>有庫存零銷售</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{background:"#fff",border:"1px solid #ece8e2",borderRadius:10,overflow:"auto",flex:1}}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{background:"#faf9f6",borderBottom:"1px solid #ece8e2"}}>
+              <th style={Object.assign({},th,{textAlign:"left"})}>貨號</th>
+              <th style={Object.assign({},th,{textAlign:"left"})}>商品名稱</th>
+              <th style={Object.assign({},th,{textAlign:"left"})}>分類</th>
+              <th style={Object.assign({},th,{textAlign:"center"})}>現有庫存</th>
+              <th style={Object.assign({},th,{textAlign:"center"})}>期間銷量</th>
+              <th style={Object.assign({},th,{textAlign:"center"})}>週轉率</th>
+              <th style={Object.assign({},th,{textAlign:"center"})}>預估可賣天數</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length===0 ? (
+              <tr><td colSpan={7} style={{textAlign:"center",color:"#c8c4bc",padding:"30px 0",fontSize:12}}>此篩選條件下沒有資料</td></tr>
+            ) : rows.map(function(r,i){
+              var rateColor = r.turnoverRate>=2 ? "#2a7a4a" : r.turnoverRate>=1 ? "#b8910a" : r.turnoverRate>0 ? "#c0703a" : "#c0302a";
+              var daysLabel = r.daysOfStock===Infinity ? "∞（滯銷）" : Math.round(r.daysOfStock)+" 天";
+              var daysColor = r.daysOfStock===Infinity ? "#c0302a" : r.daysOfStock>180 ? "#c0703a" : "#2a2520";
+              return (
+                <tr key={r.sku+i} style={{background:i%2?"#faf9f6":"#fff"}}>
+                  <td style={Object.assign({},td,{textAlign:"left",fontFamily:"monospace",fontSize:11,color:"#9a968e"})}>{r.sku}</td>
+                  <td style={Object.assign({},td,{textAlign:"left"})}>{r.name}</td>
+                  <td style={Object.assign({},td,{textAlign:"left",fontSize:10,color:"#9a968e"})}>{r.main}{r.sub?" / "+r.sub:""}</td>
+                  <td style={Object.assign({},td,{textAlign:"center",color:"#7a7068"})}>{r.stock}</td>
+                  <td style={Object.assign({},td,{textAlign:"center",color:"#2a2520"})}>{r.sold}</td>
+                  <td style={Object.assign({},td,{textAlign:"center",fontWeight:700,color:rateColor})}>{r.turnoverRate.toFixed(2)}</td>
+                  <td style={Object.assign({},td,{textAlign:"center",fontWeight:600,color:daysColor})}>{daysLabel}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -10576,7 +10851,7 @@ function POSSystem() {
             {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={storeOrders} products={sharedProducts} members={members}/>}
             {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={storeOrders} products={sharedProducts} stocks={sharedStocks} members={members}/>}
             {activeTab==="consign"   && isManager && <ConsignSettlement orders={storeOrders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
-            {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={storeStockLog} sharedStocks={sharedStocks} orders={storeOrders}/>}
+            {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={storeStockLog} sharedStocks={sharedStocks} orders={storeOrders} purchases={storePurchases} currentStore={currentStore}/>}
             {activeTab==="expense"   && isManager && <ExpensePanel expenses={expenses} setExpenses={saveExpenses} orders={storeOrders} products={sharedProducts} currentStaff={currentStaff}/>}
             {activeTab==="history"   && isManager && <HistoryPanel history={history} setHistory={saveHistory}/>}
             {activeTab==="attendance"&& <AttendanceReport shiftLog={shiftLog} setShiftLog={saveShiftLog} staffRates={staffRates} setStaffRates={setStaffRates} schedule={schedule} setSchedule={setSchedule} isManager={isManager} currentStaff={currentStaff}/>}
