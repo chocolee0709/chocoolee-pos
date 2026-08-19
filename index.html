@@ -283,6 +283,12 @@
                     var mergedStr = JSON.stringify(merged);
                     localStorage.setItem("chocoolee-" + key, mergedStr);
                     changed.push(key);
+                    // 自癒：本機有雲端沒有的訂單 → 自動補推聯集回雲端
+                    if (merged.length > fbOrders.length && window.pushToFirebase) {
+                      var diffO = merged.length - fbOrders.length;
+                      setTimeout(function(){ window.pushToFirebase(key, mergedStr); }, 1200);
+                      if (window.showToast) window.showToast("🔄 偵測到 " + diffO + " 筆訂單未同步，已自動補推");
+                    }
                   } catch(e) {
                     localStorage.setItem("chocoolee-" + key, newVal);
                     changed.push(key);
@@ -299,6 +305,10 @@
                     var mergedMStr = JSON.stringify(mergedM);
                     localStorage.setItem("chocoolee-" + key, mergedMStr);
                     changed.push(key);
+                    // 會員不自動回推（可能把「已刪除的重複會員」復活），只顯示警示
+                    if (mergedM.length > fbMembers.length && window.showToast) {
+                      window.showToast("⚠️ 本機有 " + (mergedM.length - fbMembers.length) + " 筆會員與雲端不一致，請通知店長確認", true);
+                    }
                   } catch(e) {
                     localStorage.setItem("chocoolee-" + key, newVal);
                     changed.push(key);
@@ -316,6 +326,12 @@
                     var mergedPStr = JSON.stringify(mergedP);
                     localStorage.setItem("chocoolee-" + key, mergedPStr);
                     changed.push(key);
+                    // 自癒：本機有雲端沒有的採購單 → 自動補推聯集回雲端
+                    if (mergedP.length > fbPurchases.length && window.pushToFirebase) {
+                      var diffP = mergedP.length - fbPurchases.length;
+                      setTimeout(function(){ window.pushToFirebase("purchases", mergedPStr); }, 1500);
+                      if (window.showToast) window.showToast("🔄 偵測到 " + diffP + " 張採購單未同步，已自動補推");
+                    }
                   } catch(e) {
                     localStorage.setItem("chocoolee-" + key, newVal);
                     changed.push(key);
@@ -4009,9 +4025,8 @@ function PurchasePanel(props) {
   var sel = useState(null);  var selPo = sel[0], setSelPo = sel[1];
   var sf  = useState("pending"); var filter = sf[0], setFilter = sf[1];
 
-  // 店長視角：列出全部；店員：待收貨 + 待確認
+  // 全員可見所有狀態（店員需要查已完成單的售價來整理貨品/貼標）
   var visiblePurchases = purchases.filter(function(p){
-    if (!isManager && p.status === "completed") return false;
     if (filter === "pending"  && p.status !== "pending") return false;
     if (filter === "review"   && p.status !== "review")  return false;
     if (filter === "completed"&& p.status !== "completed")return false;
@@ -4590,7 +4605,7 @@ function PurchasePanel(props) {
 
   // ====== 查看模式（已完成） ======
   if (mode === "view") {
-    return <PurchaseViewer po={selPo}
+    return <PurchaseViewer po={selPo} isManager={isManager}
       onClose={function(){setMode("list");setSelPo(null);}}/>;
   }
 
@@ -5483,13 +5498,20 @@ function PurchaseVerifier(props) {
 // 已完成採購單查看
 function PurchaseViewer(props) {
   var po = props.po;
-  var items = po.items || [];
+  var isManager = props.isManager;
+  var qs = useState(""); var q = qs[0], setQ = qs[1];
+  var items = (po.items || []).filter(function(it){
+    if (!q) return true;
+    return (it.name||"").indexOf(q)>=0 || (it.sku||"").indexOf(q)>=0;
+  });
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:10,height:"100%",overflow:"hidden"}}>
       <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0,flexWrap:"wrap"}}>
         <button onClick={props.onClose} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#7a7068"}}>‹</button>
         <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>✅ 已完成 {po.no}</div>
+        <input value={q} onChange={function(e){setQ(e.target.value);}} placeholder="🔍 搜商品/貨號"
+          style={{marginLeft:"auto",background:"#fff",border:"1px solid #d8d4cc",borderRadius:16,padding:"5px 12px",fontSize:11,outline:"none",width:150}}/>
       </div>
 
       <div style={{display:"flex",gap:12,flexShrink:0,fontSize:11,color:"#7a7068",flexWrap:"wrap"}}>
@@ -5507,10 +5529,14 @@ function PurchaseViewer(props) {
               <th style={{padding:"6px 4px",textAlign:"center"}}>實收</th>
               <th style={{padding:"6px 4px",textAlign:"center"}}>破損</th>
               <th style={{padding:"6px 4px",textAlign:"center"}}>入庫</th>
+              <th style={{padding:"6px 4px",textAlign:"right"}}>售價</th>
+              {isManager && <th style={{padding:"6px 4px",textAlign:"right"}}>成本 🔒</th>}
             </tr>
           </thead>
           <tbody>
-            {items.map(function(item, idx){
+            {items.length===0 ? (
+              <tr><td colSpan={isManager?7:6} style={{textAlign:"center",color:"#c8c4bc",padding:"20px 0"}}>{q?"沒有符合的商品":"無品項"}</td></tr>
+            ) : items.map(function(item, idx){
               var received = Number(item.receivedQty)||0;
               var damaged = Number(item.damagedQty)||0;
               return (
@@ -5524,6 +5550,8 @@ function PurchaseViewer(props) {
                   <td style={{padding:"6px 4px",textAlign:"center"}}>{received}</td>
                   <td style={{padding:"6px 4px",textAlign:"center",color:damaged>0?"#d0552f":"#2a2520"}}>{damaged}</td>
                   <td style={{padding:"6px 4px",textAlign:"center",fontWeight:700,color:"#3d9e32"}}>{received-damaged}</td>
+                  <td style={{padding:"6px 4px",textAlign:"right",fontWeight:700,color:"#b8910a"}}>${(Number(item.price)||0).toLocaleString()}</td>
+                  {isManager && <td style={{padding:"6px 4px",textAlign:"right",color:"#7a7068"}}>${(Number(item.cost)||0).toLocaleString()}</td>}
                 </tr>
               );
             })}
