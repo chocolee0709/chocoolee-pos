@@ -2543,10 +2543,10 @@ function CatalogPanel(props) {
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
                       {p.image ? (
                         <img src={p.image} alt="" onClick={function(){openEdit(p);}} title="點擊編輯商品"
-                          style={{width:32,height:32,objectFit:"cover",borderRadius:4,flexShrink:0,border:"1px solid #e8e4de",cursor:"pointer"}}/>
+                          style={{width:52,height:52,objectFit:"cover",borderRadius:6,flexShrink:0,border:"1px solid #e8e4de",cursor:"pointer"}}/>
                       ) : (
                         <div onClick={function(){openEdit(p);}} title="點擊編輯商品"
-                          style={{width:32,height:32,borderRadius:4,background:"#f5f4f0",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:14,color:"#c8c4bc",cursor:"pointer",transition:"all 0.15s"}}
+                          style={{width:52,height:52,borderRadius:6,background:"#f5f4f0",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:20,color:"#c8c4bc",cursor:"pointer",transition:"all 0.15s"}}
                           onMouseEnter={function(e){e.currentTarget.style.background="#e8e4de";e.currentTarget.style.color="#b8910a";}}
                           onMouseLeave={function(e){e.currentTarget.style.background="#f5f4f0";e.currentTarget.style.color="#c8c4bc";}}>📦</div>
                       )}
@@ -4548,9 +4548,9 @@ function PurchasePanel(props) {
                               <tr key={ii} style={{borderBottom:"1px solid #f0ede8"}}>
                                 <td style={{padding:"4px 6px"}}>
                                   {resolvePOImage(po.no, ii, item) ? (
-                                    <img src={resolvePOImage(po.no, ii, item)} alt="" style={{width:30,height:30,objectFit:"cover",borderRadius:4}}/>
+                                    <img src={resolvePOImage(po.no, ii, item)} alt="" style={{width:48,height:48,objectFit:"cover",borderRadius:5}}/>
                                   ) : (
-                                    <div style={{width:30,height:30,borderRadius:4,background:"#f0ede8",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#c8c4bc"}}>📦</div>
+                                    <div style={{width:48,height:48,borderRadius:5,background:"#f0ede8",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:18,color:"#c8c4bc"}}>📦</div>
                                   )}
                                 </td>
                                 <td style={{padding:"4px 6px",color:"#2a2520"}}>
@@ -4732,9 +4732,9 @@ function PurchaseEditor(props) {
                   <tr key={idx} style={{borderBottom:"1px solid #f0ede8"}}>
                     <td style={{padding:"4px",textAlign:"center"}}>
                       {resolvePOImage(po.no, idx, item) ? (
-                        <img src={resolvePOImage(po.no, idx, item)} alt="" style={{width:60,height:60,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de"}}/>
+                        <img src={resolvePOImage(po.no, idx, item)} alt="" style={{width:80,height:80,objectFit:"cover",borderRadius:8,border:"1px solid #e8e4de"}}/>
                       ) : (
-                        <div style={{width:60,height:60,borderRadius:6,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#d8d4cc"}}>📦</div>
+                        <div style={{width:80,height:80,borderRadius:8,background:"#f5f4f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:26,color:"#d8d4cc"}}>📦</div>
                       )}
                     </td>
                     <td style={{padding:"6px 4px"}}>
