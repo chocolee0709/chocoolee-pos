@@ -4073,17 +4073,38 @@ function PurchasePanel(props) {
     setMode("list"); setSelPo(null);
   }
 
-  // 店員初驗完成
+  // 店員初驗完成：數量全部相符 → 直接自動入庫；有不符 → 送店長覆驗
   function submitReceive() {
-    var po = Object.assign({}, selPo, {
+    var items = selPo.items || [];
+    // 檢查是否每一項的實收(扣除破損)都等於採購數量
+    var allMatch = items.length > 0 && items.every(function(it){
+      var good = (it.receivedQty || 0) - (it.damagedQty || 0);
+      var remaining = it.qty - (it.stockedQty || 0); // 支援局部簽收過的單
+      return good === remaining && (it.damagedQty || 0) === 0;
+    });
+
+    if (allMatch) {
+      // 數量全符：店員即可完成入庫，不需店長簽核
+      var po = Object.assign({}, selPo, {
+        receivedBy: currentStaff ? currentStaff.name : "—",
+        receivedAt: new Date().toISOString().slice(0,16).replace("T", " "),
+        updatedAt: new Date().toISOString()
+      });
+      // 直接走入庫流程（autoMode：不彈店長確認框；直接傳 po 避免 state 異步時序問題）
+      confirmPurchase(true, po);
+      return;
+    }
+
+    // 有短少或破損 → 照舊送店長覆驗（店長選 1=依實收結案 / 2=開補貨單）
+    var po2 = Object.assign({}, selPo, {
       status: "review",
       receivedBy: currentStaff ? currentStaff.name : "—",
       receivedAt: new Date().toISOString().slice(0,16).replace("T", " "),
       updatedAt: new Date().toISOString()
     });
-    setPurchases(function(prev){ return prev.map(function(p){ return p.no === po.no ? po : p; }); });
+    setPurchases(function(prev){ return prev.map(function(p){ return p.no === po2.no ? po2 : p; }); });
     setMode("list"); setSelPo(null);
-    alert("✓ 已送出驗收結果，等待店長覆驗");
+    alert("⚠️ 驗收數量與採購單不符\n\n已送出給店長覆驗，由店長決定處理方式。");
   }
 
   // 暫存驗收進度（商品還沒點完，先存，狀態維持「待收貨」，不送出）
@@ -4098,10 +4119,11 @@ function PurchasePanel(props) {
   }
 
   // 店長覆驗：確認入庫（支援局部簽收）
-  function confirmPurchase() {
-    if (!confirm("確認入庫本次到貨？未到貨項目會留在待收貨。")) return;
-    var po = Object.assign({}, selPo, {
-      confirmedBy: currentStaff ? currentStaff.name : "—",
+  function confirmPurchase(autoMode, poOverride) {
+    // autoMode=true：店員驗收數量全部相符時的自動入庫（不彈確認框、不需店長）
+    if (!autoMode && !confirm("確認入庫本次到貨？未到貨項目會留在待收貨。")) return;
+    var po = Object.assign({}, (poOverride || selPo), {
+      confirmedBy: autoMode ? "系統自動（數量相符）" : (currentStaff ? currentStaff.name : "—"),
       confirmedAt: new Date().toISOString().slice(0,16).replace("T", " "),
       updatedAt: new Date().toISOString()
     });
@@ -4355,6 +4377,8 @@ function PurchasePanel(props) {
       alert("✓ 已依實收數量入庫，本採購單結案\n\n（廠商不再補貨，短少部分不另計）");
     } else if (dupWarnings.length > 0) {
       alert("✓ 採購單已完成，庫存已更新\n\n⚠️ 偵測到重複貨號，已自動改號避免覆蓋資料：\n" + dupWarnings.join("\n") + "\n\n請到商品庫存確認並調整這些貨號。");
+    } else if (autoMode) {
+      alert("✓ 驗收數量全部相符，已自動入庫完成！\n\n（數量相符時不需店長簽核）");
     } else {
       alert("✓ 採購單已完成，庫存已更新");
     }
@@ -5366,7 +5390,7 @@ function PurchaseReceiver(props) {
           )}
           <button onClick={props.onSubmit}
             style={{background:"#d0552f",border:"none",borderRadius:6,padding:"7px 20px",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>
-            送出驗收給店長確認
+            完成驗收（相符自動入庫）
           </button>
         </div>
       )}
