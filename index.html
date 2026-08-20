@@ -1290,7 +1290,7 @@ function PrintModal(props) {
         p.name,
         p.sku,
         "NT$" + p.price,           // 不用 toLocaleString，避免千分位逗號破壞 CSV 欄位
-        "\t" + (p.barcode || ""),   // 條碼前加 Tab，強制當文字（避免前導零消失/科學記號）
+        String(p.barcode || ""),    // 條碼保持純文字（不可加 Tab 等隱形字元，會讓標籤 App 讀不了）
         n
       ]);
     });
@@ -1310,14 +1310,34 @@ function PrintModal(props) {
     }).join("\r\n");
 
     var blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
-    var url  = URL.createObjectURL(blob);
-    var a    = document.createElement("a");
-    a.href = url;
-    a.download = "標籤檔_"+localDate()+".csv";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    var fileName = "標籤檔_"+localDate()+".csv";
+
+    // iPad/iPhone（特別是桌面捷徑模式）不支援網頁下載 → 改用系統分享面板，
+    // 可直接分享給精臣雲打印 App 或存到「檔案」
+    var canUseShare = false;
+    try {
+      var file = new File([blob], fileName, {type:"text/csv"});
+      canUseShare = navigator.canShare && navigator.canShare({files:[file]});
+      if (canUseShare) {
+        navigator.share({files:[file], title:"商品標籤檔"}).catch(function(err){
+          // 使用者自己取消分享（AbortError）不處理；真的失敗才走下載
+          if (err && err.name !== "AbortError") doDownload();
+        });
+        return;
+      }
+    } catch(e) { /* File 建構失敗 → 走下載 */ }
+
+    doDownload();
+    function doDownload() {
+      var url  = URL.createObjectURL(blob);
+      var a    = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
   }
 
   var total = items.reduce(function(s,p){ return s+(copies[p.id]||1); }, 0);
