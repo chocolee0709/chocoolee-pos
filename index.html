@@ -3083,6 +3083,7 @@ function ListingManager(props) {
           <thead style={{position:"sticky",top:0,background:"#faf9f6",zIndex:1}}>
             <tr style={{borderBottom:"1px solid #ece8e2"}}>
               <th style={{padding:"8px 6px",width:36}}></th>
+              <th style={{padding:"8px 6px",width:52}}></th>
               <th style={{padding:"8px 6px",textAlign:"left",fontSize:11,color:"#7a7068"}}>貨號</th>
               <th style={{padding:"8px 6px",textAlign:"left",fontSize:11,color:"#7a7068"}}>商品名稱</th>
               <th style={{padding:"8px 6px",textAlign:"left",fontSize:11,color:"#7a7068"}}>分類</th>
@@ -3092,7 +3093,7 @@ function ListingManager(props) {
           </thead>
           <tbody>
             {rows.length===0 ? (
-              <tr><td colSpan={6} style={{textAlign:"center",color:"#c8c4bc",padding:"30px 0",fontSize:12}}>沒有符合的商品</td></tr>
+              <tr><td colSpan={7} style={{textAlign:"center",color:"#c8c4bc",padding:"30px 0",fontSize:12}}>沒有符合的商品</td></tr>
             ) : rows.map(function(p,i){
               var off = isOff(p);
               var isChk = !!checked[p.id];
@@ -3101,6 +3102,13 @@ function ListingManager(props) {
                   style={{background:isChk?"#fffdf0":(i%2?"#faf9f6":"#fff"),cursor:"pointer",borderBottom:"1px solid #f5f2ec"}}>
                   <td style={{padding:"7px 6px",textAlign:"center"}}>
                     <input type="checkbox" checked={isChk} readOnly style={{cursor:"pointer"}}/>
+                  </td>
+                  <td style={{padding:"5px 6px",textAlign:"center"}}>
+                    {p.image ? (
+                      <img src={p.image} alt="" style={{width:44,height:44,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de",display:"block",opacity:off?0.45:1}}/>
+                    ) : (
+                      <div style={{width:44,height:44,borderRadius:6,background:"#f5f4f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,color:"#c8c4bc"}}>📦</div>
+                    )}
                   </td>
                   <td style={{padding:"7px 6px",fontSize:11,fontFamily:"monospace",color:"#9a968e"}}>{p.sku}</td>
                   <td style={{padding:"7px 6px",fontSize:12,color:off?"#9a968e":"#2a2520"}}>{p.name}</td>
