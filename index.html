@@ -1408,6 +1408,7 @@ function CatalogPanel(props) {
   var mfs = useState(""); var filterMain = mfs[0], setFilterMain = mfs[1];
   var sfs = useState(""); var filterSub  = sfs[0], setFilterSub  = sfs[1];
   var fls = useState(""); var filterListing = fls[0], setFilterListing = fls[1]; // "" 全部 / "on" 上架中 / "off" 已下架
+  var cts = useState("list"); var catTab = cts[0], setCatTab = cts[1]; // list | listing
   var pgs = useState(0); var page = pgs[0], setPage = pgs[1];
   var as = useState(null); var adjustId = as[0], setAdjustId = as[1];
   var ds = useState(0);    var delta = ds[0], setDelta = ds[1];
@@ -2134,6 +2135,26 @@ function CatalogPanel(props) {
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:8,height:"100%",overflow:"hidden"}}>
+
+      {/* ── 子分頁切換 ── */}
+      {isManager && (props.storeList||[]).length > 1 && (
+        <div style={{display:"flex",gap:6,flexShrink:0}}>
+          {[["list","商品庫存"],["listing","上下架管理"]].map(function(t){
+            var on = catTab===t[0];
+            return (
+              <button key={t[0]} onClick={function(){setCatTab(t[0]);}}
+                style={{padding:"6px 14px",borderRadius:8,border:"1px solid "+(on?"#b8910a":"#d8d4cc"),
+                  background:on?"#b8910a":"#fff",color:on?"#fff":"#7a7068",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                {t[1]}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {catTab === "listing" ? <ListingManager products={products} setProducts={setSharedProducts}
+        storeList={props.storeList||[]} currentStore={props.currentStore} stocks={stocks}/> : (
+      <React.Fragment>
 
       {/* ── KPI 卡片 ── */}
       <div style={{display:"grid",gridTemplateColumns:isManager?"repeat(5,1fr)":"repeat(3,1fr)",gap:8,flexShrink:0}}>
@@ -2903,6 +2924,204 @@ function CatalogPanel(props) {
           </div>
         </div>
       )}
+      </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// ── 上下架管理（分店批次操作）─────────────────────────────────────
+function ListingManager(props) {
+  var products = props.products || [];
+  var setProducts = props.setProducts || function(){};
+  var storeList = props.storeList || [];
+  var stocks = props.stocks || {};
+
+  var tgt = useState(props.currentStore || "yl"); var targetStore = tgt[0], setTargetStore = tgt[1];
+  var qs = useState(""); var q = qs[0], setQ = qs[1];
+  var mfs = useState(""); var fMain = mfs[0], setFMain = mfs[1];
+  var vfs = useState("all"); var vFilter = vfs[0], setVFilter = vfs[1]; // all | on | off
+  var sel = useState({}); var checked = sel[0], setChecked = sel[1];
+
+  function isOff(p){ return !!(p.delisted || (p.storeOff && p.storeOff[targetStore])); }
+
+  var rows = products.filter(function(p){
+    if (p.main === "業外收入") return false;
+    if (q && p.name.indexOf(q)<0 && p.sku.indexOf(q)<0) return false;
+    if (fMain && p.main !== fMain) return false;
+    if (vFilter === "on" && isOff(p)) return false;
+    if (vFilter === "off" && !isOff(p)) return false;
+    return true;
+  }).sort(function(a,b){
+    return String(a.sku||"").localeCompare(String(b.sku||""), "zh-TW", {numeric:true});
+  });
+
+  var selCount = Object.keys(checked).filter(function(k){ return checked[k]; }).length;
+  var onCount = products.filter(function(p){ return p.main!=="業外收入" && !isOff(p); }).length;
+
+  function toggleOne(p){
+    setChecked(function(prev){
+      var n = Object.assign({}, prev);
+      if (n[p.id]) delete n[p.id]; else n[p.id] = true;
+      return n;
+    });
+  }
+  function selectAllShown(){
+    setChecked(function(prev){
+      var n = Object.assign({}, prev);
+      var allOn = rows.every(function(p){ return n[p.id]; });
+      rows.forEach(function(p){ if (allOn) delete n[p.id]; else n[p.id] = true; });
+      return n;
+    });
+  }
+  function applyBatch(setOff){
+    var ids = Object.keys(checked).filter(function(k){ return checked[k]; });
+    if (ids.length === 0) { alert("請先勾選商品"); return; }
+    var storeName = getStoreName(targetStore);
+    if (!confirm("確定要將勾選的 " + ids.length + " 項商品在「" + storeName + "」" + (setOff?"下架":"上架") + "？")) return;
+    var idSet = {};
+    ids.forEach(function(k){ idSet[k] = true; });
+    var now = new Date().toISOString();
+    setProducts(function(prev){
+      return prev.map(function(p){
+        if (!idSet[String(p.id)]) return p;
+        var so = Object.assign({}, p.storeOff||{});
+        if (setOff) so[targetStore] = true; else delete so[targetStore];
+        // 若使用各店開關，清除舊的全域下架旗標避免衝突
+        return Object.assign({}, p, {storeOff: so, delisted: false, updatedAt: now});
+      });
+    });
+    setChecked({});
+    alert("✓ 已將 " + ids.length + " 項商品在「" + storeName + "」" + (setOff?"下架":"上架"));
+  }
+  function applyAll(setOff){
+    var storeName = getStoreName(targetStore);
+    if (!confirm("確定要將【全部商品】在「" + storeName + "」" + (setOff?"下架":"上架") + "？\n\n共 " + products.length + " 項")) return;
+    var now = new Date().toISOString();
+    setProducts(function(prev){
+      return prev.map(function(p){
+        var so = Object.assign({}, p.storeOff||{});
+        if (setOff) so[targetStore] = true; else delete so[targetStore];
+        return Object.assign({}, p, {storeOff: so, delisted: false, updatedAt: now});
+      });
+    });
+    setChecked({});
+    alert("✓ 已將全部商品在「" + storeName + "」" + (setOff?"下架":"上架"));
+  }
+
+  var inp = {background:"#ffffff",border:"1px solid #d8d4cc",borderRadius:6,padding:"6px 9px",color:"#2a2520",fontSize:12,outline:"none"};
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:8,flex:1,overflow:"hidden"}}>
+      {/* 店別選擇 */}
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",background:"#faf9f6",border:"1px solid #ece8e0",borderRadius:10,padding:"10px 12px",flexShrink:0}}>
+        <span style={{fontSize:12,color:"#7a7068",fontWeight:700}}>管理店別</span>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {storeList.map(function(s){
+            var on = s.code === targetStore;
+            return (
+              <button key={s.code} onClick={function(){setTargetStore(s.code);setChecked({});}}
+                style={{padding:"5px 12px",borderRadius:20,fontSize:12,fontWeight:700,cursor:"pointer",
+                  border:"1px solid "+(on?"#b8910a":"#d8d4cc"), background:on?"#b8910a":"#fff", color:on?"#fff":"#7a7068"}}>
+                {s.name}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{marginLeft:"auto",fontSize:11,color:"#7a7068"}}>
+          此店上架中：<b style={{color:"#2a7a4a",fontSize:15}}>{onCount}</b> / {products.filter(function(p){return p.main!=="業外收入";}).length} 項
+        </div>
+      </div>
+
+      {/* 篩選 + 批次操作 */}
+      <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",flexShrink:0}}>
+        <input value={q} onChange={function(e){setQ(e.target.value);}} placeholder="搜尋商品/貨號"
+          style={Object.assign({},inp,{width:150})}/>
+        <select value={fMain} onChange={function(e){setFMain(e.target.value);}} style={Object.assign({},inp,{cursor:"pointer"})}>
+          <option value="">全部分類</option>
+          {Object.keys(CAT_STRUCT).map(function(m){ return <option key={m} value={m}>{m}</option>; })}
+        </select>
+        <select value={vFilter} onChange={function(e){setVFilter(e.target.value);}} style={Object.assign({},inp,{cursor:"pointer"})}>
+          <option value="all">上架＋下架</option>
+          <option value="on">✓ 僅上架中</option>
+          <option value="off">🚫 僅已下架</option>
+        </select>
+        <button onClick={selectAllShown}
+          style={{padding:"6px 12px",borderRadius:6,border:"1px solid #d8d4cc",background:"#fff",color:"#7a7068",fontSize:11,cursor:"pointer"}}>
+          全選/取消（{rows.length} 項）
+        </button>
+        <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
+          {selCount>0 && <span style={{fontSize:11,color:"#b8910a",fontWeight:700}}>已選 {selCount} 項</span>}
+          <button onClick={function(){applyBatch(false);}}
+            style={{padding:"7px 14px",borderRadius:7,border:"none",background:"#2a7a4a",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+            ✓ 批次上架
+          </button>
+          <button onClick={function(){applyBatch(true);}}
+            style={{padding:"7px 14px",borderRadius:7,border:"none",background:"#8a8478",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+            🚫 批次下架
+          </button>
+        </div>
+      </div>
+
+      {/* 全店操作 */}
+      <div style={{display:"flex",gap:8,alignItems:"center",fontSize:11,color:"#9a968e",flexShrink:0}}>
+        <span>快速操作：</span>
+        <button onClick={function(){applyAll(false);}}
+          style={{padding:"4px 10px",borderRadius:6,border:"1px solid #2a7a4a",background:"#fff",color:"#2a7a4a",fontSize:11,cursor:"pointer"}}>
+          全部商品上架
+        </button>
+        <button onClick={function(){applyAll(true);}}
+          style={{padding:"4px 10px",borderRadius:6,border:"1px solid #8a8478",background:"#fff",color:"#8a8478",fontSize:11,cursor:"pointer"}}>
+          全部商品下架
+        </button>
+        <span style={{marginLeft:8}}>（下架商品在該店收銀台不顯示，庫存與報表照常計算）</span>
+      </div>
+
+      {/* 商品清單 */}
+      <div style={{flex:1,overflowY:"auto",background:"#fff",border:"1px solid #ece8e2",borderRadius:10}}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead style={{position:"sticky",top:0,background:"#faf9f6",zIndex:1}}>
+            <tr style={{borderBottom:"1px solid #ece8e2"}}>
+              <th style={{padding:"8px 6px",width:36}}></th>
+              <th style={{padding:"8px 6px",textAlign:"left",fontSize:11,color:"#7a7068"}}>貨號</th>
+              <th style={{padding:"8px 6px",textAlign:"left",fontSize:11,color:"#7a7068"}}>商品名稱</th>
+              <th style={{padding:"8px 6px",textAlign:"left",fontSize:11,color:"#7a7068"}}>分類</th>
+              <th style={{padding:"8px 6px",textAlign:"center",fontSize:11,color:"#7a7068"}}>本機店庫存</th>
+              <th style={{padding:"8px 6px",textAlign:"center",fontSize:11,color:"#7a7068"}}>狀態</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length===0 ? (
+              <tr><td colSpan={6} style={{textAlign:"center",color:"#c8c4bc",padding:"30px 0",fontSize:12}}>沒有符合的商品</td></tr>
+            ) : rows.map(function(p,i){
+              var off = isOff(p);
+              var isChk = !!checked[p.id];
+              return (
+                <tr key={p.id} onClick={function(){toggleOne(p);}}
+                  style={{background:isChk?"#fffdf0":(i%2?"#faf9f6":"#fff"),cursor:"pointer",borderBottom:"1px solid #f5f2ec"}}>
+                  <td style={{padding:"7px 6px",textAlign:"center"}}>
+                    <input type="checkbox" checked={isChk} readOnly style={{cursor:"pointer"}}/>
+                  </td>
+                  <td style={{padding:"7px 6px",fontSize:11,fontFamily:"monospace",color:"#9a968e"}}>{p.sku}</td>
+                  <td style={{padding:"7px 6px",fontSize:12,color:off?"#9a968e":"#2a2520"}}>{p.name}</td>
+                  <td style={{padding:"7px 6px",fontSize:10,color:"#9a968e"}}>{p.main}{p.sub?" / "+p.sub:""}</td>
+                  <td style={{padding:"7px 6px",textAlign:"center",fontSize:12,color:"#7a7068"}}>
+                    {targetStore === props.currentStore
+                      ? (stocks[p.id]!==undefined ? stocks[p.id] : 0)
+                      : <span style={{color:"#c8c4bc",fontSize:10}}>—</span>}
+                  </td>
+                  <td style={{padding:"7px 6px",textAlign:"center"}}>
+                    <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:10,
+                      background:off?"#f0ede8":"#e8f5ec", color:off?"#8a8478":"#2a7a4a"}}>
+                      {off ? "🚫 下架" : "✓ 上架"}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -10074,11 +10293,29 @@ function POSSystem() {
                       if (!code || !code.trim()) return;
                       code = code.trim().toLowerCase();
                       if (storeList.some(function(x){return x.code===code||x.name===name;})) { alert("代碼或名稱已存在"); return; }
+                      // 詢問新分店的商品預設狀態
+                      var offByDefault = confirm(
+                        "「"+name+"」的商品預設狀態？\n\n" +
+                        "【確定】= 全部商品預設下架（適合市集、快閃店，再手動挑要賣的上架）\n" +
+                        "【取消】= 全部商品預設上架（一般分店）"
+                      );
                       var next = storeList.concat([{code:code,name:name}]);
                       setStoreList(next);
                       try { localStorage.setItem("chocoolee-stores", JSON.stringify(next)); } catch(e){}
                       if (window.pushStores) window.pushStores(next);
-                      alert("✓ 已新增「"+name+"」\n\n新店裝置開啟系統後，由店長在此選單切換為該店即可。");
+                      if (offByDefault) {
+                        // 全部商品在該店標記為下架
+                        saveProducts(function(prev){
+                          return prev.map(function(p){
+                            var so = Object.assign({}, p.storeOff||{});
+                            so[code] = true;
+                            return Object.assign({}, p, {storeOff: so, updatedAt: new Date().toISOString()});
+                          });
+                        });
+                        alert("✓ 已新增「"+name+"」\n\n所有商品已預設為下架，請到「商品庫存 → 上下架管理」挑選要販售的商品上架。");
+                      } else {
+                        alert("✓ 已新增「"+name+"」\n\n新店裝置開啟系統後，由店長在此選單切換為該店即可。");
+                      }
                       setShowMenu(false);
                     }}
                       style={{display:"flex",alignItems:"center",gap:4,padding:"4px 9px",borderRadius:20,cursor:"pointer",
@@ -10588,22 +10825,26 @@ function POSSystem() {
           )}
 
           {/* Product Grid */}
-          <div style={{padding:"8px 12px",flex:1,overflowY:"auto"}}>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(90px,1fr))",gap:7}}>
+          <div style={{padding:"10px 12px",flex:1,overflowY:"auto",background:"#faf9f7"}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(90px,1fr))",gap:9}}>
               {filtered.slice(0,120).map(function(p) {
                 var inCart = cart.find(function(i){return i.id===p.id;});
                 var cc = CAT_COLORS[p.main]||"#b8910a";
                 return (
                   <button key={p.id} onClick={function(){addToCart(p);}}
-                    style={{background:inCart?"#f0ede8":"#f8f7f4",
-                      border:inCart?"1px solid "+cc:"1px solid #e0dcd6",
-                      borderRadius:9,padding:"10px",cursor:"pointer",textAlign:"left",
-                      display:"flex",flexDirection:"column",gap:4,position:"relative",minHeight:95}}>
+                    onMouseEnter={function(e){ if(!inCart){e.currentTarget.style.boxShadow="0 4px 12px rgba(42,37,32,0.10)";e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.borderColor=cc;} }}
+                    onMouseLeave={function(e){ if(!inCart){e.currentTarget.style.boxShadow="0 1px 2px rgba(42,37,32,0.04)";e.currentTarget.style.transform="none";e.currentTarget.style.borderColor="#e8e4de";} }}
+                    style={{background:inCart?"#fffdf5":"#ffffff",
+                      border:inCart?"1.5px solid "+cc:"1px solid #e8e4de",
+                      boxShadow:inCart?"0 2px 10px "+cc+"22":"0 1px 2px rgba(42,37,32,0.04)",
+                      borderRadius:12,padding:"10px",cursor:"pointer",textAlign:"left",
+                      display:"flex",flexDirection:"column",gap:4,position:"relative",minHeight:95,
+                      transition:"box-shadow 0.18s, transform 0.18s, border-color 0.18s"}}>
                     {inCart && (
-                      <div style={{position:"absolute",top:6,right:6,background:cc,color:"#ffffff",borderRadius:"50%",width:19,height:19,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,zIndex:1}}>{inCart.qty}</div>
+                      <div style={{position:"absolute",top:6,right:6,background:cc,color:"#ffffff",borderRadius:"50%",width:21,height:21,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,zIndex:1,boxShadow:"0 2px 6px "+cc+"55"}}>{inCart.qty}</div>
                     )}
                     {p.image && (
-                      <div style={{width:"100%",height:90,marginBottom:2,borderRadius:6,overflow:"hidden",background:"#ffffff"}}>
+                      <div style={{width:"100%",height:90,marginBottom:2,borderRadius:8,overflow:"hidden",background:"#f8f7f4"}}>
                         <img src={p.image} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}/>
                       </div>
                     )}
@@ -10626,10 +10867,10 @@ function POSSystem() {
         </div>
 
         {/* RIGHT: Cart — responsive width, two independent scroll zones */}
-        <div style={{width:"clamp(250px, 24vw, 420px)",background:"#eeece8",borderLeft:"1px solid #d8d4cc",display:"flex",flexDirection:"column",flexShrink:0}}>
+        <div style={{width:"clamp(250px, 24vw, 420px)",background:"#f5f3ef",borderLeft:"1px solid #e0dcd6",display:"flex",flexDirection:"column",flexShrink:0,boxShadow:"-2px 0 12px rgba(42,37,32,0.04)"}}>
 
           {/* Cart header */}
-          <div style={{padding:"12px 13px",borderBottom:"1px solid #d8d4cc",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+          <div style={{padding:"13px 14px",borderBottom:"1px solid #e0dcd6",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0,background:"#ffffff"}}>
             <div>
               <span style={{fontWeight:700,fontSize:13,letterSpacing:"0.1em"}}>購物車</span>
               {cartCount>0 && <span style={{marginLeft:8,background:"#b8910a",color:"#ffffff",borderRadius:20,padding:"1px 8px",fontSize:10,fontWeight:700}}>{cartCount}</span>}
@@ -10638,12 +10879,12 @@ function POSSystem() {
           </div>
 
           {/* Member phone lookup */}
-          <div style={{padding:"8px 13px",borderBottom:"1px solid #d8d4cc",flexShrink:0}}>
+          <div style={{padding:"9px 14px",borderBottom:"1px solid #e0dcd6",flexShrink:0,background:"#ffffff"}}>
             <input value={memberPhone} onChange={function(e){setMemberPhone(e.target.value);}} placeholder="會員手機（選填）"
               style={Object.assign({},inp,{width:"100%",fontSize:11,padding:"6px 10px",boxSizing:"border-box",
                 borderColor:foundMember?"#b8910a":"#d8d4cc"})}/>
             {foundMember && (
-              <div style={{marginTop:6,background:"#f0ede8",borderRadius:7,padding:"8px 10px",border:"1px solid #e0dcd6"}}>
+              <div style={{marginTop:7,background:"#fffdf5",borderRadius:9,padding:"9px 11px",border:"1px solid #ecdfb8"}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
                   <span style={{fontSize:12,fontWeight:700,color:"#2a2520"}}>{foundMember.name}</span>
                   <span style={{fontSize:10,fontWeight:700,padding:"1px 7px",borderRadius:20,background:"#eeece8",color:LVL_COLOR[foundMember.level||calcLevel(foundMember.spent,foundMember.highCount||0)]}}>{LVL_LABEL[foundMember.level||calcLevel(foundMember.spent,foundMember.highCount||0)]}</span>
