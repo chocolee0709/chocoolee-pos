@@ -874,10 +874,95 @@
 
   // iPad 螢幕喚醒或切回頁面時：重新整理 token 和 SSE（實際同步由 visibilitychange 處理）
 
-  // 網路重新連線時：只刷新 token，不自動下載資料（資料只在開啟/重新整理時下載）
+  // 網路重新連線時：刷新 token 並主動補推離線期間累積的資料
   window.addEventListener("online", function(){
     fbToken = null;
+    setTimeout(function(){ window.syncOfflineData(true); }, 1500);
   });
+
+  // ── 離線資料補推：比對本機與雲端，把本機多出來的訂單/庫存推上去 ──
+  // showResult=true 時會顯示結果提示（手動或連線恢復觸發）
+  window.syncOfflineData = function(showResult) {
+    if (!navigator.onLine) {
+      if (showResult && window.showToast) window.showToast("⚠️ 目前沒有網路連線", true);
+      return;
+    }
+    getToken(function(token){
+      if (!token) {
+        if (showResult && window.showToast) window.showToast("⚠️ 無法連線雲端，稍後再試", true);
+        return;
+      }
+      // 蒐集本機所有訂單月份節點
+      var orderKeys = [];
+      try {
+        for (var i = 0; i < localStorage.length; i++) {
+          var k = localStorage.key(i);
+          if (k && k.indexOf("chocoolee-orders-") === 0) orderKeys.push(k.replace("chocoolee-", ""));
+        }
+      } catch(e) {}
+
+      var pushedOrders = 0;
+      var tasks = [];
+
+      orderKeys.forEach(function(key){
+        tasks.push(
+          fetch(FB + "/chocoolee/" + key + ".json?auth=" + token)
+            .then(function(r){ return r.json(); })
+            .then(function(fbData){
+              var fbArr = Array.isArray(fbData) ? fbData : (fbData ? Object.values(fbData) : []);
+              var localArr = [];
+              try { localArr = JSON.parse(localStorage.getItem("chocoolee-" + key) || "[]"); } catch(e) {}
+              // 以訂單號聯集，本機有雲端沒有的就是離線期間產生的
+              var map = {};
+              fbArr.forEach(function(o){ if (o && o.no) map[o.no] = o; });
+              var newCount = 0;
+              localArr.forEach(function(o){
+                if (!o || !o.no) return;
+                if (!map[o.no]) { newCount++; map[o.no] = o; }
+                else if ((o.updatedAt||"") > (map[o.no].updatedAt||"")) map[o.no] = o;
+              });
+              if (newCount > 0) {
+                var merged = Object.values(map).sort(function(a,b){
+                  return (b.date+b.time).localeCompare(a.date+a.time);
+                });
+                pushedOrders += newCount;
+                return fetch(FB + "/chocoolee/" + key + ".json?auth=" + token, {
+                  method: "PUT", headers: {"Content-Type":"application/json"},
+                  body: JSON.stringify(merged)
+                }).then(function(){
+                  try { localStorage.setItem("chocoolee-" + key, JSON.stringify(merged)); } catch(e){}
+                });
+              }
+            })
+            .catch(function(){})
+        );
+      });
+
+      Promise.all(tasks).then(function(){
+        // 庫存：若有待推送的變動，觸發合併推送
+        var hasPendingStocks = false;
+        try {
+          var pRaw = localStorage.getItem("chocoolee-pending-stocks");
+          hasPendingStocks = !!(pRaw && Object.keys(JSON.parse(pRaw)).length > 0);
+        } catch(e) {}
+        if (hasPendingStocks && window.pushStocksMerged) {
+          var localStocks = {};
+          try { localStocks = JSON.parse(localStorage.getItem("chocoolee-stocks") || "{}"); } catch(e){}
+          window.pushStocksMerged(localStocks);
+        }
+
+        if (window.showToast) {
+          if (pushedOrders > 0) {
+            window.showToast("☁️ 已同步 " + pushedOrders + " 筆離線訂單" + (hasPendingStocks ? "、庫存變動" : ""));
+          } else if (hasPendingStocks) {
+            window.showToast("☁️ 已同步離線庫存變動");
+          } else if (showResult) {
+            window.showToast("✓ 資料都已是最新，無待同步項目");
+          }
+        }
+      });
+    });
+  };
 
   // ── 全域按鍵音（Web Audio 即時產生，不需音檔）──
   (function setupClickSound(){
@@ -10333,6 +10418,27 @@ function POSSystem() {
                   </div>
                 </div>
               )}
+
+              {/* 立即同步（市集離線後回店裡使用） */}
+              <button onClick={function(){
+                  if (window.syncOfflineData) {
+                    window.syncOfflineData(true);
+                    setShowMenu(false);
+                  } else {
+                    alert("同步功能尚未載入，請重新整理頁面");
+                  }
+                }}
+                style={{width:"100%",padding:"11px 14px",border:"none",background:"transparent",
+                  cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
+                  borderBottom:"1px solid #f0ede8",transition:"background 0.1s"}}
+                onMouseEnter={function(e){e.currentTarget.style.background="#f8f7f4";}}
+                onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
+                <span style={{fontSize:18,width:24,textAlign:"center"}}>☁️</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:12,fontWeight:600,color:"#2a2520"}}>立即同步</div>
+                  <div style={{fontSize:10,color:"#9a968e"}}>把離線期間的訂單、庫存推上雲端</div>
+                </div>
+              </button>
 
               {/* 教育訓練 */}
               <button onClick={function(){setTrainingMode(function(t){return !t;});setShowMenu(false);}}
