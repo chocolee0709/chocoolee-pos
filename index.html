@@ -637,22 +637,51 @@
   // 調轉：把某商品 +qty 寫入他店庫存節點（讀→改→寫，回傳該店調整後數量）
   window.transferStockToStore = function(storeCode, productId, qty, callback) {
     getToken(function(token){
-      if (!token) { callback(false, null); return; }
+      if (!token) { callback(false, null, "無法取得連線憑證"); return; }
       var node = storeCode === "yl" ? "stocks" : "stocks-" + storeCode;
-      fetch(FB + "/chocoolee/" + node + ".json?auth=" + token)
-        .then(function(r){ return r.json(); })
-        .then(function(d){
-          var st = {};
-          try { st = typeof d === "string" ? JSON.parse(d) : (d || {}); } catch(e){}
-          var before = st[productId] !== undefined ? Number(st[productId]) : 0;
+      var itemUrl = FB + "/chocoolee/" + node + "/" + productId + ".json?auth=" + token;
+
+      // 直接對「單一商品」節點做讀→寫→驗證，不整包覆蓋（避免與其他裝置互蓋）
+      fetch(itemUrl)
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(v){
+          var before = (v === null || v === undefined) ? 0 : Number(v);
+          if (isNaN(before)) before = 0;
           var after = before + qty;
-          st[productId] = after;
-          return fetch(FB + "/chocoolee/" + node + ".json?auth=" + token, {
+
+          return fetch(itemUrl, {
             method:"PUT", headers:{"Content-Type":"application/json"},
-            body: JSON.stringify(st)
-          }).then(function(r){ callback(r.ok, r.ok ? after : null); });
+            body: JSON.stringify(after)
+          }).then(function(r){
+            if (!r.ok) { callback(false, null, "寫入失敗 HTTP " + r.status); return; }
+
+            // ⚠️ HTTP 200 不代表資料真的落地（9/05 曾發生 log 有寫、庫存沒進）
+            // 連續驗證：最多重試 3 次，每次間隔遞增，確認對方店數字真的變成 after
+            var attempt = 0;
+            function verify(){
+              attempt++;
+              return new Promise(function(resolve){ setTimeout(resolve, 500 * attempt); })
+                .then(function(){ return fetch(itemUrl); })
+                .then(function(vr){ return vr.ok ? vr.json() : null; })
+                .then(function(vv){
+                  if (Number(vv) === after) {
+                    callback(true, after, null);      // ✓ 確認落地
+                    return;
+                  }
+                  if (attempt < 3) return verify();   // 再試一次
+                  // 三次都對不上 → 判定失敗，本店不扣
+                  console.warn("調轉驗證失敗：預期", after, "實際", vv);
+                  callback(false, null, "對方店庫存未確認寫入（預期 " + after + "，實際 " + vv + "）");
+                })
+                .catch(function(){
+                  if (attempt < 3) return verify();
+                  callback(false, null, "驗證時連線中斷");
+                });
+            }
+            return verify();
+          });
         })
-        .catch(function(){ callback(false, null); });
+        .catch(function(e){ callback(false, null, "連線錯誤：" + (e && e.message)); });
     });
   };
 
@@ -1677,10 +1706,12 @@ function CatalogPanel(props) {
                  "\n\n" + fromName + "：" + cur + " → " + (cur-qty))) return;
     setTransferBusy(true);
     // 1. 他店 +qty（直接讀改寫 Firebase 該店節點）
-    window.transferStockToStore(transferTo, p.id, qty, function(ok, toAfter){
+    window.transferStockToStore(transferTo, p.id, qty, function(ok, toAfter, errMsg){
       if (!ok) {
         setTransferBusy(false);
-        alert("❌ 調轉失敗（無法更新「" + toName + "」庫存），請確認網路後重試。\n本店庫存未變動。");
+        alert("❌ 調轉失敗，本店庫存未變動（數量不會消失）\n\n" +
+              "原因：" + (errMsg || "無法更新「" + toName + "」庫存") +
+              "\n\n請確認網路後重試。");
         return;
       }
       // 2. 本店 −qty（走正常 saveStocks 流程：delta 推送＋pending 保護）
@@ -1705,7 +1736,9 @@ function CatalogPanel(props) {
       ]);
       setTransferBusy(false);
       setTransferProd(null);
-      alert("✓ 調轉完成\n\n" + fromName + "：" + cur + " → " + (cur-qty) + "\n" + toName + "：+" + qty);
+      alert("✓ 調轉完成（已確認雙方庫存寫入）\n\n" +
+            fromName + "：" + cur + " → " + (cur-qty) + "\n" +
+            toName + "：" + (toAfter - qty) + " → " + toAfter);
     });
   }
   function doAdjust(){
@@ -6212,6 +6245,7 @@ function AnalyticsDrawer(props) {
 
   var orders = props.orders;
   var products = props.products || [];
+  var ats = useState("store"); var anaTab = ats[0], setAnaTab = ats[1]; // store | all
 
   // 模式：period(快速期間) / month(指定月份) / year(年度總覽)
   var ms = useState("month"); var viewMode = ms[0], setViewMode = ms[1];
@@ -6389,6 +6423,28 @@ function AnalyticsDrawer(props) {
 
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
+
+      {/* 本店 / 全店 子分頁 */}
+      {(props.storeList||[]).length > 1 && (
+        <div style={{display:"flex",gap:6,marginBottom:10,flexShrink:0}}>
+          {[["store", getStoreName(props.currentStore)+"分析"],["all","全店總覽"]].map(function(t){
+            var on = anaTab===t[0];
+            return (
+              <button key={t[0]} onClick={function(){setAnaTab(t[0]);}}
+                style={{padding:"6px 14px",borderRadius:8,border:"1px solid "+(on?"#b8910a":"#d8d4cc"),
+                  background:on?"#b8910a":"#fff",color:on?"#fff":"#7a7068",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                {t[1]}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {anaTab === "all" ? (
+        <AllStoreAnalysis allOrders={props.allOrders||[]} products={products}
+          storeList={props.storeList||[]}/>
+      ) : (
+      <React.Fragment>
 
       {/* 模式切換 + 月份/年份選擇 */}
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexShrink:0,flexWrap:"wrap"}}>
@@ -6931,6 +6987,284 @@ function AnalyticsDrawer(props) {
           )}
         </div>
 
+      </div>
+      </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// ── 全店總覽分析（跨店加總 + 各店對比）─────────────────────────────
+function AllStoreAnalysis(props) {
+  var allOrders = props.allOrders || [];
+  var products  = props.products  || [];
+  var storeList = props.storeList || [];
+
+  var now0 = new Date();
+  var vm = useState("month"); var viewMode = vm[0], setViewMode = vm[1]; // month | year
+  var sm = useState(now0.getFullYear()+"-"+String(now0.getMonth()+1).padStart(2,"0"));
+  var selMonth = sm[0], setSelMonth = sm[1];
+  var sy = useState(String(now0.getFullYear())); var selYear = sy[0], setSelYear = sy[1];
+
+  // 可選月份清單
+  var monthSet = {};
+  allOrders.forEach(function(o){ if (o.date) monthSet[o.date.slice(0,7)] = true; });
+  var monthList = Object.keys(monthSet).sort().reverse();
+  if (monthList.indexOf(selMonth) < 0) monthList.unshift(selMonth);
+  var yearSet = {};
+  allOrders.forEach(function(o){ if (o.date) yearSet[o.date.slice(0,4)] = true; });
+  var yearList = Object.keys(yearSet).sort().reverse();
+  if (yearList.length === 0) yearList = [String(now0.getFullYear())];
+
+  var paid = allOrders.filter(function(o){
+    if (o.status !== "paid" || !o.date) return false;
+    return viewMode === "month" ? o.date.slice(0,7) === selMonth : o.date.slice(0,4) === selYear;
+  });
+
+  // 成本查詢表
+  var costById = {};
+  products.forEach(function(p){ costById[p.id] = Number(p.cost)||0; });
+
+  // 各店統計
+  var byStore = {};
+  storeList.forEach(function(s){ byStore[s.code] = {name:s.name, rev:0, cost:0, orders:0, qty:0}; });
+  if (!byStore["yl"]) byStore["yl"] = {name:"員林店", rev:0, cost:0, orders:0, qty:0};
+
+  // 分類統計（全店）
+  var byMain = {}, bySub = {}, byProduct = {};
+  var totalRev = 0, totalCost = 0, totalQty = 0;
+
+  paid.forEach(function(o){
+    var st = o.store || "yl";
+    if (!byStore[st]) byStore[st] = {name:getStoreName(st), rev:0, cost:0, orders:0, qty:0};
+    byStore[st].rev += o.total || 0;
+    byStore[st].orders++;
+    totalRev += o.total || 0;
+    (o.cartSnapshot||[]).forEach(function(it){
+      if (it.main === "業外收入") return;
+      var q = it.qty || 0;
+      var lineRev = (it.price||0) * q;
+      var lineCost = (costById[it.id]||0) * q;
+      byStore[st].cost += lineCost;
+      byStore[st].qty += q;
+      totalCost += lineCost;
+      totalQty += q;
+      var mk = it.main || "未分類";
+      if (!byMain[mk]) byMain[mk] = {rev:0, qty:0, cost:0};
+      byMain[mk].rev += lineRev; byMain[mk].qty += q; byMain[mk].cost += lineCost;
+      var sk = mk + " / " + (it.sub || "其他");
+      if (!bySub[sk]) bySub[sk] = {rev:0, qty:0, main:mk};
+      bySub[sk].rev += lineRev; bySub[sk].qty += q;
+      var pk = it.id;
+      if (!byProduct[pk]) byProduct[pk] = {name:it.name, sku:it.sku, rev:0, qty:0, main:mk};
+      byProduct[pk].rev += lineRev; byProduct[pk].qty += q;
+    });
+  });
+
+  var totalProfit = totalRev - totalCost;
+  var marginPct = totalRev > 0 ? Math.round(totalProfit/totalRev*1000)/10 : 0;
+  var storeRows = Object.keys(byStore).map(function(code){
+    var s = byStore[code];
+    return {code:code, name:s.name, rev:s.rev, cost:s.cost, profit:s.rev-s.cost,
+      orders:s.orders, qty:s.qty, avg: s.orders>0 ? Math.round(s.rev/s.orders) : 0};
+  }).sort(function(a,b){ return b.rev - a.rev; });
+
+  var mainRows = Object.keys(byMain).map(function(k){
+    return {name:k, rev:byMain[k].rev, qty:byMain[k].qty, cost:byMain[k].cost};
+  }).sort(function(a,b){ return b.rev - a.rev; });
+
+  var subRows = Object.keys(bySub).map(function(k){
+    return {name:k, rev:bySub[k].rev, qty:bySub[k].qty, main:bySub[k].main};
+  }).sort(function(a,b){ return b.rev - a.rev; }).slice(0, 15);
+
+  var topProducts = Object.keys(byProduct).map(function(k){ return byProduct[k]; })
+    .sort(function(a,b){ return b.rev - a.rev; }).slice(0, 15);
+
+  var maxStoreRev = Math.max.apply(null, storeRows.map(function(s){return s.rev;}).concat([1]));
+  var card = {background:"#fff",border:"1px solid #ece8e2",borderRadius:10,padding:"12px 14px"};
+  var th = {padding:"8px 6px",fontSize:11,color:"#7a7068",fontWeight:600,whiteSpace:"nowrap"};
+  var td = {padding:"7px 6px",fontSize:12,borderBottom:"1px solid #f5f2ec",whiteSpace:"nowrap"};
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:12,overflow:"auto",flex:1}}>
+      {/* 期間選擇 */}
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",flexShrink:0}}>
+        {[["month","指定月份"],["year","年度總覽"]].map(function(x){
+          var on = viewMode===x[0];
+          return (
+            <button key={x[0]} onClick={function(){setViewMode(x[0]);}}
+              style={{padding:"5px 14px",borderRadius:20,border:on?"none":"1px solid #d8d4cc",
+                background:on?"#b8910a":"transparent",color:on?"#fff":"#7a7068",fontSize:12,fontWeight:on?700:500,cursor:"pointer"}}>
+              {x[1]}
+            </button>
+          );
+        })}
+        {viewMode==="month" ? (
+          <select value={selMonth} onChange={function(e){setSelMonth(e.target.value);}}
+            style={{padding:"5px 10px",borderRadius:8,border:"1px solid #d8d4cc",fontSize:12,background:"#fff"}}>
+            {monthList.map(function(mk){
+              var p = mk.split("-");
+              return <option key={mk} value={mk}>{p[0]} 年 {parseInt(p[1])} 月</option>;
+            })}
+          </select>
+        ) : (
+          <select value={selYear} onChange={function(e){setSelYear(e.target.value);}}
+            style={{padding:"5px 10px",borderRadius:8,border:"1px solid #d8d4cc",fontSize:12,background:"#fff"}}>
+            {yearList.map(function(y){ return <option key={y} value={y}>{y} 年</option>; })}
+          </select>
+        )}
+        <span style={{marginLeft:"auto",fontSize:11,color:"#9a968e"}}>共 {paid.length} 筆訂單</span>
+      </div>
+
+      {/* 全店 KPI */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,flexShrink:0}}>
+        {[
+          {label:"全店營收", value:"$"+Math.round(totalRev).toLocaleString(), color:"#b8910a"},
+          {label:"全店毛利", value:"$"+Math.round(totalProfit).toLocaleString(), color:"#2a7a4a"},
+          {label:"毛利率", value:marginPct+"%", color:"#4a7ab8"},
+          {label:"銷售件數", value:totalQty.toLocaleString()+" 件", color:"#2a2520"},
+        ].map(function(k){
+          return (
+            <div key={k.label} style={card}>
+              <div style={{fontSize:10,color:"#9a968e",marginBottom:4}}>{k.label}</div>
+              <div style={{fontSize:20,fontWeight:800,color:k.color}}>{k.value}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 各店對比 */}
+      <div style={card}>
+        <div style={{fontSize:12,fontWeight:700,color:"#2a2520",marginBottom:10}}>▣ 各店業績對比</div>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{borderBottom:"1px solid #ece8e2"}}>
+              <th style={Object.assign({},th,{textAlign:"left"})}>店別</th>
+              <th style={Object.assign({},th,{textAlign:"right"})}>營收</th>
+              <th style={Object.assign({},th,{textAlign:"right"})}>佔比</th>
+              <th style={Object.assign({},th,{textAlign:"right"})}>毛利</th>
+              <th style={Object.assign({},th,{textAlign:"right"})}>毛利率</th>
+              <th style={Object.assign({},th,{textAlign:"center"})}>訂單</th>
+              <th style={Object.assign({},th,{textAlign:"right"})}>客單價</th>
+            </tr>
+          </thead>
+          <tbody>
+            {storeRows.map(function(s,i){
+              var pct = totalRev>0 ? Math.round(s.rev/totalRev*1000)/10 : 0;
+              var mg = s.rev>0 ? Math.round(s.profit/s.rev*1000)/10 : 0;
+              return (
+                <tr key={s.code} style={{background:i%2?"#faf9f6":"#fff"}}>
+                  <td style={Object.assign({},td,{textAlign:"left",fontWeight:700})}>{s.name}</td>
+                  <td style={Object.assign({},td,{textAlign:"right",color:"#b8910a",fontWeight:700})}>${Math.round(s.rev).toLocaleString()}</td>
+                  <td style={Object.assign({},td,{textAlign:"right"})}>
+                    <div style={{display:"flex",alignItems:"center",gap:5,justifyContent:"flex-end"}}>
+                      <div style={{width:50,height:6,background:"#f0ede8",borderRadius:3,overflow:"hidden"}}>
+                        <div style={{width:(maxStoreRev>0?s.rev/maxStoreRev*100:0)+"%",height:"100%",background:"#b8910a"}}></div>
+                      </div>
+                      <span style={{fontSize:11,width:38,textAlign:"right"}}>{pct}%</span>
+                    </div>
+                  </td>
+                  <td style={Object.assign({},td,{textAlign:"right",color:"#2a7a4a"})}>${Math.round(s.profit).toLocaleString()}</td>
+                  <td style={Object.assign({},td,{textAlign:"right",color:"#7a7068"})}>{mg}%</td>
+                  <td style={Object.assign({},td,{textAlign:"center"})}>{s.orders}</td>
+                  <td style={Object.assign({},td,{textAlign:"right"})}>${s.avg.toLocaleString()}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* 大分類佔比 */}
+      <div style={card}>
+        <div style={{fontSize:12,fontWeight:700,color:"#2a2520",marginBottom:10}}>▲ 大分類銷售佔比（全店）</div>
+        {mainRows.length===0 ? (
+          <div style={{textAlign:"center",color:"#c8c4bc",padding:"20px 0",fontSize:12}}>此期間無銷售資料</div>
+        ) : mainRows.map(function(m){
+          var pct = totalRev>0 ? Math.round(m.rev/totalRev*1000)/10 : 0;
+          var mg = m.rev>0 ? Math.round((m.rev-m.cost)/m.rev*1000)/10 : 0;
+          var cc = CAT_COLORS[m.name] || "#b8910a";
+          return (
+            <div key={m.name} style={{marginBottom:9}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:3}}>
+                <span style={{color:cc,fontWeight:700}}>{m.name}</span>
+                <span style={{color:"#7a7068"}}>
+                  ${Math.round(m.rev).toLocaleString()}（{pct}%）・{m.qty} 件・毛利率 {mg}%
+                </span>
+              </div>
+              <div style={{height:8,background:"#f0ede8",borderRadius:4,overflow:"hidden"}}>
+                <div style={{width:pct+"%",height:"100%",background:cc}}></div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 小分類 Top 15 */}
+      <div style={card}>
+        <div style={{fontSize:12,fontWeight:700,color:"#2a2520",marginBottom:10}}>◈ 小分類排行（前 15）</div>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{borderBottom:"1px solid #ece8e2"}}>
+              <th style={Object.assign({},th,{textAlign:"left"})}>分類</th>
+              <th style={Object.assign({},th,{textAlign:"right"})}>營收</th>
+              <th style={Object.assign({},th,{textAlign:"right"})}>佔比</th>
+              <th style={Object.assign({},th,{textAlign:"center"})}>件數</th>
+            </tr>
+          </thead>
+          <tbody>
+            {subRows.length===0 ? (
+              <tr><td colSpan={4} style={{textAlign:"center",color:"#c8c4bc",padding:"20px 0",fontSize:12}}>無資料</td></tr>
+            ) : subRows.map(function(s,i){
+              var pct = totalRev>0 ? Math.round(s.rev/totalRev*1000)/10 : 0;
+              return (
+                <tr key={s.name} style={{background:i%2?"#faf9f6":"#fff"}}>
+                  <td style={Object.assign({},td,{textAlign:"left"})}>
+                    <span style={{color:CAT_COLORS[s.main]||"#b8910a",fontSize:10}}>■ </span>{s.name}
+                  </td>
+                  <td style={Object.assign({},td,{textAlign:"right",color:"#b8910a",fontWeight:700})}>${Math.round(s.rev).toLocaleString()}</td>
+                  <td style={Object.assign({},td,{textAlign:"right",color:"#7a7068"})}>{pct}%</td>
+                  <td style={Object.assign({},td,{textAlign:"center"})}>{s.qty}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* 暢銷商品 Top 15 */}
+      <div style={card}>
+        <div style={{fontSize:12,fontWeight:700,color:"#2a2520",marginBottom:10}}>★ 暢銷商品排行（全店前 15）</div>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{borderBottom:"1px solid #ece8e2"}}>
+              <th style={Object.assign({},th,{textAlign:"center",width:34})}>#</th>
+              <th style={Object.assign({},th,{textAlign:"left"})}>商品</th>
+              <th style={Object.assign({},th,{textAlign:"center"})}>銷量</th>
+              <th style={Object.assign({},th,{textAlign:"right"})}>營收</th>
+              <th style={Object.assign({},th,{textAlign:"right"})}>佔比</th>
+            </tr>
+          </thead>
+          <tbody>
+            {topProducts.length===0 ? (
+              <tr><td colSpan={5} style={{textAlign:"center",color:"#c8c4bc",padding:"20px 0",fontSize:12}}>無資料</td></tr>
+            ) : topProducts.map(function(p,i){
+              var pct = totalRev>0 ? Math.round(p.rev/totalRev*1000)/10 : 0;
+              return (
+                <tr key={p.sku+i} style={{background:i%2?"#faf9f6":"#fff"}}>
+                  <td style={Object.assign({},td,{textAlign:"center",color:i<3?"#b8910a":"#c8c4bc",fontWeight:800})}>{i+1}</td>
+                  <td style={Object.assign({},td,{textAlign:"left"})}>
+                    {p.name}
+                    <div style={{fontSize:9,color:"#9a968e"}}>{p.sku}</div>
+                  </td>
+                  <td style={Object.assign({},td,{textAlign:"center",fontWeight:700})}>{p.qty}</td>
+                  <td style={Object.assign({},td,{textAlign:"right",color:"#b8910a",fontWeight:700})}>${Math.round(p.rev).toLocaleString()}</td>
+                  <td style={Object.assign({},td,{textAlign:"right",color:"#7a7068"})}>{pct}%</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -11275,7 +11609,7 @@ function POSSystem() {
             {activeTab==="orders"    && <OrdersDrawer orders={storeOrders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedStocks={sharedStocks} sharedAddLog={sharedAddLog}/>}
             {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers} currentStore={currentStore} storeList={storeList}/>}
             {activeTab==="purchase"  && <PurchasePanel purchases={storePurchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
-            {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={storeOrders} products={sharedProducts} members={members}/>}
+            {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={storeOrders} allOrders={orders} products={sharedProducts} members={members} storeList={storeList} currentStore={currentStore}/>}
             {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={storeOrders} products={sharedProducts} stocks={sharedStocks} members={members}/>}
             {activeTab==="consign"   && isManager && <ConsignSettlement orders={storeOrders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
             {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={storeStockLog} sharedStocks={sharedStocks} orders={storeOrders} purchases={storePurchases} currentStore={currentStore}/>}
