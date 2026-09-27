@@ -10638,7 +10638,7 @@ function POSSystem() {
   var inp = {background:"#ffffff",border:"1px solid #2e2a22",borderRadius:6,padding:"7px 10px",color:"#2a2520",fontSize:12,outline:"none"};
 
   return (
-    <div style={{fontFamily:"'Noto Sans TC','DM Sans',sans-serif",background:"#f5f4f0",color:"#2a2520",height:"100dvh",minHeight:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+    <div style={{fontFamily:"'Noto Sans TC','DM Sans',sans-serif",background:"#f5f4f0",color:"#2a2520",height:"100dvh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
 
       {/* ── Top Bar ── */}
       <div style={{background:"#ffffff",borderBottom:"1px solid #2e2a22",padding:"0 16px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,height:50,gap:12}}>
@@ -11379,7 +11379,7 @@ function POSSystem() {
           </div>
 
           {/* ── 折扣 + 金額小計 + 付款（固定底部，內部可捲動）── */}
-          <div ref={payAreaRef} style={{flexShrink:0,borderTop:"1px solid #d8d4cc",display:"flex",flexDirection:"column",overflowY:"auto",maxHeight:"72vh"}}>
+          <div ref={payAreaRef} style={{flexShrink:0,borderTop:"1px solid #d8d4cc",display:"flex",flexDirection:"column",overflowY:"auto",maxHeight:"62dvh"}}>
 
             {/* 折扣 */}
             <div style={{padding:"6px 13px",borderBottom:"1px solid #e8e4de"}}>
@@ -11561,7 +11561,7 @@ function POSSystem() {
               )}
             </div>
             {/* 結帳按鈕 — 黏在付款區底部 */}
-            <div style={{padding:"8px 13px 12px",background:"#eeece8",position:"sticky",bottom:0,zIndex:5,boxShadow:"0 -3px 8px rgba(0,0,0,0.06)"}}>
+            <div style={{padding:"8px 13px",paddingBottom:"calc(12px + env(safe-area-inset-bottom, 0px))",background:"#eeece8",position:"sticky",bottom:0,zIndex:5,boxShadow:"0 -3px 8px rgba(0,0,0,0.06)"}}>
               <button onClick={handleCheckout} disabled={!cart.length || !splitOk}
                 style={{width:"100%",padding:"13px 0",borderRadius:9,border:"none",
                   background:!cart.length?"#e0dcd6":!splitOk?"#e8e4de":orderPlaced?"#3a7a30":"#b8910a",
