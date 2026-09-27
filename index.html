@@ -28,6 +28,7 @@
     #sync-toast.show { opacity:1; }
     #sync-toast.error { background:#a03020; }
   </style>
+  <script>/* __BUILD_VERSION__:20260927-0508 */window.__BUILD_VERSION="20260927-0508";</script>
 </head>
 <body>
   <div id="root"></div>
@@ -813,56 +814,69 @@
     imgKeys.forEach(function(k){ localStorage.removeItem(k); });
   })();
 
-  // ── 自動偵測新版：定期比對線上 index.html 的內容，有更新就提示重新整理 ──
+  // ── 版本偵測與強制更新（解決 iOS 桌面捷徑快取舊版的問題）──
   (function setupUpdateCheck(){
     var INDEX_URL = "index.html";
-    var currentHash = null;
-    function simpleHash(str){
-      // 簡單雜湊（不用密碼學等級，只要能偵測變化）
-      var h = 0;
-      for (var i = 0; i < str.length; i++) {
-        h = ((h << 5) - h + str.charCodeAt(i)) | 0;
-      }
-      return h;
+
+    // 取出頁面裡的 BUILD_VERSION 標記
+    function extractVersion(html){
+      var tag = "__BUILD_VERSION__:";
+      var i = html.indexOf(tag);
+      if (i < 0) return null;
+      return html.substr(i + tag.length, 20).split('"')[0].split("*")[0].trim();
     }
-    function checkUpdate(){
-      // 加時間戳避免快取，抓最新的線上版本
+
+    var runningVersion = (typeof window.__BUILD_VERSION === "string") ? window.__BUILD_VERSION : null;
+
+    function forceReload(){
+      // iOS 捷徑模式下 location.reload() 不會繞過快取，必須換網址參數強制重抓
+      var base = location.href.split("?")[0].split("#")[0];
+      location.replace(base + "?v=" + Date.now());
+    }
+
+    function checkUpdate(silent){
       fetch(INDEX_URL + "?_t=" + Date.now(), {cache:"no-store"})
         .then(function(r){ return r.text(); })
         .then(function(html){
-          var h = simpleHash(html);
-          if (currentHash === null) {
-            currentHash = h; // 第一次：記錄目前版本
-          } else if (h !== currentHash) {
-            // 偵測到線上版本變了 → 提示
-            showUpdateBanner();
+          var latest = extractVersion(html);
+          if (!latest || !runningVersion) return;
+          if (latest !== runningVersion) {
+            showUpdateBanner(latest);
+          } else if (!silent && window.showToast) {
+            window.showToast("✓ 已是最新版本 (" + runningVersion + ")");
           }
         })
         .catch(function(){});
     }
-    function showUpdateBanner(){
-      if (document.getElementById("update-banner")) return; // 已顯示過
+    window.checkAppUpdate = function(){ checkUpdate(false); };
+
+    function showUpdateBanner(latestVer){
+      if (document.getElementById("update-banner")) return;
       var bar = document.createElement("div");
       bar.id = "update-banner";
-      bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#b8910a;color:#fff;padding:12px 16px;display:flex;align-items:center;justify-content:center;gap:14px;font-size:14px;box-shadow:0 -2px 10px rgba(0,0,0,0.2)";
+      bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#b8910a;color:#fff;padding:14px 16px;padding-bottom:calc(14px + env(safe-area-inset-bottom,0px));display:flex;align-items:center;justify-content:center;gap:14px;font-size:14px;box-shadow:0 -2px 10px rgba(0,0,0,0.2)";
       var msg = document.createElement("span");
       msg.textContent = "🎉 有新版本可用";
       var btn = document.createElement("button");
       btn.textContent = "立即更新";
-      btn.style.cssText = "background:#fff;color:#b8910a;border:none;border-radius:8px;padding:6px 16px;font-size:13px;font-weight:700;cursor:pointer";
-      btn.onclick = function(){ location.reload(true); };
+      btn.style.cssText = "background:#fff;color:#b8910a;border:none;border-radius:8px;padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer";
+      btn.onclick = forceReload;
       var later = document.createElement("button");
       later.textContent = "稍後";
-      later.style.cssText = "background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.6);border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer";
+      later.style.cssText = "background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.6);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer";
       later.onclick = function(){ bar.style.display = "none"; };
       bar.appendChild(msg);
       bar.appendChild(btn);
       bar.appendChild(later);
       document.body.appendChild(bar);
     }
-    // 開頁 3 秒後記錄目前版本，之後每 5 分鐘檢查一次
-    setTimeout(checkUpdate, 3000);
-    setInterval(checkUpdate, 5 * 60 * 1000);
+
+    // 開啟後 3 秒檢查一次，之後每 5 分鐘、以及每次切回頁面時檢查
+    setTimeout(function(){ checkUpdate(true); }, 3000);
+    setInterval(function(){ checkUpdate(true); }, 5 * 60 * 1000);
+    document.addEventListener("visibilitychange", function(){
+      if (!document.hidden) checkUpdate(true);
+    });
   })();
 
   window.firebaseReady = false;
@@ -10752,6 +10766,27 @@ function POSSystem() {
                   </div>
                 </div>
               )}
+
+              {/* 版本檢查 */}
+              <button onClick={function(){
+                  if (window.checkAppUpdate) {
+                    window.checkAppUpdate();
+                    setShowMenu(false);
+                  }
+                }}
+                style={{width:"100%",padding:"11px 14px",border:"none",background:"transparent",
+                  cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
+                  borderBottom:"1px solid #f0ede8"}}
+                onMouseEnter={function(e){e.currentTarget.style.background="#f8f7f4";}}
+                onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
+                <span style={{fontSize:18,width:24,textAlign:"center"}}>🔄</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:12,fontWeight:600,color:"#2a2520"}}>檢查更新</div>
+                  <div style={{fontSize:10,color:"#9a968e"}}>
+                    目前版本 {typeof window!=="undefined" && window.__BUILD_VERSION ? window.__BUILD_VERSION : "—"}
+                  </div>
+                </div>
+              </button>
 
               {/* 立即同步（市集離線後回店裡使用） */}
               <button onClick={function(){
