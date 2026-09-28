@@ -28,7 +28,7 @@
     #sync-toast.show { opacity:1; }
     #sync-toast.error { background:#a03020; }
   </style>
-  <script>/* __BUILD_VERSION__:20260927-0508 */window.__BUILD_VERSION="20260927-0508";</script>
+  <script>/* __BUILD_VERSION__:20260928-1859 */window.__BUILD_VERSION="20260928-1859";</script>
 </head>
 <body>
   <div id="root"></div>
@@ -1561,6 +1561,16 @@ function CatalogPanel(props) {
   var editSubOpts = editForm ? (CAT_STRUCT[editForm.main]||[]) : [];
   function openEdit(p){ setEditId(p.id); setEditForm(Object.assign({},p)); setAdjustId(null); setShowAdd(false); }
   function saveEdit(){
+    // 貨號唯一性把關：同貨號會讓庫存、異動記錄混在一起（歷史上已造成多次庫存錯亂）
+    // 比對範圍包含「未驗收採購單上的待入庫新品」，避免入庫時才撞號
+    var skuNorm = String(editForm.sku||"").trim().toLowerCase();
+    if (!skuNorm) { alert("⚠️ 貨號不可空白"); return; }
+    var hit = reservedSku[skuNorm];
+    if (hit && !(hit.type === "product" && hit.id === editId)) {
+      alert("⚠️ 貨號「" + editForm.sku + "」已被" + skuOwnerLabel(editForm.sku) + "使用。\n\n" +
+            "同貨號會導致庫存與異動記錄混在一起，請改用其他貨號。");
+      return;
+    }
     setProducts(function(prev){ return prev.map(function(p){
       if (p.id !== editId) return p;
       var updated = Object.assign({},editForm,{
@@ -1670,6 +1680,30 @@ function CatalogPanel(props) {
   var lbl = {fontSize:10,color:"#7a7068",display:"block",marginBottom:3};
 
   // ── 篩選 ──
+  // ── 貨號占用表：商品清單 + 未驗收採購單的待入庫新品 ──
+  // 採購單上的新品貨號等同「已預留」，新增商品時必須避開，
+  // 否則入庫時會與現有商品撞號，造成庫存與異動記錄混在一起
+  var reservedSku = (function(){
+    var m = {};
+    products.forEach(function(p){
+      if (p && p.sku) m[String(p.sku).trim().toLowerCase()] = {type:"product", name:p.name, id:p.id};
+    });
+    (props.purchases || []).forEach(function(po){
+      if (!po || po.status === "completed") return;
+      (po.items || []).forEach(function(it){
+        if (!it || !it.isNew || (it.stockedQty > 0) || !it.sku) return;
+        var s = String(it.sku).trim().toLowerCase();
+        if (!m[s]) m[s] = {type:"po", name:it.name, po:po.no};
+      });
+    });
+    return m;
+  })();
+  function skuOwnerLabel(s){
+    var hit = reservedSku[String(s||"").trim().toLowerCase()];
+    if (!hit) return null;
+    return hit.type === "po" ? "採購單 " + hit.po + " 的「" + hit.name + "」" : "商品「" + hit.name + "」";
+  }
+
   var subOptions = filterMain ? (CAT_STRUCT[filterMain]||[]) : [];
 
   // ── 分頁 ──
@@ -2098,6 +2132,24 @@ function CatalogPanel(props) {
         });
       }
       if(items.length===0){alert("無法解析商品資料");return;}
+
+      // ── 貨號唯一性把關（批次匯入）──
+      // 比對範圍包含「未驗收採購單上的待入庫新品」，避免入庫時才撞號
+      var seenSku = {};
+      var skuErrs = [];
+      items.forEach(function(it, i){
+        var s = String(it.sku||"").trim().toLowerCase();
+        if (!s) { skuErrs.push("第 "+(i+1)+" 筆「"+it.name+"」未填貨號"); return; }
+        if (seenSku[s]) { skuErrs.push("第 "+(i+1)+" 筆「"+it.name+"」貨號 "+it.sku+" 與檔案內第 "+seenSku[s]+" 筆重複"); return; }
+        seenSku[s] = i+1;
+        if (reservedSku[s]) skuErrs.push("第 "+(i+1)+" 筆「"+it.name+"」貨號 "+it.sku+" 已被"+skuOwnerLabel(it.sku)+"使用");
+      });
+      if (skuErrs.length > 0) {
+        alert("⚠️ 貨號有問題，已取消匯入：\n\n" + skuErrs.slice(0,15).join("\n") +
+              (skuErrs.length>15 ? "\n\n...共 "+skuErrs.length+" 個問題" : "") +
+              "\n\n同貨號會導致庫存與異動記錄混亂，請修正後重新匯入。");
+        return;
+      }
       setBatchPreview(items);
       setShowBatchNew(true);
     };
@@ -2134,7 +2186,11 @@ function CatalogPanel(props) {
 
   // ── 單一商品新增 ──
   var addSubOpts = CAT_STRUCT[newForm.main]||[];
-  var skuDuplicate = newForm.sku ? products.some(function(p){ return p.sku === newForm.sku.trim(); }) : false;
+  var skuDuplicate = (function(){
+    var s = String(newForm.sku||"").trim().toLowerCase();
+    if (!s) return false;
+    return !!reservedSku[s];
+  })();
   function setNF(k,v){ setNewForm(function(f){ var n=Object.assign({},f); n[k]=v; return n; }); }
   // 自動產生貨號（同分類下找空缺號碼，保留前導零）
   function autoGenSku() {
@@ -2142,8 +2198,10 @@ function CatalogPanel(props) {
     if (!subCat) { alert("請先選擇小分類"); return; }
 
     // 全店所有貨號（用於最終唯一性檢查）
+    // 含未驗收採購單預留的新品貨號，避免自動產生的號碼跟採購單撞號
     var allSkuGlobal = {};
-    products.forEach(function(p){ if(p && p.sku) allSkuGlobal[p.sku] = true; });
+    Object.keys(reservedSku).forEach(function(s){ allSkuGlobal[s] = true; });
+    products.forEach(function(p){ if(p && p.sku) allSkuGlobal[String(p.sku).trim().toLowerCase()] = true; });
 
     // 同分類的貨號（用於找格式與號碼）
     var sameCat = products.filter(function(p){
@@ -2204,7 +2262,7 @@ function CatalogPanel(props) {
       while (safety < 9999) {
         var trySku = makeSku(bestFmt, candidate);
         // 同分類沒用過 且 全店沒用過
-        if (bestFmt.nums.indexOf(candidate) === -1 && !allSkuGlobal[trySku]) {
+        if (bestFmt.nums.indexOf(candidate) === -1 && !allSkuGlobal[String(trySku).trim().toLowerCase()]) {
           newSku = trySku;
           break;
         }
@@ -2217,7 +2275,7 @@ function CatalogPanel(props) {
     if (!newSku) {
       do {
         newSku = "NEW" + String(Date.now()).slice(-6) + Math.floor(Math.random()*10);
-      } while (allSkuGlobal[newSku]);
+      } while (allSkuGlobal[String(newSku).trim().toLowerCase()]);
     }
 
     setNF("sku", newSku);
@@ -2525,7 +2583,9 @@ function CatalogPanel(props) {
           </div>
           <div style={{display:"flex",gap:8,justifyContent:"flex-end",alignItems:"center"}}>
             {skuDuplicate && (
-              <span style={{fontSize:11,color:"#d0552f",fontWeight:600}}>⚠️ 貨號「{newForm.sku}」已存在，請重新輸入</span>
+              <span style={{fontSize:11,color:"#d0552f",fontWeight:600}}>
+                ⚠️ 貨號「{newForm.sku}」已被{skuOwnerLabel(newForm.sku)}使用，請換一個
+              </span>
             )}
             {(!newForm.name||!newForm.sku) && !skuDuplicate && (
               <span style={{fontSize:10,color:"#9a968e"}}>* 商品名稱與貨號為必填</span>
@@ -2594,7 +2654,21 @@ function CatalogPanel(props) {
             {/* 欄位區 */}
             <div style={{flex:1,display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
               <div><label style={lbl}>商品名稱</label><input value={editForm.name} onChange={function(e){setEF("name",e.target.value);}} style={inp}/></div>
-              <div><label style={lbl}>貨號</label><input value={editForm.sku} onChange={function(e){setEF("sku",e.target.value);}} style={inp}/></div>
+              <div>
+                <label style={lbl}>
+                  貨號
+                  {(function(){
+                    var s = String(editForm.sku||"").trim().toLowerCase();
+                    if (!s) return null;
+                    var hit = reservedSku[s];
+                    if (hit && !(hit.type === "product" && hit.id === editId)) {
+                      return <span style={{color:"#d0552f",fontWeight:700}}> ⚠️ 已被{skuOwnerLabel(editForm.sku)}使用</span>;
+                    }
+                    return <span style={{color:"#2a7a4a",fontWeight:700}}> ✓</span>;
+                  })()}
+                </label>
+                <input value={editForm.sku} onChange={function(e){setEF("sku",e.target.value);}} style={inp}/>
+              </div>
               <div><label style={lbl}>售價 (NT$)</label><input type="number" value={editForm.price} onChange={function(e){setEF("price",e.target.value);}} style={inp}/></div>
               {isManager && <div><label style={lbl}>成本 (NT$) 🔒</label><input type="number" value={editForm.cost||""} onChange={function(e){setEF("cost",e.target.value);}} style={inp}/></div>}
               <div><label style={lbl}>大分類</label>
@@ -10767,6 +10841,69 @@ function POSSystem() {
                 </div>
               )}
 
+              {/* 貨號健檢（店長） */}
+              {isManager && (
+                <button onClick={function(){
+                    var map = {};
+                    sharedProducts.forEach(function(p){
+                      if (!p || !p.sku) return;
+                      var s = String(p.sku).trim().toLowerCase();
+                      if (!map[s]) map[s] = [];
+                      map[s].push(p);
+                    });
+                    var dups = Object.keys(map).filter(function(k){ return map[k].length > 1; });
+                    var noSku = sharedProducts.filter(function(p){ return p && !String(p.sku||"").trim(); });
+                    // 未驗收採購單的待入庫新品 vs 現有商品撞號（入庫時才爆炸，要提前抓）
+                    var poConflicts = [];
+                    (purchases||[]).forEach(function(po){
+                      if (!po || po.status === "completed") return;
+                      (po.items||[]).forEach(function(it){
+                        if (!it || !it.isNew || (it.stockedQty > 0) || !it.sku) return;
+                        var s2 = String(it.sku).trim().toLowerCase();
+                        if (map[s2]) poConflicts.push({sku:it.sku, poName:it.name, poNo:po.no, prodName:map[s2][0].name});
+                      });
+                    });
+                    if (dups.length === 0 && noSku.length === 0 && poConflicts.length === 0) {
+                      alert("\u2713 \u8ca8\u865f\u5065\u6aa2\u901a\u904e\n\n\u5171 " + sharedProducts.length + " \u500b\u5546\u54c1\uff0c\u6c92\u6709\u91cd\u8907\u3001\u7a7a\u767d\u6216\u8207\u63a1\u8cfc\u55ae\u885d\u7a81\u7684\u8ca8\u865f\u3002");
+                    } else {
+                      var msg = "\u26a0\ufe0f \u767c\u73fe\u8ca8\u865f\u554f\u984c\uff1a\n\n";
+                      if (dups.length > 0) {
+                        msg += "\u3010\u5546\u54c1\u6e05\u55ae\u91cd\u8907 " + dups.length + " \u7d44\u3011\n";
+                        dups.slice(0,8).forEach(function(k){
+                          msg += "\u30fb" + map[k][0].sku + "\uff1a" + map[k].map(function(p){ return p.name; }).join("\u3001") + "\n";
+                        });
+                        if (dups.length > 8) msg += "...\u5171 " + dups.length + " \u7d44\n";
+                        msg += "\n";
+                      }
+                      if (poConflicts.length > 0) {
+                        msg += "\u3010\u63a1\u8cfc\u55ae\u8207\u73fe\u6709\u5546\u54c1\u649e\u865f " + poConflicts.length + " \u7b46\u3011\n";
+                        poConflicts.slice(0,8).forEach(function(c){
+                          msg += "\u30fb" + c.sku + "\uff1a\u63a1\u8cfc\u55ae " + c.poNo + " \u7684\u300c" + c.poName + "\u300d\u2194 \u73fe\u6709\u300c" + c.prodName + "\u300d\n";
+                        });
+                        if (poConflicts.length > 8) msg += "...\u5171 " + poConflicts.length + " \u7b46\n";
+                        msg += "\n\u203b \u9019\u4e9b\u63a1\u8cfc\u55ae\u5165\u5eab\u6642\u6703\u649e\u865f\uff0c\u8acb\u5148\u6539\u6389\u5176\u4e2d\u4e00\u65b9\u7684\u8ca8\u865f\n\n";
+                      }
+                      if (noSku.length > 0) {
+                        msg += "\u3010\u672a\u586b\u8ca8\u865f " + noSku.length + " \u500b\u3011\n";
+                        noSku.slice(0,6).forEach(function(p){ msg += "\u30fb" + p.name + "\n"; });
+                      }
+                      alert(msg);
+                    }
+                    setShowMenu(false);
+                  }}
+                  style={{width:"100%",padding:"11px 14px",border:"none",background:"transparent",
+                    cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
+                    borderBottom:"1px solid #f0ede8"}}
+                  onMouseEnter={function(e){e.currentTarget.style.background="#f8f7f4";}}
+                  onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
+                  <span style={{fontSize:18,width:24,textAlign:"center"}}>🔍</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:600,color:"#2a2520"}}>貨號健檢 🔒</div>
+                    <div style={{fontSize:10,color:"#9a968e"}}>檢查是否有重複或空白的貨號</div>
+                  </div>
+                </button>
+              )}
+
               {/* 版本檢查 */}
               <button onClick={function(){
                   if (window.checkAppUpdate) {
@@ -11640,7 +11777,7 @@ function POSSystem() {
         {/* ════ 商品 / 庫存 / 訂單 / 會員 ════ */}
         {activeTab !== "pos" && (
           <div style={{flex:1,overflow:"hidden",padding:"16px 20px",display:"flex",flexDirection:"column"}}>
-            {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={storeStockLog} sharedAddLog={sharedAddLog} currentStore={currentStore} storeList={storeList}/>}
+            {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={storeStockLog} sharedAddLog={sharedAddLog} currentStore={currentStore} storeList={storeList} purchases={purchases}/>}
             {activeTab==="orders"    && <OrdersDrawer orders={storeOrders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedStocks={sharedStocks} sharedAddLog={sharedAddLog}/>}
             {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers} currentStore={currentStore} storeList={storeList}/>}
             {activeTab==="purchase"  && <PurchasePanel purchases={storePurchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
