@@ -28,7 +28,7 @@
     #sync-toast.show { opacity:1; }
     #sync-toast.error { background:#a03020; }
   </style>
-  <script>/* __BUILD_VERSION__:20260928-1859 */window.__BUILD_VERSION="20260928-1859";</script>
+  <script>/* __BUILD_VERSION__:20260929-0910 */window.__BUILD_VERSION="20260929-0910";</script>
 </head>
 <body>
   <div id="root"></div>
@@ -834,21 +834,34 @@
       location.replace(base + "?v=" + Date.now());
     }
 
-    function checkUpdate(silent){
+    // autoMode：開啟時偵測到新版直接自動重載（桌面捷徑每次冷啟都吃快取，
+    // 靠使用者手動改網址或按按鈕太麻煩，改成自動處理）
+    function checkUpdate(silent, autoMode){
       fetch(INDEX_URL + "?_t=" + Date.now(), {cache:"no-store"})
         .then(function(r){ return r.text(); })
         .then(function(html){
           var latest = extractVersion(html);
           if (!latest || !runningVersion) return;
-          if (latest !== runningVersion) {
-            showUpdateBanner(latest);
-          } else if (!silent && window.showToast) {
-            window.showToast("✓ 已是最新版本 (" + runningVersion + ")");
+          if (latest === runningVersion) {
+            if (!silent && window.showToast) window.showToast("\u2713 \u5df2\u662f\u6700\u65b0\u7248\u672c (" + runningVersion + ")");
+            return;
           }
+          if (autoMode) {
+            // 防迴圈：同一個版本只自動重載一次，失敗就退回手動橫幅
+            var tried = null;
+            try { tried = sessionStorage.getItem("chocoolee-autoreload"); } catch(e){}
+            if (tried !== latest) {
+              try { sessionStorage.setItem("chocoolee-autoreload", latest); } catch(e){}
+              if (window.showToast) window.showToast("\ud83d\udd04 \u6b63\u5728\u66f4\u65b0\u81f3\u65b0\u7248...");
+              setTimeout(forceReload, 600);
+              return;
+            }
+          }
+          showUpdateBanner(latest);
         })
         .catch(function(){});
     }
-    window.checkAppUpdate = function(){ checkUpdate(false); };
+    window.checkAppUpdate = function(){ checkUpdate(false, false); };
 
     function showUpdateBanner(latestVer){
       if (document.getElementById("update-banner")) return;
@@ -872,10 +885,10 @@
     }
 
     // 開啟後 3 秒檢查一次，之後每 5 分鐘、以及每次切回頁面時檢查
-    setTimeout(function(){ checkUpdate(true); }, 3000);
-    setInterval(function(){ checkUpdate(true); }, 5 * 60 * 1000);
+    setTimeout(function(){ checkUpdate(true, true); }, 2000);
+    setInterval(function(){ checkUpdate(true, false); }, 5 * 60 * 1000);
     document.addEventListener("visibilitychange", function(){
-      if (!document.hidden) checkUpdate(true);
+      if (!document.hidden) checkUpdate(true, false);
     });
   })();
 
