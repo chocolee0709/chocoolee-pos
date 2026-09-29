@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20260929-0931 */window.__BUILD_VERSION="20260929-0931";</script>
+  <script>/* __BUILD_VERSION__:20260929-1033 */window.__BUILD_VERSION="20260929-1033";</script>
 </head>
 <body>
 
@@ -1285,7 +1285,7 @@ const CAT_STRUCT = {
   "居家香氛":["旅行蠟燭","經典蠟燭","噴霧","擴香","精油","香氛週邊","禮盒","擴香石"],
   "生活選物":["生活小物","餐具系列","擦手巾","不鏽鋼","藤編商品","清潔用具","擺件","腳踏墊","傢俱傢電","寵物用品","亞鉛製品","年節商品","塔羅牌","植物盆器"],
   "寄售":["健康愉筷","SU VIDA","有魚","草石陶事","白玥窯","解憂設計","半半","綠果庭院","得寵","好好生活"],
-  "流行配件":["絲巾","成人帽","飾品","包包","襪子","兒童配件","玩偶"],
+  "流行配件":["絲巾","成人帽","飾品","髮飾","耳環","手飾","項鍊","胸針","包包","襪子","兒童配件","玩偶"],
   "IP商品":["密詩佛陀","週邊商品"],
   "雞毛撣子":["雞毛撣子"],
   "業外收入":["業外收入","備品"]
@@ -5256,7 +5256,7 @@ function PurchaseEditor(props) {
       </div>
 
       {showAddItem && (
-        <ItemPicker addingNew={addingNew} products={products}
+        <ItemPicker addingNew={addingNew} products={products} purchases={props.purchases}
           existingSkus={(function(){
             // 自己這張單的貨號
             var skus=(po.items||[]).map(function(i){return i.sku;}).filter(function(s){return s&&String(s).trim();});
@@ -5538,9 +5538,17 @@ function ItemPicker(props) {
   // 自動產生貨號（同分類下找空缺號碼）
   function autoGenerateSku() {
     // 全店所有貨號（最終唯一性檢查）
+    // 含：商品清單 + 本單已加入的品項 + 其他未驗收採購單上的待入庫新品
     var allSkuGlobal = {};
-    products.forEach(function(p){ if(p && p.sku) allSkuGlobal[p.sku] = true; });
-    existingSkus.forEach(function(s){ if(s) allSkuGlobal[s] = true; });
+    function mark(s){ if(s) allSkuGlobal[String(s).trim().toLowerCase()] = true; }
+    products.forEach(function(p){ if(p) mark(p.sku); });
+    existingSkus.forEach(mark);
+    (props.purchases || []).forEach(function(po){
+      if (!po || po.status === "completed") return;
+      (po.items || []).forEach(function(it){
+        if (it && it.isNew && !(it.stockedQty > 0)) mark(it.sku);
+      });
+    });
 
     // 同分類貨號（找格式與號碼）
     var sameCat = products.filter(function(p){
@@ -5597,7 +5605,7 @@ function ItemPicker(props) {
       var safety = 0;
       while (safety < 9999) {
         var trySku = makeSku(bestFmt, candidate);
-        if (bestFmt.nums.indexOf(candidate) === -1 && !allSkuGlobal[trySku]) {
+        if (bestFmt.nums.indexOf(candidate) === -1 && !allSkuGlobal[String(trySku).trim().toLowerCase()]) {
           newSku = trySku;
           break;
         }
@@ -5608,7 +5616,7 @@ function ItemPicker(props) {
     if (!newSku) {
       do {
         newSku = "NEW" + String(Date.now()).slice(-6) + Math.floor(Math.random()*10);
-      } while (allSkuGlobal[newSku]);
+      } while (allSkuGlobal[String(newSku).trim().toLowerCase()]);
     }
     setNfField("sku", newSku);
   }
@@ -10871,69 +10879,6 @@ function POSSystem() {
                     </div>
                   </div>
                 </div>
-              )}
-
-              {/* 貨號健檢（店長） */}
-              {isManager && (
-                <button onClick={function(){
-                    var map = {};
-                    sharedProducts.forEach(function(p){
-                      if (!p || !p.sku) return;
-                      var s = String(p.sku).trim().toLowerCase();
-                      if (!map[s]) map[s] = [];
-                      map[s].push(p);
-                    });
-                    var dups = Object.keys(map).filter(function(k){ return map[k].length > 1; });
-                    var noSku = sharedProducts.filter(function(p){ return p && !String(p.sku||"").trim(); });
-                    // 未驗收採購單的待入庫新品 vs 現有商品撞號（入庫時才爆炸，要提前抓）
-                    var poConflicts = [];
-                    (purchases||[]).forEach(function(po){
-                      if (!po || po.status === "completed") return;
-                      (po.items||[]).forEach(function(it){
-                        if (!it || !it.isNew || (it.stockedQty > 0) || !it.sku) return;
-                        var s2 = String(it.sku).trim().toLowerCase();
-                        if (map[s2]) poConflicts.push({sku:it.sku, poName:it.name, poNo:po.no, prodName:map[s2][0].name});
-                      });
-                    });
-                    if (dups.length === 0 && noSku.length === 0 && poConflicts.length === 0) {
-                      alert("\u2713 \u8ca8\u865f\u5065\u6aa2\u901a\u904e\n\n\u5171 " + sharedProducts.length + " \u500b\u5546\u54c1\uff0c\u6c92\u6709\u91cd\u8907\u3001\u7a7a\u767d\u6216\u8207\u63a1\u8cfc\u55ae\u885d\u7a81\u7684\u8ca8\u865f\u3002");
-                    } else {
-                      var msg = "\u26a0\ufe0f \u767c\u73fe\u8ca8\u865f\u554f\u984c\uff1a\n\n";
-                      if (dups.length > 0) {
-                        msg += "\u3010\u5546\u54c1\u6e05\u55ae\u91cd\u8907 " + dups.length + " \u7d44\u3011\n";
-                        dups.slice(0,8).forEach(function(k){
-                          msg += "\u30fb" + map[k][0].sku + "\uff1a" + map[k].map(function(p){ return p.name; }).join("\u3001") + "\n";
-                        });
-                        if (dups.length > 8) msg += "...\u5171 " + dups.length + " \u7d44\n";
-                        msg += "\n";
-                      }
-                      if (poConflicts.length > 0) {
-                        msg += "\u3010\u63a1\u8cfc\u55ae\u8207\u73fe\u6709\u5546\u54c1\u649e\u865f " + poConflicts.length + " \u7b46\u3011\n";
-                        poConflicts.slice(0,8).forEach(function(c){
-                          msg += "\u30fb" + c.sku + "\uff1a\u63a1\u8cfc\u55ae " + c.poNo + " \u7684\u300c" + c.poName + "\u300d\u2194 \u73fe\u6709\u300c" + c.prodName + "\u300d\n";
-                        });
-                        if (poConflicts.length > 8) msg += "...\u5171 " + poConflicts.length + " \u7b46\n";
-                        msg += "\n\u203b \u9019\u4e9b\u63a1\u8cfc\u55ae\u5165\u5eab\u6642\u6703\u649e\u865f\uff0c\u8acb\u5148\u6539\u6389\u5176\u4e2d\u4e00\u65b9\u7684\u8ca8\u865f\n\n";
-                      }
-                      if (noSku.length > 0) {
-                        msg += "\u3010\u672a\u586b\u8ca8\u865f " + noSku.length + " \u500b\u3011\n";
-                        noSku.slice(0,6).forEach(function(p){ msg += "\u30fb" + p.name + "\n"; });
-                      }
-                      alert(msg);
-                    }
-                    setShowMenu(false);
-                  }}
-                  style={{width:"100%",padding:"11px 14px",border:"none",background:"transparent",
-                    cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
-                    borderBottom:"1px solid #f0ede8"}}
-                  onMouseEnter={function(e){e.currentTarget.style.background="#f8f7f4";}}
-                  onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
-                  <span style={{fontSize:18,width:24,textAlign:"center"}}>🔍</span>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:12,fontWeight:600,color:"#2a2520"}}>貨號健檢 🔒</div>
-                    <div style={{fontSize:10,color:"#9a968e"}}>檢查是否有重複或空白的貨號</div>
-                  </div>
-                </button>
               )}
 
               {/* 版本檢查 */}
