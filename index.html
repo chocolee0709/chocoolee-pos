@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
+
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
@@ -28,9 +29,16 @@
     #sync-toast.show { opacity:1; }
     #sync-toast.error { background:#a03020; }
   </style>
-  <script>/* __BUILD_VERSION__:20260929-0910 */window.__BUILD_VERSION="20260929-0910";</script>
+  
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+  <script>/* __BUILD_VERSION__:20260929-0931 */window.__BUILD_VERSION="20260929-0931";</script>
 </head>
 <body>
+
   <div id="root"></div>
   <div id="sync-toast">☁️ 已同步</div>
   <div id="import-btn" style="position:fixed;bottom:20px;right:20px;z-index:8888;display:none;">
@@ -66,13 +74,8 @@
     </div>
   </div>
 
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" onerror="this.onerror=null;var s=document.createElement('script');s.src='https://unpkg.com/@babel/standalone@7.23.5/babel.min.js';document.head.appendChild(s);"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script>
 
-  <script>
   var FB      = "https://chocoolee-pos-default-rtdb.firebaseio.com";
   var FB_KEY  = "AIzaSyDqJZiwefGVMiTVusd-Z1jTuQByaMS_i2w";
   var FB_USER = "chocolee0709@gmail.com";
@@ -1184,9 +1187,10 @@
       ptrDist = 0;
     }
   });
-  </script>
+  
+</script>
 
-  <script type="text/babel" data-presets="react">
+<script type="text/babel" data-presets="react">
 
 const { useState, useMemo, useEffect, useRef } = React;
 
@@ -1237,6 +1241,21 @@ function getStoreName(code) {
 function stocksNodeOf(code) { return code === "yl" ? "stocks" : "stocks-" + code; }
 // 採購單品項照片：走獨立 Firebase 節點（不進 localStorage/主陣列），避免
 // 「空間不足自動清理」誤刪照片、也避免多裝置互蓋時照片遺失
+// 商品照片：資料裡存的是 "__img__" 標記（省 localStorage 空間），
+// 真正的圖存在 Firebase 獨立節點、下載後放記憶體快取 __fbImages。
+// 顯示時一律透過這個函式解析，避免直接把標記當成圖片網址。
+function resolveProductImage(p) {
+  if (!p) return "";
+  var img = p.image;
+  if (img && img.indexOf("data:") === 0) return img;   // 剛上傳、尚未同步
+  if (window.__fbImages && window.__fbImages[String(p.id)]) return window.__fbImages[String(p.id)];
+  try {
+    var local = localStorage.getItem("chocoolee-product-images/" + String(p.id));
+    if (local && local.indexOf("data:") === 0) return local;
+  } catch(e) {}
+  return "";
+}
+
 function resolvePOImage(poNo, idx, item) {
   if (!item) return "";
   var itemImage = typeof item === "string" ? item : item.image;
@@ -2628,8 +2647,8 @@ function CatalogPanel(props) {
             <div style={{flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
               <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
                 <div style={{position:"relative"}}>
-                  {editForm.image ? (
-                    <img src={editForm.image} alt="預覽" style={{width:110,height:110,objectFit:"cover",borderRadius:8,border:"2px solid #4a8ec0"}}/>
+                  {(editForm.image && editForm.image.indexOf("data:")===0 ? editForm.image : resolveProductImage({id:editId, image:editForm.image})) ? (
+                    <img src={editForm.image && editForm.image.indexOf("data:")===0 ? editForm.image : resolveProductImage({id:editId, image:editForm.image})} alt="預覽" style={{width:110,height:110,objectFit:"cover",borderRadius:8,border:"2px solid #4a8ec0"}}/>
                   ) : (
                     <label style={{cursor:"pointer"}}>
                       <div style={{width:110,height:110,borderRadius:8,border:"2px dashed #d8d4cc",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:4,background:"#ffffff"}}>
@@ -2801,8 +2820,8 @@ function CatalogPanel(props) {
                   <td style={{padding:"7px 8px 7px 0",fontFamily:"monospace",fontSize:10,color:"#9a968e",borderBottom:"1px solid #f0ede8"}}>{p.sku}</td>
                   <td style={{padding:"7px 8px 7px 0",borderBottom:"1px solid #f0ede8",maxWidth:200}}>
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
-                      {p.image ? (
-                        <img src={p.image} alt="" onClick={function(){openEdit(p);}} title="點擊編輯商品"
+                      {resolveProductImage(p) ? (
+                        <img src={resolveProductImage(p)} alt="" onClick={function(){openEdit(p);}} title="點擊編輯商品"
                           style={{width:52,height:52,objectFit:"cover",borderRadius:6,flexShrink:0,border:"1px solid #e8e4de",cursor:"pointer"}}/>
                       ) : (
                         <div onClick={function(){openEdit(p);}} title="點擊編輯商品"
@@ -3323,8 +3342,8 @@ function ListingManager(props) {
                     <input type="checkbox" checked={isChk} readOnly style={{cursor:"pointer"}}/>
                   </td>
                   <td style={{padding:"5px 6px",textAlign:"center"}}>
-                    {p.image ? (
-                      <img src={p.image} alt="" style={{width:44,height:44,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de",display:"block",opacity:off?0.45:1}}/>
+                    {resolveProductImage(p) ? (
+                      <img src={resolveProductImage(p)} alt="" style={{width:44,height:44,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de",display:"block",opacity:off?0.45:1}}/>
                     ) : (
                       <div style={{width:44,height:44,borderRadius:6,background:"#f5f4f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,color:"#c8c4bc"}}>📦</div>
                     )}
@@ -5737,8 +5756,8 @@ function ItemPicker(props) {
                   }} style={{padding:"6px 10px",borderBottom:"1px solid #f0ede8",cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",gap:8}}
                     onMouseEnter={function(e){e.currentTarget.style.background="#f8f8f8";}}
                     onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
-                    {p.image ? (
-                      <img src={p.image} alt="" style={{width:60,height:60,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de"}}/>
+                    {resolveProductImage(p) ? (
+                      <img src={resolveProductImage(p)} alt="" style={{width:60,height:60,objectFit:"cover",borderRadius:6,border:"1px solid #e8e4de"}}/>
                     ) : (
                       <div style={{width:60,height:60,borderRadius:6,background:"#f5f4f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#d8d4cc"}}>📦</div>
                     )}
@@ -11476,9 +11495,9 @@ function POSSystem() {
                     {inCart && (
                       <div style={{position:"absolute",top:6,right:6,background:cc,color:"#ffffff",borderRadius:"50%",width:21,height:21,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,zIndex:1,boxShadow:"0 2px 6px "+cc+"55"}}>{inCart.qty}</div>
                     )}
-                    {p.image && (
+                    {resolveProductImage(p) && (
                       <div style={{width:"100%",height:90,marginBottom:2,borderRadius:8,overflow:"hidden",background:"#f8f7f4"}}>
-                        <img src={p.image} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+                        <img src={resolveProductImage(p)} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}/>
                       </div>
                     )}
                     <div style={{fontSize:10,color:"#aaA69e",fontFamily:"monospace"}}>{p.sku}</div>
