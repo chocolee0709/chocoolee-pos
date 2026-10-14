@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261014-1423 */window.__BUILD_VERSION="20261014-1423";</script>
+  <script>/* __BUILD_VERSION__:20261014-1449 */window.__BUILD_VERSION="20261014-1449";</script>
 </head>
 <body>
 
@@ -75,6 +75,7 @@
   </div>
 
 <script>
+
 
   var FB      = "https://chocoolee-pos-default-rtdb.firebaseio.com";
   var FB_KEY  = "AIzaSyDqJZiwefGVMiTVusd-Z1jTuQByaMS_i2w";
@@ -1188,6 +1189,7 @@
     }
   });
   
+
 </script>
 
 <script type="text/babel" data-presets="react">
@@ -1267,6 +1269,11 @@ function resolvePOImage(poNo, idx, item) {
   }
   var key = String(poNo) + "_" + idx;
   if (window.__fbPOImages && window.__fbPOImages[key]) return window.__fbPOImages[key];
+  // 快取沒有但品項宣告有照片 → 直接向雲端補抓一次（抓到後寫回快取並重繪）
+  var claims = (item && (item.srcImgKey || item.image === "__img__"));
+  if (claims && window.fetchPOImageOnDemand) {
+    window.fetchPOImageOnDemand(item.srcImgKey || key);
+  }
   return "";
 }
 // 非員林店：本店 stocks 沒有的商品一律補 0
@@ -4813,10 +4820,11 @@ function PurchasePanel(props) {
         // 照片：不在轉單當下急著解析內容（可能因記憶體快取尚未載入而失敗），
         // 改留一個指向「原單照片位置」的指標，顯示時再查——原單照片永久保留在
         // 雲端不會被搬移/刪除，指標永遠有效，也徹底避開時序競爭問題
-        // 原品項本來就沒照片時不寫指標，否則顯示端會以為「照片遺失」
+        // 原品項本來就沒照片時不寫指標，否則顯示端會以為「照片遺失」。
+        // 判斷只看品項資料本身（image 標記或既有指標），不查記憶體快取——
+        // 轉單當下快取可能尚未載入完成，查快取會誤判成「沒照片」而漏寫指標。
         var srcKey = po.no + "_" + itemIdx;
-        var hasPhoto = !!(item.image || item.srcImgKey ||
-          (window.__fbPOImages && window.__fbPOImages[srcKey]));
+        var hasPhoto = !!(item.srcImgKey || (item.image && String(item.image).trim()));
         var newItem = Object.assign({}, item, {
           qty: item.qty - newStocked,   // 只帶「還缺的數量」
           receivedQty: 0, damagedQty: 0, stockedQty: 0,
@@ -9573,6 +9581,74 @@ var FB_URL = "https://chocoolee-pos-default-rtdb.firebaseio.com";
 
 // 圖片推送佇列（每張獨立推送 + 重試 + 驗證）
 window._imageQueue = window._imageQueue || {};
+// 採購單品項照片：獨立節點 purchase-images/{poNo}_{idx}
+// （不進 localStorage 主陣列，避免空間不足清理誤刪、也避免多裝置互蓋遺失）
+function pushPOImageWithRetry(imgKey, imgData, retries) {
+  retries = retries || 0;
+  if (!window.__pendingPOImages) window.__pendingPOImages = {};
+  window.__pendingPOImages[imgKey] = true;
+  function fail(msg) {
+    delete window.__pendingPOImages[imgKey];
+    if (window.showToast) window.showToast(msg, true);
+  }
+  if (!window.getFirebaseToken) {
+    if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 1500);
+    else fail("\u26a0\ufe0f \u63a1\u8cfc\u55ae\u7167\u7247\u63a8\u9001\u5931\u6557");
+    return;
+  }
+  window.getFirebaseToken(function(token){
+    if (!token) {
+      if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 2000);
+      else fail("\u26a0\ufe0f \u63a1\u8cfc\u55ae\u7167\u7247\u63a8\u9001\u5931\u6557");
+      return;
+    }
+    fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/purchase-images/" + imgKey + ".json?auth=" + token, {
+      method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(imgData)
+    }).then(function(r){
+      if (!r.ok) {
+        if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 2000);
+        else fail("\u26a0\ufe0f \u63a1\u8cfc\u55ae\u7167\u7247\u63a8\u9001\u5931\u6557 (" + r.status + ")");
+        return;
+      }
+      delete window.__pendingPOImages[imgKey];
+      if (!window.__fbPOImages) window.__fbPOImages = {};
+      window.__fbPOImages[imgKey] = imgData;
+      if (window.showToast) window.showToast("\ud83d\uddbc \u63a1\u8cfc\u55ae\u7167\u7247\u5df2\u5132\u5b58\u5230\u96f2\u7aef");
+    }).catch(function(){
+      if (retries < 5) setTimeout(function(){ pushPOImageWithRetry(imgKey, imgData, retries+1); }, 2000);
+      else fail("\u26a0\ufe0f \u63a1\u8cfc\u55ae\u7167\u7247\u63a8\u9001\u5931\u6557\uff08\u7db2\u8def\uff09");
+    });
+  });
+}
+
+// 顯示端按需補抓：快取沒有但品項宣告有照片時，直接向雲端拿一次
+window.fetchPOImageOnDemand = function(imgKey) {
+  if (!imgKey) return;
+  if (!window.__fbPOImages) window.__fbPOImages = {};
+  if (window.__fbPOImages[imgKey]) return;
+  if (!window.__poImgFetching) window.__poImgFetching = {};
+  if (window.__poImgFetching[imgKey]) return;   // 同一張只抓一次
+  window.__poImgFetching[imgKey] = true;
+  if (!window.getFirebaseToken) return;
+  window.getFirebaseToken(function(token){
+    if (!token) return;
+    fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/purchase-images/" + imgKey + ".json?auth=" + token)
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(v){
+        if (v && typeof v === "string" && v.indexOf("data:") === 0) {
+          window.__fbPOImages[imgKey] = v;
+          if (window.__reactSetters && window.__reactSetters.purchases) {
+            try {
+              var pv = localStorage.getItem("chocoolee-purchases");
+              if (pv) window.__reactSetters.purchases(JSON.parse(pv));
+            } catch(e) {}
+          }
+        }
+      })
+      .catch(function(){});
+  });
+};
+
 function pushImageWithRetry(imgId, imgData, retries) {
   retries = retries || 0;
   if (!window.__pendingImages) window.__pendingImages = {};
@@ -9701,6 +9777,32 @@ function saveData(key, value) {
           return p;
         });
         serialized = JSON.stringify(prodsNoImage);
+      } catch(e) {}
+    }
+
+    if (key === "purchases") {
+      try {
+        var purs = typeof value === "string" ? JSON.parse(value) : value;
+        var pursNoImage = purs.map(function(po) {
+          if (!po || !po.items) return po;
+          var changedItems = false;
+          var newItems = po.items.map(function(it, idx) {
+            if (it && it.image && String(it.image).indexOf("data:") === 0) {
+              var imgKey = String(po.no) + "_" + idx;
+              // 照片只推 Firebase 獨立節點，主陣列只留標記
+              if (!window.__fbPOImages) window.__fbPOImages = {};
+              if (window.__fbPOImages[imgKey] !== it.image) {
+                window.__fbPOImages[imgKey] = it.image;
+                pushPOImageWithRetry(imgKey, it.image);
+              }
+              changedItems = true;
+              return Object.assign({}, it, {image: "__img__"});
+            }
+            return it;
+          });
+          return changedItems ? Object.assign({}, po, {items: newItems}) : po;
+        });
+        serialized = JSON.stringify(pursNoImage);
       } catch(e) {}
     }
 
