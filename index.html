@@ -2,6 +2,7 @@
 <html lang="zh-TW">
 <head>
 
+
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
@@ -28,16 +29,15 @@
     }
     #sync-toast.show { opacity:1; }
     #sync-toast.error { background:#a03020; }
-  </style>
-  
-  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  </style>  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20260929-1122 */window.__BUILD_VERSION="20260929-1122";</script>
+  <script>/* __BUILD_VERSION__:20261014-1423 */window.__BUILD_VERSION="20261014-1423";</script>
 </head>
 <body>
+
 
   <div id="root"></div>
   <div id="sync-toast">☁️ 已同步</div>
@@ -4813,13 +4813,22 @@ function PurchasePanel(props) {
         // 照片：不在轉單當下急著解析內容（可能因記憶體快取尚未載入而失敗），
         // 改留一個指向「原單照片位置」的指標，顯示時再查——原單照片永久保留在
         // 雲端不會被搬移/刪除，指標永遠有效，也徹底避開時序競爭問題
+        // 原品項本來就沒照片時不寫指標，否則顯示端會以為「照片遺失」
         var srcKey = po.no + "_" + itemIdx;
-        shortItems.push(Object.assign({}, item, {
+        var hasPhoto = !!(item.image || item.srcImgKey ||
+          (window.__fbPOImages && window.__fbPOImages[srcKey]));
+        var newItem = Object.assign({}, item, {
           qty: item.qty - newStocked,   // 只帶「還缺的數量」
           receivedQty: 0, damagedQty: 0, stockedQty: 0,
-          image: (item.image && item.image.indexOf("data:")===0) ? item.image : "",
-          srcImgKey: srcKey
-        }));
+          image: (item.image && item.image.indexOf("data:")===0) ? item.image : ""
+        });
+        if (hasPhoto) {
+          // 原單的照片永久留在雲端，指標永遠有效，也避開轉單當下快取未載入的時序問題
+          newItem.srcImgKey = item.srcImgKey || srcKey;
+        } else {
+          delete newItem.srcImgKey;
+        }
+        shortItems.push(newItem);
       }
       return Object.assign({}, item, {stockedQty:newStocked});
     });
