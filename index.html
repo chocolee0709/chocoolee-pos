@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261014-1449 */window.__BUILD_VERSION="20261014-1449";</script>
+  <script>/* __BUILD_VERSION__:20261014-1630 */window.__BUILD_VERSION="20261014-1630";</script>
 </head>
 <body>
 
@@ -9649,6 +9649,235 @@ window.fetchPOImageOnDemand = function(imgKey) {
   });
 };
 
+// 啟動自癒：本機採購單若還有內嵌 base64 照片（舊版留下或推送失敗），
+// 推上雲端後把本機改成標記。既救回只存在這台裝置的照片，也騰出空間。
+window.sweepLocalPOImages = function() {
+  try {
+    var raw = localStorage.getItem("chocoolee-purchases");
+    if (!raw || raw.indexOf("data:image") < 0) return;
+    var arr = JSON.parse(raw);
+    var found = 0;
+    arr.forEach(function(po){
+      if (!po || !po.items) return;
+      po.items.forEach(function(it, idx){
+        if (it && it.image && String(it.image).indexOf("data:") === 0) {
+          var imgKey = String(po.no) + "_" + idx;
+          if (!window.__fbPOImages) window.__fbPOImages = {};
+          window.__fbPOImages[imgKey] = it.image;      // 先進快取，畫面照常顯示
+          pushPOImageWithRetry(imgKey, it.image);      // 再推雲端（含重試）
+          it.image = "__img__";
+          found++;
+        }
+      });
+    });
+    if (!found) return;
+    localStorage.setItem("chocoolee-purchases", JSON.stringify(arr));
+    if (window.__reactSetters && window.__reactSetters.purchases) {
+      window.__reactSetters.purchases(arr);
+    }
+    console.log("[自癒] 已將 " + found + " 張本機採購單照片推送雲端並瘦身");
+  } catch(e) { console.warn("[自癒] 採購單照片掃描失敗", e); }
+};
+setTimeout(function(){ if (window.sweepLocalPOImages) window.sweepLocalPOImages(); }, 6000);
+
+// ── 清理本體：手動按鈕和自動清理都走這裡 ──────────────────────────
+// onLog 可選；回傳釋放的位元組數。只動「雲端已有或可重新下載」的東西。
+window.cleanStorage = function(onLog) {
+  function say(s){ try { if (onLog) onLog(s); } catch(e){} }
+  var before = 0;
+  try { before = window.measureStorage().total; } catch(e) {}
+
+  // 1) 採購單照片先推雲端再瘦身（絕不直接丟）
+  try {
+    var m0 = window.measureStorage();
+    if (m0.embedded > 0) {
+      say("先把 " + m0.embedded + " 張採購單照片推上雲端…");
+      window.sweepLocalPOImages();
+      say("✓ 已送出（背景重試中）");
+    }
+  } catch(e) { say("✗ 照片推送失敗：" + e.message); }
+
+  // 2) 清掉可重建的項目
+  var kill = [];
+  for (var i = 0; i < localStorage.length; i++) {
+    var k = localStorage.key(i);
+    if (!k) continue;
+    if (k.indexOf("chocoolee-product-images") === 0
+     || k.indexOf("chocoolee-shop-") === 0
+     || k.indexOf("chocoolee-backup") === 0) kill.push(k);
+  }
+  kill.forEach(function(k){ try { localStorage.removeItem(k); } catch(e){} });
+  if (kill.length) say("已清除 " + kill.length + " 筆快取／備份");
+
+  // 3) 本機庫存異動明細只留近 1500 筆（雲端完整保留）
+  try {
+    var sl = JSON.parse(localStorage.getItem("chocoolee-stocklog") || "[]");
+    if (sl.length > 1500) {
+      localStorage.setItem("chocoolee-stocklog", JSON.stringify(sl.slice(-1500)));
+      say("庫存異動明細本機保留近 1500 筆（原 " + sl.length + " 筆，雲端完整）");
+    }
+  } catch(e) {}
+
+  var after = 0;
+  try { after = window.measureStorage().total; } catch(e) {}
+  return Math.max(0, before - after);
+};
+
+// ── 自動清理：到水位就自己動手，不用等人按 ────────────────────────
+// 唯一的煞車：還有資料沒推上雲端時不清，先提醒，等推完的下一輪再處理。
+window.autoCleanStorage = function(reason) {
+  try {
+    if (!window.measureStorage) return false;
+    var m = window.measureStorage();
+    var pct = Math.round(m.total / (5 * 1024 * 1024) * 100);
+
+    // 空間還夠就不動（存不下時由呼叫端強制，reason="quota"）
+    if (pct < 75 && reason !== "quota") return false;
+
+    if (m.risk > 0) {
+      console.warn("[自動清理] 暫緩：還有 " + m.risk + " 筆資料待推送");
+      if (window.showToast) {
+        window.showToast("⚠️ 空間已用 " + pct + "%，但有 " + m.risk + " 筆資料待同步，請確認網路", true);
+      }
+      return false;
+    }
+
+    var fmt = function(b){ return b > 1048576 ? (b/1048576).toFixed(1) + " MB" : Math.round(b/1024) + " KB"; };
+    var freed = window.cleanStorage(function(s){ console.log("[自動清理] " + s); });
+    var after = window.measureStorage();
+    var pctAfter = Math.round(after.total / (5 * 1024 * 1024) * 100);
+    console.log("[自動清理] 釋放 " + fmt(freed) + "，目前 " + pctAfter + "%（觸發原因：" + (reason || "水位") + "）");
+
+    if (freed > 64 * 1024 && window.showToast) {
+      window.showToast("已自動整理儲存空間，釋放 " + fmt(freed), false);
+    }
+    // 清完還是很滿 → 這時才需要人介入
+    if (pctAfter >= 85 && window.showToast) {
+      window.showToast("⚠️ 清理後空間仍達 " + pctAfter + "%，請到選單『儲存空間』查看", true);
+    }
+    return true;
+  } catch(e) { console.warn("[自動清理] 失敗", e); return false; }
+};
+
+// 開機後自動跑一次
+setTimeout(function(){ if (window.autoCleanStorage) window.autoCleanStorage("啟動"); }, 9000);
+// 之後每 30 分鐘看一次（長時間開著的收銀機也顧得到）
+setInterval(function(){ if (window.autoCleanStorage) window.autoCleanStorage("定期"); }, 30 * 60 * 1000);
+
+// ── 儲存空間面板：看用量、先救援再清理 ───────────────────────────────
+window.measureStorage = function() {
+  var items = [], total = 0;
+  for (var i = 0; i < localStorage.length; i++) {
+    var k = localStorage.key(i);
+    if (!k) continue;
+    var v = localStorage.getItem(k) || "";
+    var size = (k.length + v.length) * 2;   // UTF-16，約略值
+    total += size;
+    // 可清：雲端有或可重建的東西
+    var clearable = (k.indexOf("chocoolee-product-images") === 0)
+      || (k.indexOf("chocoolee-shop-") === 0)
+      || (k.indexOf("chocoolee-backup") === 0);
+    items.push({key: k, size: size, clearable: clearable});
+  }
+  items.sort(function(a, b){ return b.size - a.size; });
+
+  // 本機獨有的採購單照片（還沒確定上雲的）
+  var embedded = 0, embeddedBytes = 0;
+  try {
+    var pu = JSON.parse(localStorage.getItem("chocoolee-purchases") || "[]");
+    pu.forEach(function(po){
+      (po.items || []).forEach(function(it){
+        if (it && it.image && String(it.image).indexOf("data:") === 0) {
+          embedded++; embeddedBytes += it.image.length * 2;
+        }
+      });
+    });
+  } catch(e) {}
+
+  // 還沒推成功的東西 → 清理前必須先處理，否則資料會不見
+  var risk = 0;
+  try {
+    risk += Object.keys(window.__pendingImages || {}).length;
+    risk += Object.keys(window.__pendingPOImages || {}).length;
+    risk += JSON.parse(localStorage.getItem("chocoolee-pending-stocks") || "[]").length;
+    risk += JSON.parse(localStorage.getItem("chocoolee-pending-stocklog") || "[]").length;
+  } catch(e) {}
+
+  var clearableBytes = items.reduce(function(s, it){ return s + (it.clearable ? it.size : 0); }, 0);
+  return {items: items, total: total, embedded: embedded, embeddedBytes: embeddedBytes,
+          risk: risk, clearableBytes: clearableBytes + embeddedBytes};
+};
+
+window.openStoragePanel = function() {
+  var fmt = function(b){ return b > 1048576 ? (b/1048576).toFixed(2) + " MB" : Math.round(b/1024) + " KB"; };
+  var m = window.measureStorage();
+  // iOS Safari 上限約 5MB，拿來當水位參考
+  var LIMIT = 5 * 1024 * 1024;
+  var pct = Math.min(100, Math.round(m.total / LIMIT * 100));
+  var barColor = pct >= 85 ? "#b3261e" : (pct >= 65 ? "#c2410c" : "#4a7c59");
+
+  var top = m.items.slice(0, 8).map(function(it){
+    var label = it.key.replace("chocoolee-", "");
+    if (label.length > 30) label = label.slice(0, 30) + "…";
+    return '<tr><td style="padding:4px 2px;border-bottom:1px solid #f0ede8;word-break:break-all">' + label
+      + '</td><td style="padding:4px 2px;border-bottom:1px solid #f0ede8;text-align:right;white-space:nowrap">'
+      + fmt(it.size) + '</td></tr>';
+  }).join("");
+
+  var modal = document.createElement("div");
+  modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;";
+  modal.innerHTML = '<div style="background:#fff;border-radius:14px;padding:22px;width:460px;max-width:94vw;max-height:88vh;overflow:auto;font-family:\'Noto Sans TC\',sans-serif;">'
+    + '<div style="font-size:15px;font-weight:700;color:#6b5b45;margin-bottom:14px;">💾 儲存空間</div>'
+    + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">'
+    +   '<span style="font-size:12px;color:#7a7068;">目前佔用</span>'
+    +   '<span style="font-size:22px;font-weight:700;color:' + barColor + ';">' + fmt(m.total) + '</span></div>'
+    + '<div style="background:#e8e4de;border-radius:20px;height:12px;overflow:hidden;margin-bottom:6px;">'
+    +   '<div style="background:' + barColor + ';height:100%;width:' + pct + '%;"></div></div>'
+    + '<div style="font-size:11px;color:#9a968e;margin-bottom:14px;">約為裝置上限的 ' + pct + '%'
+    +   (pct >= 85 ? '　⚠️ 已接近上限，建議馬上清理' : '') + '</div>'
+    + (m.embedded > 0
+        ? '<div style="background:#fdf6ee;border-left:3px solid #c2410c;padding:10px 12px;border-radius:0 8px 8px 0;font-size:12px;color:#7a5a3a;margin-bottom:14px;">'
+          + '本機有 <b>' + m.embedded + ' 張</b>採購單照片（' + fmt(m.embeddedBytes) + '）可能只存在這台裝置。'
+          + '清理會先把它們推上雲端再瘦身，不會弄丟。</div>'
+        : '')
+    + (m.risk > 0
+        ? '<div style="background:#fdeaea;border-left:3px solid #b3261e;padding:10px 12px;border-radius:0 8px 8px 0;font-size:12px;color:#8a2a24;margin-bottom:14px;">'
+          + '⚠️ 還有 <b>' + m.risk + ' 筆</b>資料等著推送到雲端。請先確認網路正常、等同步完成再清理。</div>'
+        : '')
+    + '<table style="width:100%;border-collapse:collapse;font-size:12px;color:#5a5048;margin-bottom:16px;">'
+    +   '<thead><tr><th style="text-align:left;padding:4px 2px;border-bottom:1px solid #e8e4de;font-weight:600;">佔用最多</th>'
+    +   '<th style="text-align:right;padding:4px 2px;border-bottom:1px solid #e8e4de;font-weight:600;">大小</th></tr></thead>'
+    +   '<tbody>' + top + '</tbody></table>'
+    + '<div id="stLog" style="font-size:11px;color:#7a7068;max-height:150px;overflow-y:auto;font-family:monospace;background:#f8f8f8;padding:8px;border-radius:6px;white-space:pre-wrap;display:none;margin-bottom:12px;"></div>'
+    + '<button id="stClean" style="width:100%;padding:12px;background:#b4734a;color:#fff;border:none;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;margin-bottom:8px;">'
+    +   '清出空間（約可釋放 ' + fmt(m.clearableBytes) + '）</button>'
+    + '<button id="stClose" style="width:100%;padding:11px;background:#fff;color:#5a5048;border:1px solid #e8e4de;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer;">關閉</button>'
+    + '<div style="font-size:10px;color:#9a968e;margin-top:10px;line-height:1.6;">'
+    +   '清理只會動「雲端已有或可重新下載」的東西：商品照片快取、舊備份、已上雲的採購單照片。'
+    +   '商品、會員、訂單、採購單、庫存等營運資料一律保留。</div>'
+    + '</div>';
+  document.body.appendChild(modal);
+
+  var logEl = modal.querySelector("#stLog");
+  function slog(s){ logEl.style.display = "block"; logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+  modal.querySelector("#stClose").onclick = function(){ document.body.removeChild(modal); };
+
+  modal.querySelector("#stClean").onclick = function(){
+    var warn = "確定要清出空間嗎？\n\n會清掉：商品照片快取、舊備份、舊實驗資料\n採購單照片會先推上雲端再瘦身\n\n營運資料全部保留。";
+    if (m.risk > 0) warn = "⚠️ 還有 " + m.risk + " 筆資料沒推上雲端，現在清理可能弄丟它們。\n\n" + warn;
+    if (!confirm(warn)) return;
+    this.disabled = true;
+    this.style.opacity = "0.5";
+
+    var freed = window.cleanStorage(slog);
+    var after = window.measureStorage().total;
+    slog("");
+    slog("── 完成，釋放 " + fmt(freed) + " ──");
+    slog("目前佔用：" + fmt(after));
+    if (window.showToast) window.showToast("已釋放 " + fmt(freed), false);
+  };
+};
+
 function pushImageWithRetry(imgId, imgData, retries) {
   retries = retries || 0;
   if (!window.__pendingImages) window.__pendingImages = {};
@@ -9823,14 +10052,20 @@ function saveData(key, value) {
         junkKeys.forEach(function(dk){ try { localStorage.removeItem(dk); } catch(e3){} });
         try { localStorage.setItem(k, v); return true; } catch(e2) {}
 
-        // 還是失敗 → 清掉採購單裡的 base64 圖片（資料保留，只移除肥大的圖）
+        // 還是失敗 → 採購單裡的 base64 圖片先推雲端再瘦身（絕不直接丟掉照片）
         try {
           var puRaw = localStorage.getItem("chocoolee-purchases");
           if (puRaw && puRaw.indexOf("data:image") >= 0) {
             var puArr = JSON.parse(puRaw);
             puArr.forEach(function(po){
-              (po.items || []).forEach(function(it){
-                if (it.image && String(it.image).indexOf("data:") === 0) it.image = "";
+              (po.items || []).forEach(function(it, idx){
+                if (it.image && String(it.image).indexOf("data:") === 0) {
+                  var ik = String(po.no) + "_" + idx;
+                  if (!window.__fbPOImages) window.__fbPOImages = {};
+                  window.__fbPOImages[ik] = it.image;   // 留記憶體，本回合畫面照常
+                  try { pushPOImageWithRetry(ik, it.image); } catch(ep) {}
+                  it.image = "__img__";                 // 改標記而非清空，之後可從雲端補抓
+                }
               });
             });
             localStorage.setItem("chocoolee-purchases", JSON.stringify(puArr));
@@ -9838,6 +10073,28 @@ function saveData(key, value) {
             return true;
           }
         } catch(e4) {}
+
+        // 仍不足 → 砍掉本機舊庫存異動明細（雲端完整保留，本機只留近 1500 筆）
+        try {
+          var slRaw = localStorage.getItem("chocoolee-stocklog");
+          if (slRaw) {
+            var slArr = JSON.parse(slRaw);
+            if (slArr.length > 1500) {
+              localStorage.setItem("chocoolee-stocklog", JSON.stringify(slArr.slice(-1500)));
+              localStorage.setItem(k, v);
+              return true;
+            }
+          }
+        } catch(e6) {}
+
+        // 最後一搏：叫自動清理全力清一次（含推照片上雲）再重試
+        try {
+          if (window.autoCleanStorage) {
+            window.autoCleanStorage("quota");
+            localStorage.setItem(k, v);
+            return true;
+          }
+        } catch(e7) {}
 
         // 真的救不了 → 明確警告使用者（不再靜默丟資料！）
         try {
@@ -11232,6 +11489,23 @@ function POSSystem() {
                     <div style={{fontSize:10,color:"#9a968e"}}>強制把本機所有圖片上傳到雲端</div>
                   </div>
                 </button>}
+
+                {/* 儲存空間 — 全員可用（空間滿了店員也要能自救） */}
+                <button onClick={function(){
+                  setShowMenu(false);
+                  if (window.openStoragePanel) window.openStoragePanel();
+                }}
+                  style={{width:"100%",padding:"9px 14px",border:"none",background:"transparent",
+                    cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
+                    borderBottom:"1px solid #f0ede8",transition:"background 0.1s"}}
+                  onMouseEnter={function(e){e.currentTarget.style.background="#f5f2ec";}}
+                  onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
+                  <span style={{fontSize:16,width:24,textAlign:"center"}}>💾</span>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:600,color:"#6b5b45"}}>儲存空間</div>
+                    <div style={{fontSize:10,color:"#9a968e"}}>查看用量、清出空間（存不下時用這個）</div>
+                  </div>
+                </button>
 
                 {/* 下載圖片到本機（市集離線用）— 限店長 */}
                 {isManager && <button onClick={function(){
