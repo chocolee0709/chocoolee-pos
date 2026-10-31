@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>採購單刪除工具</title>
+<style>
+  :root{--bg:#faf8f5;--card:#fff;--ink:#2d2a26;--sub:#7a736a;--line:#e8e2d9;--accent:#b4734a;--ok:#4a7c59;--danger:#b3261e;--warn:#c2410c}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 -apple-system,"PingFang TC","Noto Sans TC",sans-serif;padding:16px;max-width:780px;margin:0 auto}
+  h1{font-size:20px;margin:8px 0 4px}
+  .sub{color:var(--sub);font-size:14px;margin-bottom:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+  label{display:block;font-size:14px;color:var(--sub);margin-bottom:6px}
+  input[type=text]{width:100%;padding:13px;font-size:17px;border:1px solid var(--line);border-radius:10px;font-family:ui-monospace,monospace}
+  button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:14px 20px;font-size:16px;font-weight:600;width:100%;margin-top:10px;cursor:pointer}
+  button.danger{background:var(--danger)}
+  button.ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
+  button:disabled{opacity:.45}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin-top:6px}
+  td,th{padding:7px 4px;border-bottom:1px solid var(--line);text-align:left}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .pill{display:inline-block;font-size:12px;padding:3px 9px;border-radius:999px;background:#f0ebe3;color:var(--sub)}
+  .pill.ok{background:#e7f0e9;color:var(--ok)}
+  .pill.warn{background:#fdf0e8;color:var(--warn)}
+  .note{background:#fdf6ee;border-left:3px solid var(--warn);padding:11px 13px;border-radius:0 8px 8px 0;font-size:14px;margin-top:12px}
+  #log{font:13px/1.7 ui-monospace,monospace;white-space:pre-wrap;background:#2d2a26;color:#e8e2d9;padding:14px;border-radius:10px;max-height:320px;overflow:auto}
+  .chk{display:flex;gap:10px;align-items:flex-start;margin-top:12px;font-size:15px}
+  .chk input{margin-top:5px;width:19px;height:19px}
+</style>
+</head>
+<body>
+<h1>採購單刪除工具</h1>
+<div class="sub">刪除前先檢查是否已入庫，入了就同步把庫存退回去</div>
+
+<div class="card">
+  <label>採購單號</label>
+  <input type="text" id="poNo" value="PO-20261012-091" placeholder="PO-20261012-091">
+  <button id="check">檢查這張單</button>
+</div>
+
+<div class="card" id="detail" style="display:none"></div>
+
+<div class="card" id="actions" style="display:none">
+  <div class="chk"><input type="checkbox" id="doReverse"><label for="doReverse" style="margin:0;color:var(--ink)">同時把已入庫的數量從庫存扣回（並寫入異動明細）</label></div>
+  <div class="chk"><input type="checkbox" id="confirm"><label for="confirm" style="margin:0;color:var(--ink)">我確認要刪除這張採購單，此動作無法復原</label></div>
+  <button id="del" class="danger" disabled>刪除整張採購單</button>
+</div>
+
+<div class="card" id="itemCard" style="display:none">
+  <div style="font-size:16px;font-weight:600;margin-bottom:4px">只刪除其中一個品項</div>
+  <div class="sub" style="margin-bottom:10px">整張單保留，只把勾選的品項從單子裡移除</div>
+  <div id="itemList"></div>
+  <div class="chk"><input type="checkbox" id="itemReverse"><label for="itemReverse" style="margin:0;color:var(--ink)">同時把這些品項已入庫的數量從庫存扣回</label></div>
+  <div class="chk"><input type="checkbox" id="itemConfirm"><label for="itemConfirm" style="margin:0;color:var(--ink)">我確認要移除勾選的品項</label></div>
+  <button id="delItem" class="danger" disabled>移除勾選品項</button>
+</div>
+
+<div class="card"><div id="log">輸入單號後按「檢查這張單」</div></div>
+
+<script>
+var FB = "https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee";
+var API_KEY = "AIzaSyBqJJZvJ5mZCOWqGCGYDF5zTnEvpLN3Rbs";
+var token = null, target = null;
+
+function log(s){ var e=document.getElementById("log"); e.textContent += "\n"+s; e.scrollTop=e.scrollHeight; }
+function stocksNodeOf(code){ return (!code || code === "yl") ? "stocks" : "stocks-" + code; }
+
+function getToken(cb){
+  if (token) return cb(token);
+  try{
+    for (var i=0;i<localStorage.length;i++){
+      var k = localStorage.key(i);
+      if (k && k.indexOf("firebase:authUser") === 0){
+        var u = JSON.parse(localStorage.getItem(k));
+        if (u && u.stsTokenManager && u.stsTokenManager.refreshToken){
+          fetch("https://securetoken.googleapis.com/v1/token?key="+API_KEY,{
+            method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+            body:"grant_type=refresh_token&refresh_token="+encodeURIComponent(u.stsTokenManager.refreshToken)
+          }).then(function(r){return r.json();}).then(function(d){
+            token = d.id_token || null;
+            log(token ? "✓ 已取得雲端憑證" : "⚠ 憑證換發失敗，改用無認證連線");
+            cb(token);
+          }).catch(function(){ cb(null); });
+          return;
+        }
+      }
+    }
+  }catch(e){}
+  log("⚠ 本機找不到登入憑證，改用無認證連線");
+  cb(null);
+}
+function url(p){ return FB + p + ".json" + (token ? "?auth="+token : ""); }
+
+document.getElementById("check").onclick = function(){
+  var no = document.getElementById("poNo").value.trim();
+  if (!no) return;
+  document.getElementById("log").textContent = "── 檢查 " + no + " ──";
+  var purs;
+  try { purs = JSON.parse(localStorage.getItem("chocoolee-purchases") || "[]"); }
+  catch(e){ log("✗ 本機採購單讀取失敗：" + e.message); return; }
+
+  var matches = purs.filter(function(p){ return p && String(p.no) === no; });
+  if (!matches.length){
+    log("✗ 本機找不到這張單");
+    log("  提示：請在有這張單的裝置上執行，或先讓 POS 完成同步");
+    document.getElementById("detail").style.display = "none";
+    document.getElementById("actions").style.display = "none";
+    return;
+  }
+  if (matches.length > 1) log("⚠ 本機有 " + matches.length + " 筆相同單號，將一併刪除");
+
+  var po = matches[0];
+  target = {no: no, po: po, count: matches.length};
+
+  var stocked = 0, rows = "";
+  (po.items||[]).forEach(function(it){
+    var sq = it.stockedQty || 0;
+    stocked += sq;
+    rows += '<tr><td>'+(it.sku||"—")+'</td><td>'+(it.name||"—")+
+            '</td><td class="n">'+(it.qty||0)+'</td><td class="n">'+(it.receivedQty||0)+
+            '</td><td class="n"><b>'+sq+'</b></td></tr>';
+  });
+
+  var statusPill = stocked > 0
+    ? '<span class="pill warn">已入庫 '+stocked+' 件</span>'
+    : '<span class="pill ok">尚未入庫</span>';
+
+  document.getElementById("detail").innerHTML =
+    '<div style="font-size:17px;font-weight:600;margin-bottom:6px">'+no+'</div>'+
+    '<div style="margin-bottom:10px">'+statusPill+
+    ' <span class="pill">'+(po.status||"—")+'</span>'+
+    ' <span class="pill">'+(po.store ? po.store : "yl")+' 店</span>'+
+    ' <span class="pill">'+(po.supplier||"無廠商")+'</span></div>'+
+    '<table><thead><tr><th>貨號</th><th>品名</th><th class="n">訂購</th><th class="n">實收</th><th class="n">已入庫</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+    (stocked > 0
+      ? '<div class="note">這張單有 <b>'+stocked+' 件</b>已經進到庫存。若 090 才是要保留的那張，刪 091 時必須把這 '+stocked+' 件扣回去，否則庫存會多算一份。請勾選下方的「扣回庫存」。</div>'
+      : '<div class="note">這張單沒有入庫記錄，直接刪除不影響庫存。</div>');
+  document.getElementById("detail").style.display = "";
+  document.getElementById("actions").style.display = "";
+  document.getElementById("doReverse").checked = stocked > 0;
+  document.getElementById("doReverse").disabled = stocked === 0;
+
+  // 品項勾選清單
+  var il = "";
+  (po.items||[]).forEach(function(it, idx){
+    var sq = it.stockedQty || 0;
+    il += '<div class="chk"><input type="checkbox" class="itemChk" data-idx="'+idx+'">'+
+          '<label style="margin:0;color:var(--ink)">'+(it.name||"—")+
+          ' <span class="sub">'+(it.sku||"")+'　訂購 '+(it.qty||0)+'</span> '+
+          (sq > 0 ? '<span class="pill warn">已入庫 '+sq+'</span>' : '<span class="pill ok">未入庫</span>')+
+          '</label></div>';
+  });
+  document.getElementById("itemList").innerHTML = il;
+  document.getElementById("itemCard").style.display = "";
+  document.getElementById("itemConfirm").checked = false;
+  document.getElementById("itemReverse").checked = false;
+  document.getElementById("delItem").disabled = true;
+  Array.prototype.forEach.call(document.querySelectorAll(".itemChk"), function(c){
+    c.onchange = function(){
+      var any = document.querySelectorAll(".itemChk:checked").length;
+      var anyStocked = false;
+      Array.prototype.forEach.call(document.querySelectorAll(".itemChk:checked"), function(cc){
+        if ((po.items[cc.getAttribute("data-idx")].stockedQty||0) > 0) anyStocked = true;
+      });
+      document.getElementById("itemReverse").checked = anyStocked;
+      document.getElementById("itemReverse").disabled = !anyStocked;
+      syncItem();
+    };
+  });
+
+  log("狀態：" + (po.status||"—") + "　店別：" + (po.store||"yl"));
+  log("品項：" + (po.items||[]).length + " 項　已入庫合計：" + stocked + " 件");
+  if (stocked > 0) log("→ 已預先勾選「扣回庫存」");
+};
+
+function sync(){
+  var c = document.getElementById("confirm").checked;
+  document.getElementById("del").disabled = !c || !target;
+}
+document.getElementById("confirm").onchange = sync;
+
+function syncItem(){
+  var any = document.querySelectorAll(".itemChk:checked").length;
+  document.getElementById("delItem").disabled =
+    !any || !document.getElementById("itemConfirm").checked || !target;
+}
+document.getElementById("itemConfirm").onchange = syncItem;
+
+// ── 移除單一品項（整張單保留）
+document.getElementById("delItem").onclick = function(){
+  if (!target) return;
+  var no = target.no, po = target.po;
+  var picks = [];
+  Array.prototype.forEach.call(document.querySelectorAll(".itemChk:checked"), function(c){
+    picks.push(Number(c.getAttribute("data-idx")));
+  });
+  if (!picks.length) return;
+  var names = picks.map(function(i){ return po.items[i].name || "—"; }).join("、");
+  var reverse = document.getElementById("itemReverse").checked;
+  if (!confirm("從 " + no + " 移除：\n" + names + (reverse ? "\n\n並扣回已入庫數量" : "") + "\n\n無法復原，確定嗎？")) return;
+  this.disabled = true;
+  log("\n── 從 " + no + " 移除品項 ──");
+
+  getToken(function(){
+    var storeCode = po.store || localStorage.getItem("chocoolee-store") || "yl";
+    var node = stocksNodeOf(storeCode);
+    var touched = [];
+
+    if (reverse){
+      var stocks = {};
+      try { stocks = JSON.parse(localStorage.getItem("chocoolee-stocks") || "{}"); } catch(e){}
+      var logs = [];
+      try { logs = JSON.parse(localStorage.getItem("chocoolee-stocklog") || "[]"); } catch(e){}
+      var now = new Date().toISOString();
+      picks.forEach(function(i){
+        var it = po.items[i];
+        var sq = it.stockedQty || 0;
+        if (!sq || it.id === undefined) return;
+        var before = Number(stocks[it.id] || 0);
+        var after = before - sq;
+        stocks[it.id] = after;
+        logs.push({
+          time: now, id: it.id, sku: it.sku || "", name: it.name || "",
+          type: "刪品項回沖", qty: -sq, before: before, after: after,
+          note: "自 " + no + " 移除重複品項", store: storeCode, operator: "系統工具"
+        });
+        touched.push({id: it.id, name: it.name, before: before, after: after, qty: sq});
+      });
+      localStorage.setItem("chocoolee-stocks", JSON.stringify(stocks));
+      localStorage.setItem("chocoolee-stocklog", JSON.stringify(logs));
+      log("本機庫存已回沖 " + touched.length + " 項：");
+      touched.forEach(function(s){ log("   " + s.name + "  " + s.before + " → " + s.after + "  (−" + s.qty + ")"); });
+    } else {
+      log("（未勾選扣回庫存，庫存不動）");
+    }
+
+    // 從單子移除品項
+    var purs = JSON.parse(localStorage.getItem("chocoolee-purchases") || "[]");
+    var newPurs = purs.map(function(p){
+      if (!p || String(p.no) !== no) return p;
+      var kept = (p.items||[]).filter(function(it, idx){ return picks.indexOf(idx) < 0; });
+      var out = Object.assign({}, p, {items: kept});
+      // 金額重算（若原本有存總額欄位）
+      if (p.total !== undefined){
+        out.total = kept.reduce(function(s,it){ return s + (Number(it.cost||0) * Number(it.qty||0)); }, 0);
+      }
+      return out;
+    });
+    localStorage.setItem("chocoolee-purchases", JSON.stringify(newPurs));
+    log("已從 " + no + " 移除 " + picks.length + " 個品項：" + names);
+
+    var jobs = [{path:"/purchases", body: newPurs, label:"採購單清單"}];
+    if (reverse){
+      var st2 = JSON.parse(localStorage.getItem("chocoolee-stocks") || "{}");
+      touched.forEach(function(t){
+        jobs.push({path:"/"+node+"/"+t.id, body: Number(st2[t.id]||0), label:"庫存 "+(t.name||t.id)});
+      });
+      jobs.push({path:"/stocklog", body: JSON.parse(localStorage.getItem("chocoolee-stocklog")||"[]"), label:"庫存異動明細"});
+    }
+
+    var ok = 0, fail = 0;
+    function next(){
+      if (!jobs.length){
+        log("\n── 完成：成功 " + ok + " 項，失敗 " + fail + " 項 ──");
+        if (fail) log("⚠ 有項目推送失敗，請換網路後重跑（本機已是正確狀態）");
+        else log("✓ 雲端已同步，其他裝置重新整理即可看到");
+        return;
+      }
+      var j = jobs.shift();
+      fetch(url(j.path), {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(j.body)})
+        .then(function(r){
+          if (r.ok){ ok++; log("✓ 已推送：" + j.label); }
+          else { fail++; log("✗ " + j.label + " HTTP " + r.status); }
+          setTimeout(next, 150);
+        })
+        .catch(function(e){ fail++; log("✗ " + j.label + " " + e.message); setTimeout(next, 300); });
+    }
+    next();
+  });
+};
+
+document.getElementById("del").onclick = function(){
+  if (!target) return;
+  var no = target.no, po = target.po;
+  var reverse = document.getElementById("doReverse").checked;
+  if (!confirm("最後確認：刪除 " + no + (reverse ? "\n並扣回已入庫數量" : "") + "\n\n無法復原，確定嗎？")) return;
+  this.disabled = true;
+  log("\n── 開始刪除 " + no + " ──");
+
+  getToken(function(){
+    var storeCode = po.store || localStorage.getItem("chocoolee-store") || "yl";
+    var node = stocksNodeOf(storeCode);
+
+    // 1) 扣回庫存
+    var stockSteps = [];
+    if (reverse){
+      var stocks = {};
+      try { stocks = JSON.parse(localStorage.getItem("chocoolee-stocks") || "{}"); } catch(e){}
+      var logs = [];
+      try { logs = JSON.parse(localStorage.getItem("chocoolee-stocklog") || "[]"); } catch(e){}
+      var now = new Date().toISOString();
+
+      (po.items||[]).forEach(function(it){
+        var sq = it.stockedQty || 0;
+        if (!sq || it.id === undefined) return;
+        var before = Number(stocks[it.id] || 0);
+        var after = before - sq;
+        stocks[it.id] = after;
+        logs.push({
+          time: now, id: it.id, sku: it.sku || "", name: it.name || "",
+          type: "刪單回沖", qty: -sq, before: before, after: after,
+          note: "刪除重複採購單 " + no, store: storeCode, operator: "系統工具"
+        });
+        stockSteps.push({id: it.id, name: it.name, qty: sq, before: before, after: after});
+      });
+
+      localStorage.setItem("chocoolee-stocks", JSON.stringify(stocks));
+      localStorage.setItem("chocoolee-stocklog", JSON.stringify(logs));
+      log("本機庫存已回沖 " + stockSteps.length + " 項：");
+      stockSteps.forEach(function(s){ log("   " + s.name + "  " + s.before + " → " + s.after + "  (−" + s.qty + ")"); });
+    } else {
+      log("（未勾選扣回庫存，庫存不動）");
+    }
+
+    // 2) 本機刪單
+    var purs = JSON.parse(localStorage.getItem("chocoolee-purchases") || "[]");
+    var kept = purs.filter(function(p){ return !(p && String(p.no) === no); });
+    localStorage.setItem("chocoolee-purchases", JSON.stringify(kept));
+    log("本機已刪除 " + (purs.length - kept.length) + " 筆，剩 " + kept.length + " 張採購單");
+
+    // 3) 推雲端
+    var jobs = [{path:"/purchases", body: kept, label:"採購單清單"}];
+    if (reverse){
+      (po.items||[]).forEach(function(it){
+        var sq = it.stockedQty || 0;
+        if (!sq || it.id === undefined) return;
+        var stocks2 = JSON.parse(localStorage.getItem("chocoolee-stocks") || "{}");
+        jobs.push({path:"/"+node+"/"+it.id, body: Number(stocks2[it.id]||0), label:"庫存 "+(it.name||it.id)});
+      });
+      jobs.push({path:"/stocklog", body: JSON.parse(localStorage.getItem("chocoolee-stocklog")||"[]"), label:"庫存異動明細"});
+    }
+
+    var ok = 0, fail = 0;
+    function next(){
+      if (!jobs.length){
+        log("\n── 完成：成功 " + ok + " 項，失敗 " + fail + " 項 ──");
+        if (fail) log("⚠ 有項目推送失敗，請換網路後重跑一次（本機已是正確狀態）");
+        else {
+          log("✓ 雲端已同步，其他裝置重新整理後就看不到 " + no + " 了");
+          log("✓ 請確認 PO-20261012-090 還在，且庫存數字正確");
+        }
+        return;
+      }
+      var j = jobs.shift();
+      fetch(url(j.path), {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(j.body)})
+        .then(function(r){
+          if (r.ok){ ok++; log("✓ 已推送：" + j.label); }
+          else { fail++; log("✗ " + j.label + " HTTP " + r.status); }
+          setTimeout(next, 150);
+        })
+        .catch(function(e){ fail++; log("✗ " + j.label + " " + e.message); setTimeout(next, 300); });
+    }
+    next();
+  });
+};
+</script>
+</body>
+</html>
