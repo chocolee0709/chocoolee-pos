@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261014-1630 */window.__BUILD_VERSION="20261014-1630";</script>
+  <script>/* __BUILD_VERSION__:20261103-0138 */window.__BUILD_VERSION="20261103-0138";</script>
 </head>
 <body>
 
@@ -1276,6 +1276,74 @@ function resolvePOImage(poNo, idx, item) {
   }
   return "";
 }
+// ── 組合商品 ──────────────────────────────────────────────────────
+// 資料格式：
+// {
+//   id, sku, name, price,            // 組合自己的貨號與售價
+//   main, sub,                        // 報表歸屬的分類（整組當一筆計）
+//   active: true,
+//   fixedItems: [{id, qty}],          // 一定包含的品項
+//   choice: null | {                  // 需要現場挑選的部分
+//     count: 1,                       // 要挑幾件
+//     allowance: 880 | null,          // 內含額度；null = 不補價差
+//     poolMode: "list" | "cat",
+//     pool: [商品id...],               // poolMode="list" 時用
+//     cat: {main, sub}                // poolMode="cat" 時用（整個小分類任選）
+//   }
+// }
+// 三種常見設定：
+//   固定禮盒   → choice: null
+//   任選 N 件  → choice: {count:N, allowance:null, ...}
+//   額度搭配   → choice: {count:1, allowance:880, ...}（超過補價差）
+
+// 某個商品能不能被這個組合挑選
+function bundlePoolHas(bundle, product) {
+  var c = bundle && bundle.choice;
+  if (!c || !product) return false;
+  if (c.poolMode === "cat") {
+    if (!c.cat || !c.cat.main) return false;
+    if (product.main !== c.cat.main) return false;
+    if (c.cat.sub && product.sub !== c.cat.sub) return false;
+    return true;
+  }
+  return (c.pool || []).some(function(id){ return String(id) === String(product.id); });
+}
+
+// 算組合的最終售價：底價 +（挑選品項超過額度的部分）
+function bundlePrice(bundle, chosen) {
+  var base = Number(bundle && bundle.price) || 0;
+  var c = bundle && bundle.choice;
+  if (!c || c.allowance === null || c.allowance === undefined) return base;
+  var sum = (chosen || []).reduce(function(s, p){ return s + (Number(p.price) || 0); }, 0);
+  var over = sum - Number(c.allowance);
+  return base + (over > 0 ? over : 0);
+}
+
+// 組合的成本 = 所有成分成本相加（報表毛利靠這個）
+function bundleCost(bundle, chosen, productById) {
+  var cost = 0;
+  (bundle.fixedItems || []).forEach(function(f){
+    var p = productById[String(f.id)];
+    if (p) cost += (Number(p.cost) || 0) * (Number(f.qty) || 1);
+  });
+  (chosen || []).forEach(function(p){ cost += Number(p.cost) || 0; });
+  return cost;
+}
+
+// 把一筆購物車明細展開成「要實際扣庫存的品項」
+// 一般商品回傳自己；組合回傳它的成分（數量already乘上組合的份數）
+function expandForStock(line) {
+  if (!line) return [];
+  if (!line.isBundle) return [line];
+  return (line.components || []).map(function(c){
+    return {
+      id: c.id, sku: c.sku, name: c.name,
+      main: c.main, sub: c.sub,
+      qty: (Number(c.qty) || 1) * (Number(line.qty) || 1)
+    };
+  });
+}
+
 // 非員林店：本店 stocks 沒有的商品一律補 0
 // （否則顯示層會 fallback 到商品主檔的 p.stock——那是員林店的舊種子數字）
 function fillZeroForStore(stocksObj) {
@@ -1575,7 +1643,8 @@ function CatalogPanel(props) {
   var mfs = useState(""); var filterMain = mfs[0], setFilterMain = mfs[1];
   var sfs = useState(""); var filterSub  = sfs[0], setFilterSub  = sfs[1];
   var fls = useState(""); var filterListing = fls[0], setFilterListing = fls[1]; // "" 全部 / "on" 上架中 / "off" 已下架
-  var cts = useState("list"); var catTab = cts[0], setCatTab = cts[1]; // list | listing
+  var cts = useState("list"); var catTab = cts[0], setCatTab = cts[1]; // list | listing | bundle
+  var anb = useState(false);  var autoNewBundle = anb[0], setAutoNewBundle = anb[1]; // 從「＋新增組合」進來時直接開編輯器
   var pgs = useState(0); var page = pgs[0], setPage = pgs[1];
   var as = useState(null); var adjustId = as[0], setAdjustId = as[1];
   var ds = useState(0);    var delta = ds[0], setDelta = ds[1];
@@ -2366,9 +2435,12 @@ function CatalogPanel(props) {
     <div style={{display:"flex",flexDirection:"column",gap:8,height:"100%",overflow:"hidden"}}>
 
       {/* ── 子分頁切換 ── */}
-      {isManager && (props.storeList||[]).length > 1 && (
+      {isManager && (
         <div style={{display:"flex",gap:6,flexShrink:0}}>
-          {[["list","商品庫存"],["listing","上下架管理"]].map(function(t){
+          {[["list","商品庫存"]]
+            .concat((props.storeList||[]).length > 1 ? [["listing","上下架管理"]] : [])
+            .concat([["bundle","組合商品"]])
+            .map(function(t){
             var on = catTab===t[0];
             return (
               <button key={t[0]} onClick={function(){setCatTab(t[0]);}}
@@ -2381,7 +2453,11 @@ function CatalogPanel(props) {
         </div>
       )}
 
-      {catTab === "listing" ? <ListingManager products={products} setProducts={setSharedProducts}
+      {catTab === "bundle" ? <BundleManager products={products}
+        bundles={props.bundles||[]} setBundles={props.setBundles}
+        autoNew={autoNewBundle} onAutoNewDone={function(){ setAutoNewBundle(false); }}
+        storeList={props.storeList||[]} currentStore={props.currentStore}/> :
+       catTab === "listing" ? <ListingManager products={products} setProducts={setSharedProducts}
         storeList={props.storeList||[]} currentStore={props.currentStore} stocks={stocks}/> : (
       <React.Fragment>
 
@@ -2446,6 +2522,13 @@ function CatalogPanel(props) {
           style={{background:showAdd?"#2a2520":"#b8910a",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
           ＋ 新增商品
         </button>
+        {/* 1b. 新增組合（把現有商品組成一個可販售的組合） */}
+        {isManager && (
+          <button onClick={function(){ setAutoNewBundle(true); setCatTab("bundle"); }}
+            style={{background:"#9a7a4a",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
+            ＋ 新增組合
+          </button>
+        )}
         {/* 2. 批次新增 */}
         <label style={{background:"#7055c0",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
           ＋ 批次新增
@@ -3175,6 +3258,461 @@ function CatalogPanel(props) {
   );
 }
 
+// ── 組合商品管理 ─────────────────────────────────────────────────
+function BundleManager(props) {
+  var products = props.products || [];
+  var bundles  = props.bundles  || [];
+  var setBundles = props.setBundles || function(){};
+  var ed = useState(null); var editing = ed[0], setEditing = ed[1];
+
+  var productById = {};
+  products.forEach(function(p){ if(p && p.id!==undefined) productById[String(p.id)] = p; });
+
+  // 從商品庫存頁的「＋新增組合」進來 → 直接開空白編輯器
+  useEffect(function(){
+    if (!props.autoNew) return;
+    setEditing(blank());
+    if (props.onAutoNewDone) props.onAutoNewDone();
+  }, [props.autoNew]);
+
+  function blank() {
+    return {
+      id: "B" + Date.now(),
+      sku: "", name: "", price: 0,
+      main: "居家香氛", sub: "禮盒",
+      active: true,
+      fixedItems: [],
+      choice: null
+    };
+  }
+
+  function save(b) {
+    if (!b.name.trim()) { alert("請輸入組合名稱"); return; }
+    if (!(Number(b.price) > 0)) { alert("請輸入組合售價"); return; }
+    var hasContent = (b.fixedItems||[]).length > 0 || (b.choice && b.choice.count > 0);
+    if (!hasContent) { alert("組合至少要有一個固定品項，或設定可挑選的品項"); return; }
+    setBundles(function(prev){
+      var arr = (prev||[]).slice();
+      var at = arr.findIndex(function(x){ return x.id === b.id; });
+      if (at >= 0) arr[at] = b; else arr.push(b);
+      return arr;
+    });
+    setEditing(null);
+  }
+
+  function remove(b) {
+    if (!confirm("確定要刪除組合「" + b.name + "」？\n\n已經賣出的訂單不受影響。")) return;
+    setBundles(function(prev){ return (prev||[]).filter(function(x){ return x.id !== b.id; }); });
+  }
+
+  // 組合的成本 = 固定品項成本 +（可挑選的話，用額度或池子裡最低價估）
+  function estCost(b) {
+    var c = 0;
+    (b.fixedItems||[]).forEach(function(f){
+      var p = productById[String(f.id)];
+      if (p) c += (Number(p.cost)||0) * (Number(f.qty)||1);
+    });
+    return c;
+  }
+
+  if (editing) return <BundleEditor bundle={editing} products={products}
+    onSave={save} onCancel={function(){setEditing(null);}}/>;
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:10,height:"100%",overflow:"hidden"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+        <div style={{fontSize:12,color:"#9a968e"}}>
+          組合賣出時會自動扣掉每個成分的庫存；報表上整組算一筆，成本為各成分成本相加
+        </div>
+        <button onClick={function(){ setEditing(blank()); }}
+          style={{padding:"8px 16px",borderRadius:8,border:"none",background:"#b8910a",color:"#fff",
+            fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+          ＋ 新增組合
+        </button>
+      </div>
+
+      <div style={{flex:1,overflowY:"auto"}}>
+        {bundles.length === 0 ? (
+          <div style={{textAlign:"center",color:"#9a968e",fontSize:13,padding:"50px 0"}}>
+            還沒有任何組合<br/>
+            <span style={{fontSize:11}}>例如：擴香石禮盒可搭配 $880 精油、襪子任選 3 雙 $500</span>
+          </div>
+        ) : (
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:10}}>
+            {bundles.map(function(b){
+              var c = b.choice;
+              var typeLabel = !c ? "固定組合"
+                : (c.allowance !== null && c.allowance !== undefined)
+                  ? "額度搭配（內含 $" + Number(c.allowance).toLocaleString() + "）"
+                  : "任選 " + c.count + " 件";
+              return (
+                <div key={b.id} style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:14,
+                  opacity: b.active===false ? 0.55 : 1}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:10,color:"#aaA69e",fontFamily:"monospace"}}>{b.sku||"（無貨號）"}</div>
+                      <div style={{fontSize:16,fontWeight:700,color:"#2a2520",lineHeight:1.3}}>{b.name}</div>
+                    </div>
+                    <div style={{fontSize:17,fontWeight:700,color:"#b8910a",whiteSpace:"nowrap"}}>
+                      ${(Number(b.price)||0).toLocaleString()}
+                    </div>
+                  </div>
+
+                  <div style={{marginTop:8,fontSize:11,color:"#9a7a4a",background:"#fffcf4",
+                    borderRadius:6,padding:"4px 8px",display:"inline-block"}}>{typeLabel}</div>
+
+                  <div style={{marginTop:8,fontSize:12,color:"#7a7068",lineHeight:1.7}}>
+                    {(b.fixedItems||[]).length > 0 && (
+                      <div>固定：{(b.fixedItems||[]).map(function(f){
+                        var p = productById[String(f.id)];
+                        return (p ? p.name : "（已刪除）") + (f.qty>1 ? "×"+f.qty : "");
+                      }).join("、")}</div>
+                    )}
+                    {c && (
+                      <div>可選：{c.poolMode==="cat"
+                        ? (c.cat.main + (c.cat.sub ? " / " + c.cat.sub : "") + " 任選")
+                        : (c.pool||[]).length + " 項指定商品"}　挑 {c.count} 件</div>
+                    )}
+                    <div style={{color:"#9a968e"}}>固定品項成本 ${estCost(b).toLocaleString()}</div>
+                  </div>
+
+                  <div style={{display:"flex",gap:6,marginTop:11}}>
+                    <button onClick={function(){ setEditing(JSON.parse(JSON.stringify(b))); }}
+                      style={{flex:1,padding:"7px 0",borderRadius:7,border:"1px solid #d8d4cc",background:"#fff",
+                        color:"#5a5048",fontSize:12,cursor:"pointer"}}>編輯</button>
+                    <button onClick={function(){
+                        setBundles(function(prev){ return (prev||[]).map(function(x){
+                          return x.id===b.id ? Object.assign({},x,{active: x.active===false}) : x; }); });
+                      }}
+                      style={{flex:1,padding:"7px 0",borderRadius:7,border:"1px solid #d8d4cc",background:"#fff",
+                        color:b.active===false?"#3a7a30":"#9a968e",fontSize:12,cursor:"pointer"}}>
+                      {b.active===false ? "啟用" : "停用"}
+                    </button>
+                    <button onClick={function(){ remove(b); }}
+                      style={{padding:"7px 11px",borderRadius:7,border:"1px solid #e8c4bc",background:"#fff",
+                        color:"#b3261e",fontSize:12,cursor:"pointer"}}>刪除</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── 組合編輯器 ───────────────────────────────────────────────────
+function BundleEditor(props) {
+  var products = props.products || [];
+  var bb = useState(props.bundle); var b = bb[0], setB = bb[1];
+  var sq = useState(""); var q = sq[0], setQ = sq[1];      // 搜尋固定品項
+  var sq2 = useState(""); var q2 = sq2[0], setQ2 = sq2[1]; // 搜尋可選品項
+
+  function up(patch){ setB(function(prev){ return Object.assign({}, prev, patch); }); }
+
+  var productById = {};
+  products.forEach(function(p){ if(p && p.id!==undefined) productById[String(p.id)] = p; });
+
+  // 組合類型：fixed / pickN / allowance
+  var kind = !b.choice ? "fixed"
+    : (b.choice.allowance !== null && b.choice.allowance !== undefined) ? "allowance" : "pickN";
+
+  function setKind(k) {
+    if (k === "fixed") { up({choice: null}); return; }
+    var base = b.choice || {count:1, poolMode:"list", pool:[], cat:{main:"",sub:""}};
+    up({choice: Object.assign({}, base, {
+      allowance: k === "allowance" ? (base.allowance || 880) : null,
+      count: k === "allowance" ? 1 : (base.count || 3)
+    })});
+  }
+
+  function upChoice(patch){ up({choice: Object.assign({}, b.choice, patch)}); }
+
+  function addFixed(p) {
+    var arr = (b.fixedItems||[]).slice();
+    if (arr.some(function(f){ return String(f.id)===String(p.id); })) return;
+    arr.push({id: p.id, qty: 1});
+    up({fixedItems: arr});
+  }
+  function togglePool(p) {
+    var arr = (b.choice.pool||[]).slice();
+    var at = arr.findIndex(function(id){ return String(id)===String(p.id); });
+    if (at>=0) arr.splice(at,1); else arr.push(p.id);
+    upChoice({pool: arr});
+  }
+
+  function search(text) {
+    if (!text) return [];
+    return products.filter(function(p){
+      return (p.name||"").indexOf(text)>=0 || (p.sku||"").indexOf(text)>=0;
+    }).slice(0, 20);
+  }
+
+  var lbl = {fontSize:11,color:"#9a968e",marginBottom:4,display:"block"};
+  var inp = {width:"100%",padding:"9px 11px",fontSize:14,border:"1px solid #e8e4de",borderRadius:8};
+
+  // 成本與毛利即時試算（成本＝各成分成本加總）
+  var fixedCost = (b.fixedItems||[]).reduce(function(s,f){
+    var p = productById[String(f.id)];
+    return s + (p ? (Number(p.cost)||0) * (Number(f.qty)||1) : 0);
+  }, 0);
+  var fixedRetail = (b.fixedItems||[]).reduce(function(s,f){
+    var p = productById[String(f.id)];
+    return s + (p ? (Number(p.price)||0) * (Number(f.qty)||1) : 0);
+  }, 0);
+  // 可挑選的部分：用池子裡的平均成本估一件，乘上要挑的件數
+  var poolProducts = b.choice ? products.filter(function(p){ return bundlePoolHas(b, p); }) : [];
+  var avgPoolCost = poolProducts.length
+    ? poolProducts.reduce(function(s,p){ return s + (Number(p.cost)||0); }, 0) / poolProducts.length : 0;
+  var avgPoolPrice = poolProducts.length
+    ? poolProducts.reduce(function(s,p){ return s + (Number(p.price)||0); }, 0) / poolProducts.length : 0;
+  var pickCount = b.choice ? (Number(b.choice.count)||0) : 0;
+  var estCostTotal   = Math.round(fixedCost + avgPoolCost * pickCount);
+  var estRetailTotal = Math.round(fixedRetail + avgPoolPrice * pickCount);
+  var price = Number(b.price)||0;
+  var profit = price - estCostTotal;
+  var profitRate = price > 0 ? Math.round(profit / price * 100) : 0;
+  var saved = estRetailTotal - price;
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:12,height:"100%",overflowY:"auto",paddingRight:4}}>
+      <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>
+        {props.bundle.name ? "編輯組合" : "新增組合"}
+      </div>
+
+      {/* 基本資料 */}
+      <div style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:14}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div>
+            <label style={lbl}>組合名稱</label>
+            <input style={inp} value={b.name} placeholder="例：擴香石禮盒"
+              onChange={function(e){ up({name: e.target.value}); }}/>
+          </div>
+          <div>
+            <label style={lbl}>貨號（選填，收銀台可搜尋）</label>
+            <input style={inp} value={b.sku} placeholder="例：SET-001"
+              onChange={function(e){ up({sku: e.target.value}); }}/>
+          </div>
+          <div>
+            <label style={lbl}>組合售價</label>
+            <input style={inp} type="number" value={b.price}
+              onChange={function(e){ up({price: Number(e.target.value)||0}); }}/>
+          </div>
+          <div>
+            <label style={lbl}>報表歸類</label>
+            <div style={{display:"flex",gap:6}}>
+              <select style={Object.assign({},inp,{flex:1})} value={b.main}
+                onChange={function(e){ up({main: e.target.value, sub: (CAT_STRUCT[e.target.value]||[])[0]||""}); }}>
+                {Object.keys(CAT_STRUCT).map(function(m){ return <option key={m} value={m}>{m}</option>; })}
+              </select>
+              <select style={Object.assign({},inp,{flex:1})} value={b.sub}
+                onChange={function(e){ up({sub: e.target.value}); }}>
+                {(CAT_STRUCT[b.main]||[]).map(function(s){ return <option key={s} value={s}>{s}</option>; })}
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 類型 */}
+      <div style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:14}}>
+        <label style={lbl}>組合類型</label>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {[["fixed","固定組合","內容固定，不用挑"],
+            ["pickN","任選 N 件","同一價格任選，例：襪子任選3雙"],
+            ["allowance","額度搭配","內含額度，超過補價差"]].map(function(t){
+            var on = kind===t[0];
+            return (
+              <button key={t[0]} onClick={function(){ setKind(t[0]); }}
+                style={{flex:1,minWidth:150,padding:"10px",borderRadius:9,textAlign:"left",cursor:"pointer",
+                  border:on?"1.5px solid #b8910a":"1px solid #e8e4de",background:on?"#fffcf4":"#fff"}}>
+                <div style={{fontSize:13,fontWeight:700,color:on?"#b8910a":"#5a5048"}}>{t[1]}</div>
+                <div style={{fontSize:10,color:"#9a968e",marginTop:2}}>{t[2]}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 固定品項 */}
+      <div style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:14}}>
+        <label style={lbl}>一定包含的品項{kind!=="fixed" && "（例如禮盒本體，可不填）"}</label>
+        {(b.fixedItems||[]).length > 0 && (
+          <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:9}}>
+            {(b.fixedItems||[]).map(function(f, idx){
+              var p = productById[String(f.id)];
+              return (
+                <div key={f.id} style={{display:"flex",alignItems:"center",gap:8,background:"#faf9f7",
+                  borderRadius:7,padding:"7px 10px"}}>
+                  <span style={{flex:1,fontSize:13,color:"#2a2520"}}>
+                    {p ? p.name : "（商品已刪除）"}
+                    {p && <span style={{fontSize:11,color:"#9a968e"}}>　${(Number(p.price)||0).toLocaleString()}　成本 ${(Number(p.cost)||0).toLocaleString()}</span>}
+                  </span>
+                  <input type="number" value={f.qty} min="1" style={{width:58,padding:"4px 7px",fontSize:13,
+                    border:"1px solid #e8e4de",borderRadius:6,textAlign:"center"}}
+                    onChange={function(e){
+                      var arr = (b.fixedItems||[]).slice();
+                      arr[idx] = Object.assign({}, arr[idx], {qty: Math.max(1, Number(e.target.value)||1)});
+                      up({fixedItems: arr});
+                    }}/>
+                  <button onClick={function(){
+                      up({fixedItems: (b.fixedItems||[]).filter(function(x,i){ return i!==idx; })});
+                    }}
+                    style={{border:"none",background:"none",color:"#b3261e",cursor:"pointer",fontSize:16}}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <input style={inp} value={q} placeholder="搜尋商品名稱或貨號來加入…"
+          onChange={function(e){ setQ(e.target.value); }}/>
+        {q && (
+          <div style={{marginTop:7,maxHeight:170,overflowY:"auto",border:"1px solid #f0ede8",borderRadius:8}}>
+            {search(q).map(function(p){
+              return (
+                <button key={p.id} onClick={function(){ addFixed(p); setQ(""); }}
+                  style={{display:"block",width:"100%",textAlign:"left",padding:"8px 11px",border:"none",
+                    borderBottom:"1px solid #f5f4f0",background:"#fff",cursor:"pointer",fontSize:13}}>
+                  <span style={{fontFamily:"monospace",fontSize:11,color:"#aaA69e"}}>{p.sku}</span>　{p.name}
+                  <span style={{float:"right",color:"#b8910a"}}>${(Number(p.price)||0).toLocaleString()}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* 可挑選的部分 */}
+      {b.choice && (
+        <div style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:14}}>
+          <div style={{display:"grid",gridTemplateColumns:kind==="allowance"?"1fr 1fr":"1fr",gap:10,marginBottom:11}}>
+            <div>
+              <label style={lbl}>現場挑選幾件</label>
+              <input style={inp} type="number" min="1" value={b.choice.count}
+                onChange={function(e){ upChoice({count: Math.max(1, Number(e.target.value)||1)}); }}/>
+            </div>
+            {kind==="allowance" && (
+              <div>
+                <label style={lbl}>內含額度（超過補價差）</label>
+                <input style={inp} type="number" value={b.choice.allowance}
+                  onChange={function(e){ upChoice({allowance: Number(e.target.value)||0}); }}/>
+              </div>
+            )}
+          </div>
+
+          <label style={lbl}>可以挑選的範圍</label>
+          <div style={{display:"flex",gap:8,marginBottom:10}}>
+            {[["list","指定商品清單"],["cat","整個分類任選"]].map(function(t){
+              var on = (b.choice.poolMode||"list")===t[0];
+              return (
+                <button key={t[0]} onClick={function(){ upChoice({poolMode: t[0]}); }}
+                  style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:on?700:500,
+                    border:on?"1.5px solid #b8910a":"1px solid #e8e4de",background:on?"#fffcf4":"#fff",
+                    color:on?"#b8910a":"#7a7068"}}>{t[1]}</button>
+              );
+            })}
+          </div>
+
+          {(b.choice.poolMode||"list")==="cat" ? (
+            <div style={{display:"flex",gap:8}}>
+              <select style={Object.assign({},inp,{flex:1})} value={(b.choice.cat||{}).main||""}
+                onChange={function(e){ upChoice({cat:{main:e.target.value, sub:""}}); }}>
+                <option value="">請選大分類</option>
+                {Object.keys(CAT_STRUCT).map(function(m){ return <option key={m} value={m}>{m}</option>; })}
+              </select>
+              <select style={Object.assign({},inp,{flex:1})} value={(b.choice.cat||{}).sub||""}
+                onChange={function(e){ upChoice({cat:Object.assign({},b.choice.cat,{sub:e.target.value})}); }}>
+                <option value="">整個大分類</option>
+                {(CAT_STRUCT[(b.choice.cat||{}).main]||[]).map(function(s){ return <option key={s} value={s}>{s}</option>; })}
+              </select>
+            </div>
+          ) : (
+            <div>
+              {(b.choice.pool||[]).length > 0 && (
+                <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:9}}>
+                  {(b.choice.pool||[]).map(function(id){
+                    var p = productById[String(id)];
+                    return (
+                      <span key={id} style={{background:"#fffcf4",border:"1px solid #e8dcc0",borderRadius:20,
+                        padding:"4px 10px",fontSize:12,color:"#7a6040",display:"flex",alignItems:"center",gap:6}}>
+                        {p ? p.name : "（已刪除）"}
+                        <button onClick={function(){ togglePool({id:id}); }}
+                          style={{border:"none",background:"none",color:"#b3261e",cursor:"pointer",fontSize:14,padding:0}}>×</button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              <input style={inp} value={q2} placeholder="搜尋要加入可選清單的商品…"
+                onChange={function(e){ setQ2(e.target.value); }}/>
+              {q2 && (
+                <div style={{marginTop:7,maxHeight:170,overflowY:"auto",border:"1px solid #f0ede8",borderRadius:8}}>
+                  {search(q2).map(function(p){
+                    var on = (b.choice.pool||[]).some(function(id){ return String(id)===String(p.id); });
+                    return (
+                      <button key={p.id} onClick={function(){ togglePool(p); }}
+                        style={{display:"block",width:"100%",textAlign:"left",padding:"8px 11px",border:"none",
+                          borderBottom:"1px solid #f5f4f0",background:on?"#fffcf4":"#fff",cursor:"pointer",fontSize:13}}>
+                        <span style={{fontFamily:"monospace",fontSize:11,color:"#aaA69e"}}>{p.sku}</span>　{p.name}
+                        <span style={{float:"right",color:on?"#3a7a30":"#b8910a"}}>
+                          {on ? "✓ 已加入" : "$"+(Number(p.price)||0).toLocaleString()}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 成本與毛利試算 */}
+      {(fixedCost > 0 || pickCount > 0) && (
+        <div style={{background:"#fffcf4",border:"1px solid #e8dcc0",borderRadius:12,padding:14}}>
+          <div style={{fontSize:11,color:"#9a7a4a",marginBottom:9,fontWeight:700}}>
+            成本與毛利{pickCount > 0 ? "（挑選的部分以平均價估算）" : ""}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+            {[["原價加總","$"+estRetailTotal.toLocaleString(),"#7a7068"],
+              ["組合售價","$"+price.toLocaleString(),"#b8910a"],
+              ["成本加總","$"+estCostTotal.toLocaleString(),"#4a8ec0"],
+              ["毛利","$"+profit.toLocaleString()+"（"+profitRate+"%）", profit>0?"#3a7a30":"#b3261e"]
+            ].map(function(x){
+              return (
+                <div key={x[0]}>
+                  <div style={{fontSize:10,color:"#9a968e"}}>{x[0]}</div>
+                  <div style={{fontSize:16,fontWeight:700,color:x[2]}}>{x[1]}</div>
+                </div>
+              );
+            })}
+          </div>
+          {saved > 0 && (
+            <div style={{marginTop:9,fontSize:12,color:"#3a7a30"}}>
+              比分開買便宜 ${saved.toLocaleString()}　（可以當成陳列文案）
+            </div>
+          )}
+          {profit < 0 && (
+            <div style={{marginTop:9,fontSize:12,color:"#b3261e",fontWeight:600}}>
+              ⚠️ 售價低於成本，這樣賣會虧錢
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{display:"flex",gap:9,paddingBottom:10}}>
+        <button onClick={props.onCancel}
+          style={{flex:1,padding:"12px",borderRadius:9,border:"1px solid #d8d4cc",background:"#fff",
+            color:"#9a968e",fontSize:14,cursor:"pointer"}}>取消</button>
+        <button onClick={function(){ props.onSave(b); }}
+          style={{flex:2,padding:"12px",borderRadius:9,border:"none",background:"#b8910a",
+            color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>儲存組合</button>
+      </div>
+    </div>
+  );
+}
+
 // ── 上下架管理（分店批次操作）─────────────────────────────────────
 function ListingManager(props) {
   var products = props.products || [];
@@ -3600,9 +4138,12 @@ function OrdersDrawer(props) {
     // 找到該訂單，退回庫存
     var theOrder = orders.find(function(o){ return o.no === no; });
     if (theOrder && theOrder.cartSnapshot && setSharedStocks) {
+      // 組合商品要拆開，逐個成分退回
+      var restoreLines = [];
+      theOrder.cartSnapshot.forEach(function(it){ restoreLines = restoreLines.concat(expandForStock(it)); });
       setSharedStocks(function(prev){
         var next = Object.assign({}, prev);
-        theOrder.cartSnapshot.forEach(function(it){
+        restoreLines.forEach(function(it){
           if (it.main === "業外收入") return;
           var cur = next[it.id] !== undefined ? next[it.id] : 0;
           next[it.id] = cur + it.qty; // 退回
@@ -3614,7 +4155,7 @@ function OrdersDrawer(props) {
         var nowT = new Date();
         var restoreLogs = [];
         var curStocks = stocks || {};
-        theOrder.cartSnapshot.forEach(function(it){
+        restoreLines.forEach(function(it){
           if (it.main === "業外收入") return;
           var cur = curStocks[it.id] !== undefined ? curStocks[it.id] : 0;
           restoreLogs.push({
@@ -10203,6 +10744,8 @@ function POSSystem() {
   var sharedStocks=sts2[0],setSharedStocks=sts2[1];
   var prd2=useState(PRODUCTS); var sharedProducts=prd2[0], setSharedProducts=prd2[1];
   var shl=useState([]);     var shiftLog=shl[0],setShiftLog=shl[1];
+  var bdl=useState([]);     var bundles=bdl[0],setBundles=bdl[1];   // 組合商品（全店共用）
+  var bpk=useState(null);   var bundlePick=bpk[0],setBundlePick=bpk[1]; // 正在挑選成分的組合
   var exp=useState([]);     var expenses=exp[0],setExpenses=exp[1];
   var hst=useState({});     var history=hst[0],setHistory=hst[1]; // 歷史業績補登 {YYYY-MM:{rev,cost}}
   // 員工時薪設定（key: name, value: hourlyRate）
@@ -10356,6 +10899,12 @@ function POSSystem() {
         } catch(e) {}
       },
       shiftlog:   setShiftLog,
+      bundles:    function(val) {
+        try {
+          var arr = typeof val === "string" ? JSON.parse(val) : val;
+          if (Array.isArray(arr)) setBundles(arr);
+        } catch(e) {}
+      },
       expenses:   setExpenses,
       history:    setHistory,
       staffrates: setStaffRates,
@@ -10570,6 +11119,7 @@ function POSSystem() {
     loadOne("stocklog",   setSharedStockLog);
 
     loadOne("shiftlog",   setShiftLog);
+    loadOne("bundles",    setBundles);
     loadOne("expenses",   setExpenses);
     loadOne("history",    setHistory);
     loadOne("staffrates", setStaffRates);
@@ -10786,6 +11336,14 @@ function POSSystem() {
     });
   }
 
+  function saveBundles(updater) {
+    setBundles(function(prev){
+      var next = typeof updater==="function" ? updater(prev) : updater;
+      saveData("bundles", next);
+      return next;
+    });
+  }
+
   function saveExpenses(updater) {
     setExpenses(function(prev){
       var next = typeof updater==="function" ? updater(prev) : updater;
@@ -10891,6 +11449,57 @@ function POSSystem() {
 
   var subCats = activeMain ? (CAT_STRUCT[activeMain] || []) : [];
   var wrapAt  = activeMain ? (WRAP_CATS[activeMain] || 0) : 0;
+
+  // ── 組合商品 ──────────────────────────────────────────────────
+  var productById = useMemo(function(){
+    var m = {};
+    (sharedProducts||[]).forEach(function(p){ if(p && p.id!==undefined) m[String(p.id)] = p; });
+    return m;
+  }, [sharedProducts]);
+
+  // 收銀台要顯示哪些組合：啟用中、且（沒搜尋 或 名稱／貨號對得上）
+  var visibleBundles = useMemo(function(){
+    return (bundles||[]).filter(function(b){
+      if (!b || b.active === false) return false;
+      if (b.storeOff && b.storeOff[currentStore]) return false;   // 本店不賣這個組合
+      if (!search) return true;
+      return (b.name||"").indexOf(search) >= 0 || (b.sku||"").indexOf(search) >= 0;
+    });
+  }, [bundles, search, currentStore]);
+
+  // 點組合：需要挑選就開視窗，固定組合直接進購物車
+  function startBundle(b) {
+    if (b.choice && b.choice.count > 0) { setBundlePick({bundle: b, chosen: []}); return; }
+    addBundleToCart(b, []);
+  }
+
+  function addBundleToCart(b, chosen) {
+    var comps = [];
+    (b.fixedItems||[]).forEach(function(f){
+      var p = productById[String(f.id)];
+      if (!p) return;
+      comps.push({id:p.id, sku:p.sku, name:p.name, main:p.main, sub:p.sub, qty:Number(f.qty)||1});
+    });
+    (chosen||[]).forEach(function(p){
+      comps.push({id:p.id, sku:p.sku, name:p.name, main:p.main, sub:p.sub, qty:1});
+    });
+    if (!comps.length) { alert("這個組合沒有設定任何商品，請先到「商品庫存 → 組合商品」補上。"); return; }
+
+    var price = bundlePrice(b, chosen);
+    var cost  = bundleCost(b, chosen, productById);
+    var picked = (chosen||[]).map(function(p){ return p.name; }).join("、");
+    var line = {
+      id: "BND-" + b.id + "-" + Date.now(),   // 每次都獨立一筆（挑選內容可能不同）
+      isBundle: true, bundleId: b.id,
+      sku: b.sku || "組合",
+      name: b.name + (picked ? "（" + picked + "）" : ""),
+      main: b.main || "居家香氛", sub: b.sub || "禮盒",
+      price: price, cost: cost, qty: 1,
+      components: comps
+    };
+    setCart(function(prev){ return prev.concat([line]); });
+    setBundlePick(null);
+  }
 
   function addToCart(p) {
     // 業外收入分類，預設價格為 0 → 彈出輸入金額視窗（駐點收入、扭蛋機收入）
@@ -11053,7 +11662,17 @@ function POSSystem() {
       total: total,
       status: "paid",
       detail: cart.map(function(i){return i.name+"×"+i.qty;}).join("、"),
-      cartSnapshot: cart.map(function(i){return {id:i.id,name:i.name,sku:i.sku,price:i.price,qty:i.qty,main:i.main,sub:i.sub};}),
+      cartSnapshot: cart.map(function(i){
+        var snap = {id:i.id,name:i.name,sku:i.sku,price:i.price,qty:i.qty,main:i.main,sub:i.sub};
+        // 組合商品：帶著成分（退貨要還庫存）與成本（報表算毛利）
+        if (i.isBundle) {
+          snap.isBundle = true;
+          snap.bundleId = i.bundleId;
+          snap.components = i.components;
+          snap.cost = i.cost;
+        }
+        return snap;
+      }),
       updatedAt: new Date().toISOString()
     };
     saveOrders(function(prev){ return [newOrder].concat(prev); });
@@ -11063,7 +11682,10 @@ function POSSystem() {
     var saleLogs = [];
     var stockSnapshot = sharedStocks || {};
     // 先用當下快照算 saleLogs（同步，保證 sharedAddLog 呼叫時有資料）
-    cart.forEach(function(it){
+    // 組合商品要拆開，逐個成分扣庫存
+    var stockLines = [];
+    cart.forEach(function(it){ stockLines = stockLines.concat(expandForStock(it)); });
+    stockLines.forEach(function(it){
       if (it.main === "業外收入") return;
       var cur = stockSnapshot[it.id] !== undefined ? stockSnapshot[it.id] : 0;
       var after = cur - it.qty;
@@ -11080,7 +11702,7 @@ function POSSystem() {
     // saveStocks updater 用 prev（保證最新）實際扣庫存，before/after 也用 prev 重算確保準確
     saveStocks(function(prev){
       var next = Object.assign({}, prev);
-      cart.forEach(function(it){
+      stockLines.forEach(function(it){
         if (it.main === "業外收入") return;
         var cur = next[it.id] !== undefined ? next[it.id] : 0;
         var after = cur - it.qty;
@@ -11808,6 +12430,33 @@ function POSSystem() {
 
           {/* Product Grid */}
           <div style={{padding:"10px 12px",flex:1,overflowY:"auto",background:"#faf9f7"}}>
+            {/* 組合商品（擺最上面，店員一眼看到） */}
+            {visibleBundles.length > 0 && (
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#9a7a4a",marginBottom:7,letterSpacing:0.5}}>🎁 組合商品</div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:9}}>
+                  {visibleBundles.map(function(b){
+                    var needPick = !!(b.choice && b.choice.count > 0);
+                    return (
+                      <button key={b.id} onClick={function(){ startBundle(b); }}
+                        style={{background:"#fffcf4",border:"1.5px solid #d9b96a",
+                          boxShadow:"0 1px 3px rgba(42,37,32,0.06)",borderRadius:12,padding:"11px",
+                          cursor:"pointer",textAlign:"left",display:"flex",flexDirection:"column",gap:4,
+                          minHeight:88,transition:"box-shadow 0.18s, transform 0.18s"}}
+                        onMouseEnter={function(e){e.currentTarget.style.boxShadow="0 4px 12px rgba(42,37,32,0.10)";e.currentTarget.style.transform="translateY(-1px)";}}
+                        onMouseLeave={function(e){e.currentTarget.style.boxShadow="0 1px 3px rgba(42,37,32,0.06)";e.currentTarget.style.transform="none";}}>
+                        <div style={{fontSize:10,color:"#b09a6a",fontFamily:"monospace"}}>{b.sku||"組合"}</div>
+                        <div style={{fontSize:17,fontWeight:700,color:"#2a2520",lineHeight:1.25,flex:1}}>{b.name}</div>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                          <div style={{fontSize:13,fontWeight:700,color:"#9a7a4a"}}>${(Number(b.price)||0).toLocaleString()}{needPick?" 起":""}</div>
+                          {needPick && <div style={{fontSize:10,color:"#b09a6a"}}>需挑選</div>}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(90px,1fr))",gap:9}}>
               {filtered.slice(0,120).map(function(p) {
                 var inCart = cart.find(function(i){return i.id===p.id;});
@@ -12139,7 +12788,7 @@ function POSSystem() {
         {/* ════ 商品 / 庫存 / 訂單 / 會員 ════ */}
         {activeTab !== "pos" && (
           <div style={{flex:1,overflow:"hidden",padding:"16px 20px",display:"flex",flexDirection:"column"}}>
-            {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={storeStockLog} sharedAddLog={sharedAddLog} currentStore={currentStore} storeList={storeList} purchases={purchases}/>}
+            {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={storeStockLog} sharedAddLog={sharedAddLog} currentStore={currentStore} storeList={storeList} purchases={purchases} bundles={bundles} setBundles={saveBundles}/>}
             {activeTab==="orders"    && <OrdersDrawer orders={storeOrders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedStocks={sharedStocks} sharedAddLog={sharedAddLog}/>}
             {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers} currentStore={currentStore} storeList={storeList}/>}
             {activeTab==="purchase"  && <PurchasePanel purchases={storePurchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
@@ -12194,6 +12843,121 @@ function POSSystem() {
           </div>
         </div>
       )}
+
+      {/* ── 組合商品：挑選成分 ── */}
+      {bundlePick && (function(){
+        var b = bundlePick.bundle;
+        var c = b.choice || {};
+        var chosen = bundlePick.chosen || [];
+        var need = Number(c.count) || 1;
+        var hasAllowance = (c.allowance !== null && c.allowance !== undefined);
+        var chosenSum = chosen.reduce(function(s,p){ return s + (Number(p.price)||0); }, 0);
+        var over = hasAllowance ? Math.max(0, chosenSum - Number(c.allowance)) : 0;
+        var finalPrice = bundlePrice(b, chosen);
+        var done = chosen.length === need;
+
+        // 可挑選的商品：在池子裡、本店有上架、而且還有庫存
+        var options = (sharedProducts||[]).filter(function(p){
+          if (!bundlePoolHas(b, p)) return false;
+          if (p.delisted) return false;
+          if (p.storeOff && p.storeOff[currentStore]) return false;
+          return true;
+        }).sort(function(a,z){ return (Number(a.price)||0) - (Number(z.price)||0); });
+
+        function toggle(p) {
+          setBundlePick(function(prev){
+            var arr = (prev.chosen||[]).slice();
+            var at = arr.findIndex(function(x){ return String(x.id)===String(p.id); });
+            if (at >= 0) { arr.splice(at,1); }
+            else {
+              if (arr.length >= need) arr.shift();   // 超過就換掉最早選的
+              arr.push(p);
+            }
+            return Object.assign({}, prev, {chosen: arr});
+          });
+        }
+
+        return (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:800,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
+            onClick={function(e){if(e.target===e.currentTarget)setBundlePick(null);}}>
+            <div style={{background:"#ffffff",borderRadius:16,width:620,maxWidth:"95vw",maxHeight:"86vh",display:"flex",flexDirection:"column",overflow:"hidden",boxShadow:"0 12px 48px rgba(0,0,0,0.3)"}}>
+              <div style={{padding:"15px 18px",borderBottom:"1px solid #f0ede8",flexShrink:0}}>
+                <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>🎁 {b.name}</div>
+                <div style={{fontSize:12,color:"#9a968e",marginTop:3}}>
+                  請挑選 {need} 件
+                  {hasAllowance ? "，內含 $" + Number(c.allowance).toLocaleString() + " 額度，超過的部分補價差" : "（不限價格）"}
+                </div>
+              </div>
+
+              {/* 已包含的固定品項 */}
+              {(b.fixedItems||[]).length > 0 && (
+                <div style={{padding:"9px 18px",background:"#faf9f7",borderBottom:"1px solid #f0ede8",fontSize:12,color:"#7a7068",flexShrink:0}}>
+                  已包含：{(b.fixedItems||[]).map(function(f){
+                    var p = productById[String(f.id)];
+                    return p ? p.name + (f.qty>1 ? "×"+f.qty : "") : "（商品已不存在）";
+                  }).join("、")}
+                </div>
+              )}
+
+              <div style={{flex:1,overflowY:"auto",padding:"12px 18px"}}>
+                {options.length === 0 ? (
+                  <div style={{textAlign:"center",color:"#9a968e",fontSize:13,padding:"30px 0"}}>
+                    這個組合沒有可挑選的商品<br/>
+                    <span style={{fontSize:11}}>請到「商品庫存 → 組合商品」確認設定</span>
+                  </div>
+                ) : (
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:9}}>
+                    {options.map(function(p){
+                      var on = chosen.some(function(x){ return String(x.id)===String(p.id); });
+                      var st = sharedStocks[p.id]!==undefined ? sharedStocks[p.id] : p.stock;
+                      var extra = hasAllowance ? (Number(p.price)||0) - Number(c.allowance) : 0;
+                      return (
+                        <button key={p.id} onClick={function(){ toggle(p); }}
+                          style={{background:on?"#fffcf4":"#ffffff",border:on?"1.5px solid #d9b96a":"1px solid #e8e4de",
+                            borderRadius:10,padding:"10px",cursor:"pointer",textAlign:"left",
+                            display:"flex",flexDirection:"column",gap:3,position:"relative"}}>
+                          {on && <div style={{position:"absolute",top:6,right:6,background:"#d9b96a",color:"#fff",borderRadius:"50%",width:19,height:19,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800}}>✓</div>}
+                          <div style={{fontSize:14,fontWeight:700,color:"#2a2520",lineHeight:1.3}}>{p.name}</div>
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                            <span style={{fontSize:12,color:"#7a7068"}}>${(Number(p.price)||0).toLocaleString()}</span>
+                            <span style={{fontSize:10,color:st<=0?"#d0552f":"#3a7a30"}}>庫存 {st}</span>
+                          </div>
+                          {hasAllowance && extra > 0 && (
+                            <div style={{fontSize:10,color:"#c2410c",fontWeight:600}}>需補 ${extra.toLocaleString()}</div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div style={{padding:"13px 18px",borderTop:"1px solid #f0ede8",flexShrink:0,background:"#faf9f7"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:9}}>
+                  <span style={{fontSize:12,color:"#7a7068"}}>
+                    已選 {chosen.length} / {need}
+                    {over > 0 && <span style={{color:"#c2410c",fontWeight:600}}>　補價差 ${over.toLocaleString()}</span>}
+                  </span>
+                  <span style={{fontSize:20,fontWeight:700,color:"#9a7a4a"}}>${finalPrice.toLocaleString()}</span>
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={function(){setBundlePick(null);}}
+                    style={{flex:1,padding:"11px 0",borderRadius:8,border:"1px solid #d8d4cc",background:"#ffffff",color:"#9a968e",fontSize:14,cursor:"pointer"}}>
+                    取消
+                  </button>
+                  <button onClick={function(){ if(done) addBundleToCart(b, chosen); }}
+                    disabled={!done}
+                    style={{flex:2,padding:"11px 0",borderRadius:8,border:"none",
+                      background:done?"#b4734a":"#d8d4cc",color:"#ffffff",fontSize:14,fontWeight:700,
+                      cursor:done?"pointer":"default"}}>
+                    {done ? "加入購物車" : "還要選 " + (need - chosen.length) + " 件"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── 匯出資料 Modal ── */}
       {showExport && (
