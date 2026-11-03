@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261103-1830 */window.__BUILD_VERSION="20261103-1830";</script>
+  <script>/* __BUILD_VERSION__:20261103-1903 */window.__BUILD_VERSION="20261103-1903";</script>
 </head>
 <body>
 
@@ -11462,10 +11462,13 @@ function POSSystem() {
     return (bundles||[]).filter(function(b){
       if (!b || b.active === false) return false;
       if (b.storeOff && b.storeOff[currentStore]) return false;   // 本店不賣這個組合
-      if (!search) return true;
-      return (b.name||"").indexOf(search) >= 0 || (b.sku||"").indexOf(search) >= 0;
+      // 搜尋時以名稱／貨號比對，其餘時候跟著分類走（組合歸在自己的大／小分類裡）
+      if (search) return (b.name||"").indexOf(search) >= 0 || (b.sku||"").indexOf(search) >= 0;
+      if (activeMain && b.main !== activeMain) return false;
+      if (activeSub  && b.sub  !== activeSub)  return false;
+      return true;
     });
-  }, [bundles, search, currentStore]);
+  }, [bundles, search, currentStore, activeMain, activeSub]);
 
   // 點組合：需要挑選就開視窗，固定組合直接進購物車
   function startBundle(b) {
@@ -12430,34 +12433,27 @@ function POSSystem() {
 
           {/* Product Grid */}
           <div style={{padding:"10px 12px",flex:1,overflowY:"auto",background:"#faf9f7"}}>
-            {/* 組合商品（擺最上面，店員一眼看到） */}
-            {visibleBundles.length > 0 && (
-              <div style={{marginBottom:12}}>
-                <div style={{fontSize:11,fontWeight:700,color:"#9a7a4a",marginBottom:7,letterSpacing:0.5}}>🎁 組合商品</div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:9}}>
-                  {visibleBundles.map(function(b){
-                    var needPick = !!(b.choice && b.choice.count > 0);
-                    return (
-                      <button key={b.id} onClick={function(){ startBundle(b); }}
-                        style={{background:"#fffcf4",border:"1.5px solid #d9b96a",
-                          boxShadow:"0 1px 3px rgba(42,37,32,0.06)",borderRadius:12,padding:"11px",
-                          cursor:"pointer",textAlign:"left",display:"flex",flexDirection:"column",gap:4,
-                          minHeight:88,transition:"box-shadow 0.18s, transform 0.18s"}}
-                        onMouseEnter={function(e){e.currentTarget.style.boxShadow="0 4px 12px rgba(42,37,32,0.10)";e.currentTarget.style.transform="translateY(-1px)";}}
-                        onMouseLeave={function(e){e.currentTarget.style.boxShadow="0 1px 3px rgba(42,37,32,0.06)";e.currentTarget.style.transform="none";}}>
-                        <div style={{fontSize:10,color:"#b09a6a",fontFamily:"monospace"}}>{b.sku||"組合"}</div>
-                        <div style={{fontSize:17,fontWeight:700,color:"#2a2520",lineHeight:1.25,flex:1}}>{b.name}</div>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                          <div style={{fontSize:13,fontWeight:700,color:"#9a7a4a"}}>${(Number(b.price)||0).toLocaleString()}{needPick?" 起":""}</div>
-                          {needPick && <div style={{fontSize:10,color:"#b09a6a"}}>需挑選</div>}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(90px,1fr))",gap:9}}>
+              {/* 組合商品：跟著分類顯示，排在該分類的商品前面 */}
+              {visibleBundles.map(function(b){
+                var needPick = !!(b.choice && b.choice.count > 0);
+                return (
+                  <button key={b.id} onClick={function(){ startBundle(b); }}
+                    style={{background:"#fffcf4",border:"1.5px solid #d9b96a",
+                      boxShadow:"0 1px 3px rgba(42,37,32,0.06)",borderRadius:12,padding:"10px",
+                      cursor:"pointer",textAlign:"left",display:"flex",flexDirection:"column",gap:4,
+                      minHeight:95,transition:"box-shadow 0.18s, transform 0.18s"}}
+                    onMouseEnter={function(e){e.currentTarget.style.boxShadow="0 4px 12px rgba(42,37,32,0.10)";e.currentTarget.style.transform="translateY(-1px)";}}
+                    onMouseLeave={function(e){e.currentTarget.style.boxShadow="0 1px 3px rgba(42,37,32,0.06)";e.currentTarget.style.transform="none";}}>
+                    <div style={{fontSize:10,color:"#b09a6a",fontFamily:"monospace"}}>🎁 {b.sku||"組合"}</div>
+                    <div style={{fontSize:17,fontWeight:700,color:"#2a2520",lineHeight:1.25,flex:1}}>{b.name}</div>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div style={{fontSize:13,fontWeight:700,color:"#9a7a4a"}}>${(Number(b.price)||0).toLocaleString()}{needPick?" 起":""}</div>
+                      {needPick && <div style={{fontSize:10,color:"#b09a6a"}}>需挑選</div>}
+                    </div>
+                  </button>
+                );
+              })}
               {filtered.slice(0,120).map(function(p) {
                 var inCart = cart.find(function(i){return i.id===p.id;});
                 var cc = CAT_COLORS[p.main]||"#b8910a";
