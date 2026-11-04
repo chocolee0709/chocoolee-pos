@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261103-1903 */window.__BUILD_VERSION="20261103-1903";</script>
+  <script>/* __BUILD_VERSION__:20261105-0053 */window.__BUILD_VERSION="20261105-0053";</script>
 </head>
 <body>
 
@@ -1384,6 +1384,7 @@ const MANAGER_TABS = [
   {key:"analytics", label:"銷售分析",icon:"▲"},
   {key:"smart",     label:"智能分析",icon:"✦"},
   {key:"consign",   label:"寄售結算",icon:"❋"},
+  {key:"outbound",  label:"寄售點",  icon:"🚚"},
   {key:"stockflow", label:"進銷存查詢",icon:"📊"},
   {key:"attendance",label:"出勤打卡記錄",icon:"⏱"},
   {key:"expense",   label:"店舖支出損益",icon:"💵"},
@@ -8628,6 +8629,594 @@ function ExpensePanel(props) {
 var CONSIGN_BRANDS = CAT_STRUCT["寄售"] || [];
 // 結算週期設定：0=每月, 1=雙月奇數月(1,3,5...), 2=雙月偶數月(2,4,6...)
 
+// ── 寄售點（外寄）進銷存 ─────────────────────────────────────────
+// 自家商品放到別人店裡：鋪貨出去扣本店庫存，賣出由對方回報手動登錄，
+// 退回則加回本店庫存。每個據點的在庫＝Σ鋪貨 − Σ已售 − Σ退回。
+function OutboundPanel(props) {
+  var products = props.products || [];
+  var sites    = props.sites || [];
+  var log      = props.log || [];
+  var setSites = props.setSites || function(){};
+  var setLog   = props.setLog   || function(){};
+  var stocks   = props.stocks || {};
+
+  var sel = useState(null);   var siteId = sel[0], setSiteId = sel[1];
+  var md  = useState(null);   var modal  = md[0],  setModal  = md[1];   // ship | sale | return
+  var se  = useState(null);   var siteEdit = se[0], setSiteEdit = se[1];
+  var nowD = new Date();
+  var pm = useState(nowD.getFullYear()+"-"+String(nowD.getMonth()+1).padStart(2,"0"));
+  var period = pm[0], setPeriod = pm[1];
+
+  var productById = {};
+  products.forEach(function(p){ if(p && p.id!==undefined) productById[String(p.id)] = p; });
+
+  // 每個據點、每個商品的結餘
+  function balanceOf(sid) {
+    var bal = {};
+    log.forEach(function(e){
+      if (String(e.siteId) !== String(sid)) return;
+      var k = String(e.productId);
+      if (!bal[k]) bal[k] = {productId:e.productId, sku:e.sku, name:e.name, ship:0, sale:0, ret:0, revenue:0};
+      if (e.type === "ship")   bal[k].ship += Number(e.qty)||0;
+      if (e.type === "sale") { bal[k].sale += Number(e.qty)||0; bal[k].revenue += (Number(e.qty)||0) * (Number(e.price)||0); }
+      if (e.type === "return") bal[k].ret  += Number(e.qty)||0;
+    });
+    Object.keys(bal).forEach(function(k){ bal[k].left = bal[k].ship - bal[k].sale - bal[k].ret; });
+    return bal;
+  }
+
+  function siteStats(sid) {
+    var bal = balanceOf(sid);
+    var left = 0, leftValue = 0, sold = 0, revenue = 0;
+    Object.keys(bal).forEach(function(k){
+      var b = bal[k];
+      var p = productById[k];
+      left += b.left;
+      leftValue += b.left * (p ? (Number(p.price)||0) : 0);
+      sold += b.sale;
+      revenue += b.revenue;
+    });
+    return {left:left, leftValue:leftValue, sold:sold, revenue:revenue};
+  }
+
+  var site = sites.find(function(s){ return String(s.id)===String(siteId); });
+
+  function addEntries(entries) {
+    setLog(function(prev){ return (prev||[]).concat(entries); });
+  }
+
+  // ── 據點清單 ──
+  if (!site) {
+    return (
+      <div style={{display:"flex",flexDirection:"column",gap:12,height:"100%",overflow:"hidden"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+          <div style={{fontSize:12,color:"#9a968e"}}>
+            自家商品寄放在其他店家販售。鋪貨會扣本店庫存，銷售由對方回報後手動登錄
+          </div>
+          <button onClick={function(){ setSiteEdit({id:"S"+Date.now(), name:"", contact:"", phone:"", rate:30, note:"", active:true}); }}
+            style={{padding:"8px 16px",borderRadius:8,border:"none",background:"#b8910a",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+            ＋ 新增寄售點
+          </button>
+        </div>
+
+        {siteEdit && <OutboundSiteEditor site={siteEdit}
+          onSave={function(s){
+            if (!s.name.trim()) { alert("請輸入寄售點名稱"); return; }
+            setSites(function(prev){
+              var arr=(prev||[]).slice();
+              var at=arr.findIndex(function(x){return x.id===s.id;});
+              if(at>=0) arr[at]=s; else arr.push(s);
+              return arr;
+            });
+            setSiteEdit(null);
+          }}
+          onCancel={function(){ setSiteEdit(null); }}/>}
+
+        <div style={{flex:1,overflowY:"auto"}}>
+          {sites.length === 0 ? (
+            <div style={{textAlign:"center",color:"#9a968e",fontSize:13,padding:"50px 0"}}>
+              還沒有任何寄售點<br/>
+              <span style={{fontSize:11}}>例如：某某咖啡廳、某某選物店</span>
+            </div>
+          ) : (
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:11}}>
+              {sites.map(function(s){
+                var st = siteStats(s.id);
+                return (
+                  <div key={s.id} style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:14,
+                    opacity:s.active===false?0.55:1}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                      <div>
+                        <div style={{fontSize:16,fontWeight:700,color:"#2a2520"}}>{s.name}</div>
+                        <div style={{fontSize:11,color:"#9a968e",marginTop:2}}>
+                          抽成 {s.rate||0}%{s.contact?"　"+s.contact:""}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:11}}>
+                      <div>
+                        <div style={{fontSize:10,color:"#9a968e"}}>在庫</div>
+                        <div style={{fontSize:17,fontWeight:700,color:"#2a2520"}}>{st.left} 件</div>
+                      </div>
+                      <div>
+                        <div style={{fontSize:10,color:"#9a968e"}}>累計售出</div>
+                        <div style={{fontSize:17,fontWeight:700,color:"#b8910a"}}>${st.revenue.toLocaleString()}</div>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",gap:6,marginTop:11}}>
+                      <button onClick={function(){ setSiteId(s.id); }}
+                        style={{flex:2,padding:"8px 0",borderRadius:7,border:"none",background:"#5a5048",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                        進銷存明細
+                      </button>
+                      <button onClick={function(){ setSiteEdit(JSON.parse(JSON.stringify(s))); }}
+                        style={{flex:1,padding:"8px 0",borderRadius:7,border:"1px solid #d8d4cc",background:"#fff",color:"#5a5048",fontSize:12,cursor:"pointer"}}>
+                        編輯
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── 單一據點明細 ──
+  var bal = balanceOf(site.id);
+  var rows = Object.keys(bal).map(function(k){ return bal[k]; })
+    .sort(function(a,z){ return String(a.sku||"").localeCompare(String(z.sku||""), "zh-TW", {numeric:true}); });
+  var st = siteStats(site.id);
+  var commission = Math.round(st.revenue * (Number(site.rate)||0) / 100);
+  var payable = st.revenue - commission;
+  var siteLog = log.filter(function(e){ return String(e.siteId)===String(site.id); })
+    .sort(function(a,z){ return String(z.date||"").localeCompare(String(a.date||"")); });
+
+  var btn = {padding:"9px 15px",borderRadius:8,border:"none",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"};
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:11,height:"100%",overflow:"hidden"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <button onClick={function(){ setSiteId(null); }}
+            style={{padding:"6px 12px",borderRadius:7,border:"1px solid #d8d4cc",background:"#fff",color:"#5a5048",fontSize:12,cursor:"pointer"}}>
+            ← 返回
+          </button>
+          <div>
+            <div style={{fontSize:16,fontWeight:700,color:"#2a2520"}}>{site.name}</div>
+            <div style={{fontSize:11,color:"#9a968e"}}>抽成 {site.rate||0}%{site.phone?"　"+site.phone:""}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:7}}>
+          <button onClick={function(){ setModal("ship"); }}   style={Object.assign({},btn,{background:"#3a7a30"})}>📦 鋪貨</button>
+          <button onClick={function(){ setModal("sale"); }}   style={Object.assign({},btn,{background:"#b8910a"})}>💰 登錄銷售</button>
+          <button onClick={function(){ setModal("return"); }} style={Object.assign({},btn,{background:"#9a968e"})}>↩︎ 退回</button>
+        </div>
+      </div>
+
+      {/* KPI */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,flexShrink:0}}>
+        {[["在庫件數", st.left+" 件", "#2a2520"],
+          ["在庫零售值", "$"+st.leftValue.toLocaleString(), "#4a8ec0"],
+          ["累計售出", st.sold+" 件", "#2a2520"],
+          ["銷售金額", "$"+st.revenue.toLocaleString(), "#b8910a"],
+          ["應收（扣抽成）", "$"+payable.toLocaleString(), "#3a7a30"]
+        ].map(function(x){
+          return (
+            <div key={x[0]} style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:10,padding:"10px 12px"}}>
+              <div style={{fontSize:10,color:"#9a968e"}}>{x[0]}</div>
+              <div style={{fontSize:18,fontWeight:700,color:x[2]}}>{x[1]}</div>
+            </div>
+          );
+        })}
+      </div>
+      {/* 月結算：銷售 − 抽成 − 固定費用 = 實收 */}
+      {(function(){
+        var monthSales = siteLog.filter(function(e){
+          return e.type==="sale" && String(e.date||"").slice(0,7) === period;
+        });
+        var mRev = monthSales.reduce(function(s,e){ return s + (Number(e.qty)||0)*(Number(e.price)||0); }, 0);
+        var mQty = monthSales.reduce(function(s,e){ return s + (Number(e.qty)||0); }, 0);
+        var mComm = Math.round(mRev * (Number(site.rate)||0) / 100);
+        var f = site.fees || {};
+        var fixed = (Number(f.mgmt)||0) + (Number(f.listing)||0) + (Number(f.pack)||0);
+        var card = Math.round(mRev * (Number(f.cardRate)||0) / 100);
+        var mon = Number(period.slice(5,7));
+        var evFees = (site.events||[]).filter(function(ev){ return Number(ev.month) === mon; });
+        var evTotal = evFees.reduce(function(s,ev){ return s + (Number(ev.amount)||0); }, 0);
+        var net = mRev - mComm - fixed - card - evTotal;
+
+        // 可選月份：有紀錄的月份 + 本月
+        var months = {};
+        months[nowD.getFullYear()+"-"+String(nowD.getMonth()+1).padStart(2,"0")] = true;
+        siteLog.forEach(function(e){ if(e.date) months[String(e.date).slice(0,7)] = true; });
+        var monthList = Object.keys(months).sort().reverse();
+
+        var row = function(label, amount, color, strong){
+          return (
+            <div style={{display:"flex",justifyContent:"space-between",padding:"4px 0",
+              fontSize:strong?15:13,fontWeight:strong?700:400,color:color||"#5a5048"}}>
+              <span>{label}</span><span>{amount<0?"−":""}${Math.abs(amount).toLocaleString()}</span>
+            </div>
+          );
+        };
+
+        return (
+          <div style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:"12px 15px",flexShrink:0}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:9}}>
+              <div style={{fontSize:12,fontWeight:700,color:"#5a5048"}}>月結算試算</div>
+              <select value={period} onChange={function(e){ setPeriod(e.target.value); }}
+                style={{padding:"5px 9px",fontSize:13,border:"1px solid #e8e4de",borderRadius:7}}>
+                {monthList.map(function(m){ return <option key={m} value={m}>{m}</option>; })}
+              </select>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 24px"}}>
+              <div>
+                {row("銷售金額（"+mQty+" 件）", mRev, "#2a2520")}
+                {row("對方抽成 "+(site.rate||0)+"%", -mComm, "#b3261e")}
+                {(Number(f.cardRate)||0) > 0 && row("信用卡手續費", -card, "#b3261e")}
+              </div>
+              <div>
+                {fixed > 0 && row("每月固定費用", -fixed, "#b3261e")}
+                {evFees.map(function(ev){
+                  return <div key={ev.name}>{row(ev.name||"檔期費用", -(Number(ev.amount)||0), "#b3261e")}</div>;
+                })}
+                <div style={{borderTop:"1px solid #e8e4de",marginTop:5,paddingTop:5}}>
+                  {row("實收", net, net>=0?"#3a7a30":"#b3261e", true)}
+                </div>
+              </div>
+            </div>
+            {fixed > 0 && mRev === 0 && (
+              <div style={{marginTop:8,fontSize:11,color:"#c2410c"}}>
+                ⚠️ 這個月沒有銷售但仍要付 ${(fixed+evTotal).toLocaleString()} 固定費用
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      <div style={{fontSize:11,color:"#9a968e",flexShrink:0}}>
+        累計抽成 ${commission.toLocaleString()}（{site.rate||0}%）
+      </div>
+
+      {/* 在庫明細 */}
+      <div style={{flex:1,overflowY:"auto",background:"#fff",border:"1px solid #e8e4de",borderRadius:12}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+          <thead>
+            <tr style={{background:"#faf9f7"}}>
+              {["貨號","品名","鋪貨","已售","退回","在庫","銷售金額"].map(function(h,i){
+                return <th key={h} style={{padding:"9px 10px",textAlign:i>=2?"right":"left",fontSize:11,color:"#9a968e",
+                  borderBottom:"1px solid #e8e4de",position:"sticky",top:0,background:"#faf9f7"}}>{h}</th>;
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr><td colSpan="7" style={{padding:"34px",textAlign:"center",color:"#9a968e",fontSize:13}}>
+                還沒有鋪貨記錄，按右上角「📦 鋪貨」開始
+              </td></tr>
+            ) : rows.map(function(r){
+              return (
+                <tr key={r.productId}>
+                  <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0",fontFamily:"monospace",fontSize:11,color:"#9a968e"}}>{r.sku}</td>
+                  <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0"}}>{r.name}</td>
+                  <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0",textAlign:"right"}}>{r.ship}</td>
+                  <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0",textAlign:"right",color:"#b8910a",fontWeight:600}}>{r.sale}</td>
+                  <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0",textAlign:"right",color:"#9a968e"}}>{r.ret}</td>
+                  <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0",textAlign:"right",fontWeight:700,
+                    color:r.left<0?"#b3261e":"#2a2520"}}>{r.left}</td>
+                  <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0",textAlign:"right"}}>${r.revenue.toLocaleString()}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* 異動紀錄 */}
+      {siteLog.length > 0 && (
+        <details style={{flexShrink:0,background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:"10px 14px"}}>
+          <summary style={{cursor:"pointer",fontSize:12,fontWeight:700,color:"#5a5048"}}>
+            異動紀錄（{siteLog.length} 筆）
+          </summary>
+          <div style={{maxHeight:200,overflowY:"auto",marginTop:9}}>
+            {siteLog.slice(0,100).map(function(e){
+              var tag = e.type==="ship"?["鋪貨","#3a7a30"]:e.type==="sale"?["售出","#b8910a"]:["退回","#9a968e"];
+              return (
+                <div key={e.id} style={{display:"flex",gap:10,fontSize:12,padding:"5px 0",borderBottom:"1px solid #f5f4f0"}}>
+                  <span style={{color:"#9a968e",width:88,flexShrink:0}}>{e.date}</span>
+                  <span style={{color:tag[1],fontWeight:700,width:38,flexShrink:0}}>{tag[0]}</span>
+                  <span style={{flex:1}}>{e.name}</span>
+                  <span style={{fontWeight:600}}>{e.qty}</span>
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      )}
+
+      {modal && <OutboundEntryModal mode={modal} site={site} products={products}
+        balance={bal} stocks={stocks} productById={productById}
+        onCancel={function(){ setModal(null); }}
+        onSubmit={function(entries, stockDelta){
+          addEntries(entries);
+          if (props.applyStock && stockDelta && Object.keys(stockDelta).length) {
+            props.applyStock(stockDelta, modal, site.name, entries);
+          }
+          setModal(null);
+        }}/>}
+    </div>
+  );
+}
+
+// 寄售點基本資料
+function OutboundSiteEditor(props) {
+  var ss = useState(props.site); var s = ss[0], setS = ss[1];
+  function up(patch){ setS(function(p){ return Object.assign({}, p, patch); }); }
+  var lbl = {fontSize:11,color:"#9a968e",marginBottom:4,display:"block"};
+  var inp = {width:"100%",padding:"9px 11px",fontSize:14,border:"1px solid #e8e4de",borderRadius:8};
+  var fees = s.fees || {};
+  function upFee(patch){ up({fees: Object.assign({}, fees, patch)}); }
+  var evs = s.events || [];
+  function upEvent(i, patch){
+    var arr = evs.slice();
+    arr[i] = Object.assign({}, arr[i], patch);
+    up({events: arr});
+  }
+  var monthlyTotal = (Number(fees.mgmt)||0) + (Number(fees.listing)||0) + (Number(fees.pack)||0);
+  return (
+    <div style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:14,flexShrink:0}}>
+      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:10}}>
+        <div><label style={lbl}>寄售點名稱</label>
+          <input style={inp} value={s.name} placeholder="例：某某咖啡廳"
+            onChange={function(e){ up({name:e.target.value}); }}/></div>
+        <div><label style={lbl}>聯絡人</label>
+          <input style={inp} value={s.contact||""} onChange={function(e){ up({contact:e.target.value}); }}/></div>
+        <div><label style={lbl}>電話</label>
+          <input style={inp} value={s.phone||""} onChange={function(e){ up({phone:e.target.value}); }}/></div>
+        <div><label style={lbl}>對方抽成 %</label>
+          <input style={inp} type="number" value={s.rate}
+            onChange={function(e){ up({rate:Number(e.target.value)||0}); }}/></div>
+      </div>
+
+      {/* 合約期間 */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 2fr",gap:10,marginTop:10}}>
+        <div><label style={lbl}>合約起日</label>
+          <input style={inp} type="date" value={s.contractFrom||""}
+            onChange={function(e){ up({contractFrom:e.target.value}); }}/></div>
+        <div><label style={lbl}>合約訖日</label>
+          <input style={inp} type="date" value={s.contractTo||""}
+            onChange={function(e){ up({contractTo:e.target.value}); }}/></div>
+        <div><label style={lbl}>備註</label>
+          <input style={inp} value={s.note||""} placeholder="例：預計 1 月開幕"
+            onChange={function(e){ up({note:e.target.value}); }}/></div>
+      </div>
+
+      {/* 每月固定費用 */}
+      <div style={{marginTop:13,paddingTop:12,borderTop:"1px solid #f0ede8"}}>
+        <div style={{fontSize:11,fontWeight:700,color:"#9a7a4a",marginBottom:8}}>
+          每月固定費用（結算時從貨款扣除）　合計 ${monthlyTotal.toLocaleString()}/月
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+          <div><label style={lbl}>營業管理費</label>
+            <input style={inp} type="number" value={fees.mgmt||0}
+              onChange={function(e){ upFee({mgmt:Number(e.target.value)||0}); }}/></div>
+          <div><label style={lbl}>上架費</label>
+            <input style={inp} type="number" value={fees.listing||0}
+              onChange={function(e){ upFee({listing:Number(e.target.value)||0}); }}/></div>
+          <div><label style={lbl}>包裝分攤費</label>
+            <input style={inp} type="number" value={fees.pack||0}
+              onChange={function(e){ upFee({pack:Number(e.target.value)||0}); }}/></div>
+          <div><label style={lbl}>信用卡手續費 %</label>
+            <input style={inp} type="number" value={fees.cardRate||0}
+              onChange={function(e){ upFee({cardRate:Number(e.target.value)||0}); }}/></div>
+        </div>
+      </div>
+
+      {/* 檔期贊助費 */}
+      <div style={{marginTop:13,paddingTop:12,borderTop:"1px solid #f0ede8"}}>
+        <div style={{fontSize:11,fontWeight:700,color:"#9a7a4a",marginBottom:8}}>
+          檔期贊助費（只在指定月份收）
+        </div>
+        {[0,1].map(function(i){
+          var ev = evs[i] || {name:"", month:0, amount:0};
+          return (
+            <div key={i} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:10,marginBottom:8}}>
+              <div><label style={lbl}>名稱</label>
+                <input style={inp} value={ev.name||""} placeholder={i===0?"年中慶":"週年慶"}
+                  onChange={function(e){ upEvent(i,{name:e.target.value}); }}/></div>
+              <div><label style={lbl}>月份</label>
+                <select style={inp} value={ev.month||0}
+                  onChange={function(e){ upEvent(i,{month:Number(e.target.value)}); }}>
+                  <option value="0">不收</option>
+                  {[1,2,3,4,5,6,7,8,9,10,11,12].map(function(m){
+                    return <option key={m} value={m}>{m} 月</option>; })}
+                </select></div>
+              <div><label style={lbl}>金額</label>
+                <input style={inp} type="number" value={ev.amount||0}
+                  onChange={function(e){ upEvent(i,{amount:Number(e.target.value)||0}); }}/></div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{display:"flex",gap:8,marginTop:11}}>
+        <button onClick={props.onCancel}
+          style={{flex:1,padding:"10px",borderRadius:8,border:"1px solid #d8d4cc",background:"#fff",color:"#9a968e",fontSize:13,cursor:"pointer"}}>取消</button>
+        <button onClick={function(){ props.onSave(s); }}
+          style={{flex:2,padding:"10px",borderRadius:8,border:"none",background:"#b8910a",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>儲存</button>
+      </div>
+    </div>
+  );
+}
+
+// 鋪貨／登錄銷售／退回
+function OutboundEntryModal(props) {
+  var mode = props.mode;   // ship | sale | return
+  var products = props.products || [];
+  var balance = props.balance || {};
+  var productById = props.productById || {};
+  var qs = useState(""); var q = qs[0], setQ = qs[1];
+  var ls = useState([]); var lines = ls[0], setLines = ls[1];  // [{productId, qty, price}]
+  var ds = useState(localDate(new Date())); var date = ds[0], setDate = ds[1];
+
+  var title = mode==="ship" ? "📦 鋪貨到 " + props.site.name
+            : mode==="sale" ? "💰 登錄銷售 — " + props.site.name
+            : "↩︎ 從 " + props.site.name + " 退回";
+
+  // 鋪貨可挑全部商品；銷售和退回只能挑該據點還有在庫的
+  var pool = mode === "ship"
+    ? products
+    : Object.keys(balance).map(function(k){ return productById[k]; }).filter(function(p){ return !!p; })
+        .filter(function(p){ return balance[String(p.id)].left > 0; });
+
+  var found = q ? pool.filter(function(p){
+      return (p.name||"").indexOf(q)>=0 || (p.sku||"").indexOf(q)>=0;
+    }).slice(0,20) : (mode==="ship" ? [] : pool.slice(0,40));
+
+  function addLine(p) {
+    if (lines.some(function(l){ return String(l.productId)===String(p.id); })) return;
+    setLines(lines.concat([{productId:p.id, qty:1, price:Number(p.price)||0}]));
+    setQ("");
+  }
+  function setLine(idx, patch) {
+    setLines(lines.map(function(l,i){ return i===idx ? Object.assign({},l,patch) : l; }));
+  }
+
+  var total = lines.reduce(function(s,l){ return s + (Number(l.qty)||0) * (Number(l.price)||0); }, 0);
+
+  function submit() {
+    if (!lines.length) return;
+    // 檢查數量合理性
+    for (var i=0;i<lines.length;i++) {
+      var l = lines[i];
+      var p = productById[String(l.productId)];
+      var qty = Number(l.qty)||0;
+      if (qty <= 0) { alert("數量要大於 0"); return; }
+      if (mode === "ship") {
+        var have = props.stocks[l.productId]!==undefined ? props.stocks[l.productId] : 0;
+        if (qty > have) {
+          if (!confirm((p?p.name:"商品") + " 本店庫存只有 " + have + "，還是要鋪 " + qty + " 件嗎？")) return;
+        }
+      } else {
+        var left = (balance[String(l.productId)]||{}).left || 0;
+        if (qty > left) { alert((p?p.name:"商品") + " 在該點只剩 " + left + " 件"); return; }
+      }
+    }
+    var now = new Date();
+    var entries = [], delta = {};
+    lines.forEach(function(l){
+      var p = productById[String(l.productId)] || {};
+      entries.push({
+        id: Date.now() + Math.random() + "-" + l.productId,
+        siteId: props.site.id, date: date, type: mode,
+        productId: l.productId, sku: p.sku||"", name: p.name||"",
+        qty: Number(l.qty)||0, price: Number(l.price)||0,
+        createdAt: now.toISOString()
+      });
+      if (mode === "ship")   delta[l.productId] = -(Number(l.qty)||0);
+      if (mode === "return") delta[l.productId] =  (Number(l.qty)||0);
+    });
+    props.onSubmit(entries, delta);
+  }
+
+  var inp = {width:"100%",padding:"9px 11px",fontSize:14,border:"1px solid #e8e4de",borderRadius:8};
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:800,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
+      onClick={function(e){ if(e.target===e.currentTarget) props.onCancel(); }}>
+      <div style={{background:"#fff",borderRadius:16,width:680,maxWidth:"96vw",maxHeight:"88vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        <div style={{padding:"15px 18px",borderBottom:"1px solid #f0ede8",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+          <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>{title}</div>
+          <input type="date" value={date} onChange={function(e){ setDate(e.target.value); }}
+            style={{padding:"6px 9px",fontSize:13,border:"1px solid #e8e4de",borderRadius:7}}/>
+        </div>
+
+        <div style={{padding:"12px 18px",flexShrink:0}}>
+          <input style={inp} value={q} onChange={function(e){ setQ(e.target.value); }}
+            placeholder={mode==="ship" ? "搜尋商品名稱或貨號…" : "搜尋，或直接從下面挑"}/>
+          {found.length > 0 && (
+            <div style={{marginTop:7,maxHeight:170,overflowY:"auto",border:"1px solid #f0ede8",borderRadius:8}}>
+              {found.map(function(p){
+                var inStock = mode==="ship"
+                  ? (props.stocks[p.id]!==undefined ? props.stocks[p.id] : 0)
+                  : (balance[String(p.id)]||{}).left || 0;
+                return (
+                  <button key={p.id} onClick={function(){ addLine(p); }}
+                    style={{display:"block",width:"100%",textAlign:"left",padding:"8px 11px",border:"none",
+                      borderBottom:"1px solid #f5f4f0",background:"#fff",cursor:"pointer",fontSize:13}}>
+                    <span style={{fontFamily:"monospace",fontSize:11,color:"#aaA69e"}}>{p.sku}</span>　{p.name}
+                    <span style={{float:"right",color:"#9a968e",fontSize:11}}>
+                      {mode==="ship"?"本店庫存 ":"在該點 "}{inStock}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div style={{flex:1,overflowY:"auto",padding:"0 18px 12px"}}>
+          {lines.length === 0 ? (
+            <div style={{textAlign:"center",color:"#9a968e",fontSize:13,padding:"26px 0"}}>
+              還沒有挑選任何商品
+            </div>
+          ) : lines.map(function(l, idx){
+            var p = productById[String(l.productId)] || {};
+            return (
+              <div key={l.productId} style={{display:"flex",alignItems:"center",gap:9,padding:"8px 0",borderBottom:"1px solid #f5f4f0"}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,color:"#2a2520"}}>{p.name}</div>
+                  <div style={{fontSize:10,color:"#9a968e",fontFamily:"monospace"}}>{p.sku}</div>
+                </div>
+                <div>
+                  <div style={{fontSize:10,color:"#9a968e"}}>數量</div>
+                  <input type="number" min="1" value={l.qty} style={{width:62,padding:"5px 7px",fontSize:13,border:"1px solid #e8e4de",borderRadius:6,textAlign:"center"}}
+                    onChange={function(e){ setLine(idx,{qty:Number(e.target.value)||0}); }}/>
+                </div>
+                {mode==="sale" && (
+                  <div>
+                    <div style={{fontSize:10,color:"#9a968e"}}>售價</div>
+                    <input type="number" value={l.price} style={{width:82,padding:"5px 7px",fontSize:13,border:"1px solid #e8e4de",borderRadius:6,textAlign:"right"}}
+                      onChange={function(e){ setLine(idx,{price:Number(e.target.value)||0}); }}/>
+                  </div>
+                )}
+                <button onClick={function(){ setLines(lines.filter(function(x,i){return i!==idx;})); }}
+                  style={{border:"none",background:"none",color:"#b3261e",cursor:"pointer",fontSize:17}}>×</button>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{padding:"13px 18px",borderTop:"1px solid #f0ede8",background:"#faf9f7",flexShrink:0}}>
+          {mode==="sale" && (
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:9}}>
+              <span style={{color:"#7a7068"}}>銷售金額</span>
+              <span style={{fontSize:19,fontWeight:700,color:"#b8910a"}}>${total.toLocaleString()}</span>
+            </div>
+          )}
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={props.onCancel}
+              style={{flex:1,padding:"11px",borderRadius:8,border:"1px solid #d8d4cc",background:"#fff",color:"#9a968e",fontSize:14,cursor:"pointer"}}>取消</button>
+            <button onClick={submit} disabled={!lines.length}
+              style={{flex:2,padding:"11px",borderRadius:8,border:"none",
+                background:lines.length?"#b8910a":"#d8d4cc",color:"#fff",fontSize:14,fontWeight:700,
+                cursor:lines.length?"pointer":"default"}}>
+              {mode==="ship"?"確認鋪貨":mode==="sale"?"確認登錄":"確認退回"}
+            </button>
+          </div>
+          <div style={{fontSize:10,color:"#9a968e",marginTop:8,lineHeight:1.6}}>
+            {mode==="ship"   && "鋪貨會從本店庫存扣掉，並寫入庫存異動明細"}
+            {mode==="sale"   && "登錄銷售只扣寄售點的在庫，本店庫存不變（貨早就送出去了）"}
+            {mode==="return" && "退回會加回本店庫存，並寫入庫存異動明細"}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ConsignSettlement(props) {
   var orders   = props.orders;
   var products = props.products;
@@ -10746,6 +11335,8 @@ function POSSystem() {
   var shl=useState([]);     var shiftLog=shl[0],setShiftLog=shl[1];
   var bdl=useState([]);     var bundles=bdl[0],setBundles=bdl[1];   // 組合商品（全店共用）
   var bpk=useState(null);   var bundlePick=bpk[0],setBundlePick=bpk[1]; // 正在挑選成分的組合
+  var csi=useState([]);     var consignSites=csi[0],setConsignSites=csi[1]; // 外寄據點
+  var csl=useState([]);     var consignLog=csl[0],setConsignLog=csl[1];     // 鋪貨／銷售／退回異動
   var exp=useState([]);     var expenses=exp[0],setExpenses=exp[1];
   var hst=useState({});     var history=hst[0],setHistory=hst[1]; // 歷史業績補登 {YYYY-MM:{rev,cost}}
   // 員工時薪設定（key: name, value: hourlyRate）
@@ -10904,6 +11495,23 @@ function POSSystem() {
           var arr = typeof val === "string" ? JSON.parse(val) : val;
           if (Array.isArray(arr)) setBundles(arr);
         } catch(e) {}
+      },
+      consignsites: function(val){
+        try { var a = typeof val==="string"?JSON.parse(val):val; if(Array.isArray(a)) setConsignSites(a); } catch(e){}
+      },
+      consignlog: function(val){
+        try {
+          var a = typeof val==="string"?JSON.parse(val):val;
+          if (!Array.isArray(a)) return;
+          // 以 id 合併，本機有而雲端沒有的保留（避免離線登錄的紀錄被蓋掉）
+          setConsignLog(function(prev){
+            var map = {};
+            a.forEach(function(e){ if(e&&e.id!==undefined) map[String(e.id)]=e; });
+            var merged = a.slice();
+            (prev||[]).forEach(function(e){ if(e&&e.id!==undefined&&!map[String(e.id)]) merged.push(e); });
+            return merged;
+          });
+        } catch(e){}
       },
       expenses:   setExpenses,
       history:    setHistory,
@@ -11120,6 +11728,8 @@ function POSSystem() {
 
     loadOne("shiftlog",   setShiftLog);
     loadOne("bundles",    setBundles);
+    loadOne("consignsites", setConsignSites);
+    loadOne("consignlog",   setConsignLog);
     loadOne("expenses",   setExpenses);
     loadOne("history",    setHistory);
     loadOne("staffrates", setStaffRates);
@@ -11340,6 +11950,21 @@ function POSSystem() {
     setBundles(function(prev){
       var next = typeof updater==="function" ? updater(prev) : updater;
       saveData("bundles", next);
+      return next;
+    });
+  }
+
+  function saveConsignSites(updater) {
+    setConsignSites(function(prev){
+      var next = typeof updater==="function" ? updater(prev) : updater;
+      saveData("consignsites", next);
+      return next;
+    });
+  }
+  function saveConsignLog(updater) {
+    setConsignLog(function(prev){
+      var next = typeof updater==="function" ? updater(prev) : updater;
+      saveData("consignlog", next);
       return next;
     });
   }
@@ -12791,11 +13416,40 @@ function POSSystem() {
             {activeTab==="analytics" && isManager && <AnalyticsDrawer orders={storeOrders} allOrders={orders} products={sharedProducts} members={members} storeList={storeList} currentStore={currentStore}/>}
             {activeTab==="smart"     && isManager && <SmartAnalysisDrawer orders={storeOrders} products={sharedProducts} stocks={sharedStocks} members={members}/>}
             {activeTab==="consign"   && isManager && <ConsignSettlement orders={storeOrders} products={sharedProducts} stocks={sharedStocks} stockLog={sharedStockLog}/>}
+            {activeTab==="outbound"  && isManager && <OutboundPanel
+              products={sharedProducts} stocks={sharedStocks}
+              sites={consignSites} setSites={saveConsignSites}
+              log={consignLog} setLog={saveConsignLog}
+              applyStock={function(delta, mode, siteName){
+                // 鋪貨扣本店庫存、退回加回；登錄銷售不動本店庫存
+                var logs = [];
+                var now = new Date();
+                saveStocks(function(prev){
+                  var next = Object.assign({}, prev);
+                  Object.keys(delta).forEach(function(pid){
+                    var cur = next[pid]!==undefined ? next[pid] : 0;
+                    var after = cur + delta[pid];
+                    next[pid] = after;
+                    var p = (sharedProducts||[]).find(function(x){ return String(x.id)===String(pid); }) || {};
+                    logs.push({
+                      id: Date.now() + Math.random() + "-" + pid,
+                      date: localDate(now), time: localTime(now),
+                      productId: pid, sku: p.sku||"", name: p.name||"",
+                      main: p.main, sub: p.sub,
+                      reason: (mode==="ship" ? "寄售鋪貨（" : "寄售退回（") + siteName + "）",
+                      change: delta[pid], before: cur, after: after,
+                      operator: currentStaff ? currentStaff.name : "—"
+                    });
+                  });
+                  return next;
+                });
+                if (sharedAddLog && logs.length) sharedAddLog(logs);
+              }}/>}
             {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={storeStockLog} sharedStocks={sharedStocks} orders={storeOrders} purchases={storePurchases} currentStore={currentStore}/>}
             {activeTab==="expense"   && isManager && <ExpensePanel expenses={expenses} setExpenses={saveExpenses} orders={storeOrders} products={sharedProducts} currentStaff={currentStaff}/>}
             {activeTab==="history"   && isManager && <HistoryPanel history={history} setHistory={saveHistory}/>}
             {activeTab==="attendance"&& <AttendanceReport shiftLog={shiftLog} setShiftLog={saveShiftLog} staffRates={staffRates} setStaffRates={setStaffRates} schedule={schedule} setSchedule={setSchedule} isManager={isManager} currentStaff={currentStaff}/>}
-            {(activeTab==="analytics"||activeTab==="smart"||activeTab==="consign"||activeTab==="stockflow") && !isManager && (
+            {(activeTab==="analytics"||activeTab==="smart"||activeTab==="consign"||activeTab==="outbound"||activeTab==="stockflow") && !isManager && (
               <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,color:"#c8c4bc"}}>
                 <div style={{fontSize:40}}>🔒</div>
                 <div style={{fontSize:15,fontWeight:600,color:"#9a968e"}}>此頁面需店長權限</div>
