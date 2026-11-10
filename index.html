@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261110-1737 */window.__BUILD_VERSION="20261110-1737";</script>
+  <script>/* __BUILD_VERSION__:20261110-1753 */window.__BUILD_VERSION="20261110-1753";</script>
 </head>
 <body>
 
@@ -5069,22 +5069,11 @@ function PurchasePanel(props) {
 
   // 刪除採購單（限店長）。已入庫的要同時決定庫存回沖與否，
   // 否則刪了單子、貨卻還掛在庫存上，帳貨就對不起來。
-  function deletePurchase(po) {
-    var stocked = (po.items||[]).reduce(function(s,it){ return s + (Number(it.stockedQty)||0); }, 0);
-    var msg = "確定要刪除採購單 " + po.no + "？\n\n此動作無法復原。";
-    if (!confirm(msg)) return;
+  // 要刪的單（null = 沒有）。用自訂視窗而不是 confirm，
+  // 因為「扣回庫存 / 不扣」是兩個對等選項，confirm 的確定／取消容易按錯。
+  var dp = useState(null); var delPo = dp[0], setDelPo = dp[1];
 
-    var reverse = false;
-    if (stocked > 0) {
-      reverse = confirm(
-        "這張單有 " + stocked + " 件已經入庫。\n\n" +
-        "【確定】把這 " + stocked + " 件從庫存扣回\n" +
-        "　→ 這批貨其實沒進店裡，或是重複入庫要沖掉\n\n" +
-        "【取消】庫存維持不動\n" +
-        "　→ 貨實際有進來，只是要刪掉這張重複的單子"
-      );
-    }
-
+  function doDeletePurchase(po, reverse) {
     if (reverse && setSharedStocks) {
       var logs = [];
       var now = new Date();
@@ -5115,9 +5104,57 @@ function PurchasePanel(props) {
       return (prev||[]).filter(function(p){ return !(p && p.no === po.no); });
     });
     setExpandedPo(null);
+    setDelPo(null);
     if (window.showToast) {
-      window.showToast("已刪除 " + po.no + (reverse ? "，庫存已回沖" : ""), false);
+      window.showToast("已刪除 " + po.no + (reverse ? "，庫存已回沖" : "，庫存未變動"), false);
     }
+  }
+
+  // 刪除確認視窗：把「庫存要不要扣回」做成兩顆講清楚的按鈕
+  function DeletePoDialog() {
+    if (!delPo) return null;
+    var po = delPo;
+    var stocked = (po.items||[]).reduce(function(s,it){ return s + (Number(it.stockedQty)||0); }, 0);
+    var box = {padding:"13px 15px",borderRadius:10,border:"1px solid #e8e4de",background:"#fff",
+      cursor:"pointer",textAlign:"left",width:"100%",marginBottom:9};
+    return (
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:900,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
+        onClick={function(e){ if(e.target===e.currentTarget) setDelPo(null); }}>
+        <div style={{background:"#fff",borderRadius:16,width:460,maxWidth:"95vw",padding:20}}>
+          <div style={{fontSize:16,fontWeight:700,color:"#2a2520",marginBottom:5}}>刪除採購單 {po.no}</div>
+          <div style={{fontSize:12,color:"#9a968e",marginBottom:15}}>
+            此動作無法復原。{stocked > 0 ? "這張單有 " + stocked + " 件已入庫，請選擇庫存怎麼處理：" : "這張單沒有入庫記錄，刪除不影響庫存。"}
+          </div>
+
+          {stocked > 0 ? (
+            <div>
+              <button style={box} onClick={function(){ doDeletePurchase(po, false); }}>
+                <div style={{fontSize:14,fontWeight:700,color:"#3a7a30"}}>刪除，庫存不要動</div>
+                <div style={{fontSize:11,color:"#7a7068",marginTop:3}}>
+                  貨實際有進店裡、架上數字是對的，只是要清掉這張重複或殘留的單子
+                </div>
+              </button>
+              <button style={Object.assign({},box,{borderColor:"#e8c4bc"})} onClick={function(){ doDeletePurchase(po, true); }}>
+                <div style={{fontSize:14,fontWeight:700,color:"#b3261e"}}>刪除，並把 {stocked} 件從庫存扣回</div>
+                <div style={{fontSize:11,color:"#7a7068",marginTop:3}}>
+                  這批貨其實沒進來，或是重複入庫要沖掉。會寫一筆回沖進異動明細
+                </div>
+              </button>
+            </div>
+          ) : (
+            <button style={Object.assign({},box,{borderColor:"#e8c4bc"})} onClick={function(){ doDeletePurchase(po, false); }}>
+              <div style={{fontSize:14,fontWeight:700,color:"#b3261e"}}>確定刪除</div>
+            </button>
+          )}
+
+          <button onClick={function(){ setDelPo(null); }}
+            style={{width:"100%",padding:"11px",borderRadius:9,border:"1px solid #d8d4cc",background:"#fff",
+              color:"#9a968e",fontSize:14,cursor:"pointer",marginTop:4}}>
+            取消，不要刪
+          </button>
+        </div>
+      </div>
+    );
   }
 
   function newPurchase() {
@@ -5668,7 +5705,7 @@ function PurchasePanel(props) {
                     {/* 刪除採購單（限店長） */}
                     {isManager && (
                       <div style={{display:"flex",justifyContent:"flex-end",marginTop:10,paddingTop:10,borderTop:"1px solid #f0ede8"}}>
-                        <button onClick={function(e){ e.stopPropagation(); deletePurchase(po); }}
+                        <button onClick={function(e){ e.stopPropagation(); setDelPo(po); }}
                           style={{padding:"6px 14px",borderRadius:7,border:"1px solid #e8c4bc",background:"#fff",
                             color:"#b3261e",fontSize:12,cursor:"pointer"}}>
                           🗑 刪除這張採購單
@@ -5681,6 +5718,7 @@ function PurchasePanel(props) {
             );
           })}
         </div>
+        <DeletePoDialog/>
       </div>
     );
   }
@@ -11398,6 +11436,7 @@ function POSSystem() {
   var shl=useState([]);     var shiftLog=shl[0],setShiftLog=shl[1];
   var bdl=useState([]);     var bundles=bdl[0],setBundles=bdl[1];   // 組合商品（全店共用）
   var bpk=useState(null);   var bundlePick=bpk[0],setBundlePick=bpk[1]; // 正在挑選成分的組合
+  var aud=useState(false);  var showAudit=aud[0],setShowAudit=aud[1];      // 庫存稽核視窗
   var csi=useState([]);     var consignSites=csi[0],setConsignSites=csi[1]; // 外寄據點
   var csl=useState([]);     var consignLog=csl[0],setConsignLog=csl[1];     // 鋪貨／銷售／退回異動
   var exp=useState([]);     var expenses=exp[0],setExpenses=exp[1];
@@ -12837,6 +12876,7 @@ function POSSystem() {
                   setShowMenu(false);
                   if (window.openStoragePanel) window.openStoragePanel();
                 }}
+                data-slot="storage"
                   style={{width:"100%",padding:"9px 14px",border:"none",background:"transparent",
                     cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
                     borderBottom:"1px solid #f0ede8",transition:"background 0.1s"}}
@@ -12848,6 +12888,22 @@ function POSSystem() {
                     <div style={{fontSize:10,color:"#9a968e"}}>查看用量、清出空間（存不下時用這個）</div>
                   </div>
                 </button>
+
+                {/* 庫存稽核：找出賣了卻沒扣庫存的訂單 — 限店長 */}
+                {isManager && (
+                  <button onClick={function(){ setMenuOpen(false); setShowAudit(true); }}
+                    style={{width:"100%",padding:"9px 14px",border:"none",background:"transparent",
+                      cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
+                      borderBottom:"1px solid #f0ede8",transition:"background 0.1s"}}
+                    onMouseEnter={function(e){e.currentTarget.style.background="#f5f2ec";}}
+                    onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
+                    <span style={{fontSize:16,width:24,textAlign:"center"}}>🔍</span>
+                    <div>
+                      <div style={{fontSize:12,fontWeight:600,color:"#6b5b45"}}>庫存稽核</div>
+                      <div style={{fontSize:10,color:"#9a968e"}}>找出賣了卻沒扣到庫存的訂單</div>
+                    </div>
+                  </button>
+                )}
 
                 {/* 下載圖片到本機（市集離線用）— 限店長 */}
                 {isManager && <button onClick={function(){
@@ -13585,6 +13641,247 @@ function POSSystem() {
           </div>
         </div>
       )}
+
+      {/* ── 庫存稽核：訂單 vs 庫存異動明細 ── */}
+      {showAudit && (function(){
+        // 每張已付款訂單都該在異動明細留下「銷售（訂單 XXX）」。
+        // 對不起來的，就是賣了沒扣到庫存的。
+        var myOrders = (orders||[]).filter(function(o){
+          return o && (o.store||"yl") === currentStore && o.status === "paid";
+        });
+        // 以「訂單號 + 商品id」為 key，統計異動明細已扣的數量
+        var logged = {};
+        (sharedStockLog||[]).forEach(function(l){
+          if (!l || !l.reason) return;
+          var m = String(l.reason).match(/訂單\s*(ORD-[A-Za-z0-9-]+)/);
+          if (!m) return;
+          var k = m[1] + "|" + String(l.productId);
+          logged[k] = (logged[k] || 0) + Math.abs(Number(l.change)||0);
+        });
+
+        var missing = {};   // productId -> {name, sku, qty, orders:[]}
+        var affected = [];
+        myOrders.forEach(function(o){
+          var lines = [];
+          (o.cartSnapshot||[]).forEach(function(it){ lines = lines.concat(expandForStock(it)); });
+          var hit = false;
+          lines.forEach(function(it){
+            if (!it || it.main === "業外收入" || it.id === undefined) return;
+            var k = o.no + "|" + String(it.id);
+            var want = Number(it.qty)||0;
+            var got = logged[k] || 0;
+            var gap = want - got;
+            if (gap <= 0) return;
+            hit = true;
+            var key = String(it.id);
+            if (!missing[key]) missing[key] = {id:it.id, name:it.name, sku:it.sku, main:it.main, sub:it.sub, qty:0, orders:[]};
+            missing[key].qty += gap;
+            if (missing[key].orders.indexOf(o.no) < 0) missing[key].orders.push(o.no);
+          });
+          if (hit) affected.push(o.no);
+        });
+        var rows = Object.keys(missing).map(function(k){ return missing[k]; })
+          .sort(function(a,z){ return z.qty - a.qty; });
+        var totalQty = rows.reduce(function(s,r){ return s + r.qty; }, 0);
+
+        // ── 檢查二：庫存跟異動記錄平不平 ──
+        // 現在庫存 應該 = 最後一次盤點後的數字 + 之後所有異動
+        // 對不起來 → 有人改過庫存卻沒留記錄（期初不是 0 就是這個造成的）
+        var logByProduct = {};
+        (sharedStockLog||[]).forEach(function(l){
+          if (!l || l.productId === undefined) return;
+          var k = String(l.productId);
+          if (!logByProduct[k]) logByProduct[k] = [];
+          logByProduct[k].push(l);
+        });
+        var unbalanced = [];
+        (sharedProducts||[]).forEach(function(p){
+          if (!p || p.id === undefined) return;
+          var cur = sharedStocks[p.id];
+          if (cur === undefined) return;          // 本店沒這項，不檢查
+          var ls = (logByProduct[String(p.id)] || []).slice()
+            .sort(function(a,b){ return (a.date+(a.time||"")) > (b.date+(b.time||"")) ? 1 : -1; });
+          if (!ls.length) {
+            if (cur !== 0) unbalanced.push({id:p.id, sku:p.sku, name:p.name, cur:cur, calc:0, diff:cur, why:"完全沒有異動記錄"});
+            return;
+          }
+          // 從最後一次盤點（有 after 可信）起算，沒有盤點就從 0 累加
+          var base = 0, startIdx = 0;
+          for (var i = ls.length - 1; i >= 0; i--) {
+            var r = String(ls[i].reason||"");
+            if (r.indexOf("盤點") >= 0 || r.indexOf("校正") >= 0) {
+              base = Number(ls[i].after)||0; startIdx = i + 1; break;
+            }
+          }
+          var calc = base;
+          for (var j = startIdx; j < ls.length; j++) calc += (Number(ls[j].change)||0);
+          var diff = cur - calc;
+          if (diff !== 0) {
+            unbalanced.push({id:p.id, sku:p.sku, name:p.name, cur:cur, calc:calc, diff:diff,
+              why: startIdx > 0 ? "最後盤點後對不起來" : "記錄不完整"});
+          }
+        });
+        unbalanced.sort(function(a,z){ return Math.abs(z.diff) - Math.abs(a.diff); });
+
+        function applyFix() {
+          if (!rows.length) return;
+          if (!confirm("要把這 " + totalQty + " 件從庫存扣掉嗎？\n\n"
+            + "系統會逐項扣除並寫入異動明細（原因：稽核補扣）。\n"
+            + "請先確認架上實際數量，確定這些貨真的賣掉了。")) return;
+          var logs = [];
+          var now = new Date();
+          saveStocks(function(prev){
+            var next = Object.assign({}, prev);
+            rows.forEach(function(r){
+              var cur = next[r.id] !== undefined ? next[r.id] : 0;
+              var after = cur - r.qty;
+              next[r.id] = after;
+              logs.push({
+                id: Date.now() + Math.random() + "-" + r.id,
+                date: localDate(now), time: localTime(now),
+                productId: r.id, sku: r.sku||"", name: r.name||"",
+                main: r.main, sub: r.sub,
+                reason: "稽核補扣（訂單 " + r.orders.slice(0,3).join("、") + (r.orders.length>3?" 等":"") + "）",
+                change: -r.qty, before: cur, after: after,
+                operator: currentStaff ? currentStaff.name : "—"
+              });
+            });
+            return next;
+          });
+          if (sharedAddLog && logs.length) sharedAddLog(logs);
+          alert("已補扣 " + totalQty + " 件，異動明細查得到記錄。");
+          setShowAudit(false);
+        }
+
+        return (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:900,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
+            onClick={function(e){ if(e.target===e.currentTarget) setShowAudit(false); }}>
+            <div style={{background:"#fff",borderRadius:16,width:640,maxWidth:"96vw",maxHeight:"88vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+              <div style={{padding:"16px 20px",borderBottom:"1px solid #f0ede8",flexShrink:0}}>
+                <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>🔍 庫存稽核</div>
+                <div style={{fontSize:12,color:"#9a968e",marginTop:3}}>
+                  比對 {myOrders.length} 張訂單與庫存異動明細，找出賣了卻沒扣到的
+                </div>
+              </div>
+
+              <div style={{flex:1,overflowY:"auto",padding:"14px 20px"}}>
+                {/* 檢查二：庫存 vs 異動記錄 */}
+                <div style={{marginBottom:18}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#5a5048",marginBottom:8}}>
+                    庫存與異動記錄的對帳
+                  </div>
+                  {unbalanced.length === 0 ? (
+                    <div style={{background:"#f0f6f1",borderRadius:9,padding:"12px 14px",fontSize:13,color:"#3a7a30"}}>
+                      ✓ 每一項商品的庫存都跟異動記錄對得起來
+                    </div>
+                  ) : (
+                    <div>
+                      <div style={{background:"#fdf6ee",borderLeft:"3px solid #c2410c",padding:"11px 13px",
+                        borderRadius:"0 8px 8px 0",fontSize:12,color:"#7a5a3a",marginBottom:10}}>
+                        <b>{unbalanced.length} 項</b>的庫存跟異動記錄對不起來，代表有人改過數量卻沒留下記錄。
+                        進銷存查詢裡「期初」不是 0 的，就是這些。
+                      </div>
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                        <thead>
+                          <tr style={{background:"#faf9f7"}}>
+                            {["貨號","品名","現在","記錄推算","差額"].map(function(h,i){
+                              return <th key={h} style={{padding:"7px 9px",textAlign:i>=2?"right":"left",
+                                fontSize:11,color:"#9a968e",borderBottom:"1px solid #e8e4de"}}>{h}</th>;
+                            })}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {unbalanced.slice(0,40).map(function(u){
+                            return (
+                              <tr key={u.id}>
+                                <td style={{padding:"6px 9px",borderBottom:"1px solid #f5f4f0",fontFamily:"monospace",fontSize:11,color:"#9a968e"}}>{u.sku}</td>
+                                <td style={{padding:"6px 9px",borderBottom:"1px solid #f5f4f0"}}>{u.name}</td>
+                                <td style={{padding:"6px 9px",borderBottom:"1px solid #f5f4f0",textAlign:"right"}}>{u.cur}</td>
+                                <td style={{padding:"6px 9px",borderBottom:"1px solid #f5f4f0",textAlign:"right",color:"#9a968e"}}>{u.calc}</td>
+                                <td style={{padding:"6px 9px",borderBottom:"1px solid #f5f4f0",textAlign:"right",
+                                  fontWeight:700,color:u.diff>0?"#c2410c":"#4a8ec0"}}>{u.diff>0?"+":""}{u.diff}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                      {unbalanced.length > 40 && (
+                        <div style={{fontSize:11,color:"#9a968e",marginTop:6}}>只顯示差額最大的 40 項</div>
+                      )}
+                      <div style={{fontSize:11,color:"#9a968e",marginTop:9,lineHeight:1.7}}>
+                        差額是<b>正的</b>：系統比記錄多，通常是建檔時填了數量、或手動改過庫存。<br/>
+                        差額是<b>負的</b>：系統比記錄少，可能有扣帳沒留記錄。<br/>
+                        要修正的話，請以<b>架上實際數量</b>為準，用「調整」改，不要直接照推算值改。
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{fontSize:13,fontWeight:700,color:"#5a5048",marginBottom:8,
+                  paddingTop:14,borderTop:"1px solid #f0ede8"}}>
+                  訂單與扣庫存的對帳
+                </div>
+                {rows.length === 0 ? (
+                  <div style={{background:"#f0f6f1",borderRadius:9,padding:"12px 14px",fontSize:13,color:"#3a7a30"}}>
+                    ✓ 每一筆銷售都有扣到庫存
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{background:"#fdf6ee",borderLeft:"3px solid #c2410c",padding:"11px 13px",
+                      borderRadius:"0 8px 8px 0",fontSize:13,color:"#7a5a3a",marginBottom:13}}>
+                      有 <b>{affected.length} 張訂單</b>、合計 <b>{totalQty} 件</b>沒有扣到庫存。
+                      代表系統裡的庫存數字比實際多。
+                    </div>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                      <thead>
+                        <tr style={{background:"#faf9f7"}}>
+                          {["貨號","品名","少扣","相關訂單"].map(function(h,i){
+                            return <th key={h} style={{padding:"8px 9px",textAlign:i===2?"right":"left",
+                              fontSize:11,color:"#9a968e",borderBottom:"1px solid #e8e4de"}}>{h}</th>;
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(function(r){
+                          return (
+                            <tr key={r.id}>
+                              <td style={{padding:"7px 9px",borderBottom:"1px solid #f5f4f0",fontFamily:"monospace",fontSize:11,color:"#9a968e"}}>{r.sku}</td>
+                              <td style={{padding:"7px 9px",borderBottom:"1px solid #f5f4f0"}}>{r.name}</td>
+                              <td style={{padding:"7px 9px",borderBottom:"1px solid #f5f4f0",textAlign:"right",fontWeight:700,color:"#b3261e"}}>{r.qty}</td>
+                              <td style={{padding:"7px 9px",borderBottom:"1px solid #f5f4f0",fontSize:10,color:"#9a968e"}}>
+                                {r.orders.slice(0,2).join("、")}{r.orders.length>2?" 等 "+r.orders.length+" 張":""}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div style={{padding:"13px 20px",borderTop:"1px solid #f0ede8",background:"#faf9f7",flexShrink:0}}>
+                {rows.length > 0 && (
+                  <button onClick={applyFix}
+                    style={{width:"100%",padding:"12px",borderRadius:9,border:"none",background:"#b4734a",
+                      color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",marginBottom:8}}>
+                    一次補扣這 {totalQty} 件
+                  </button>
+                )}
+                <button onClick={function(){ setShowAudit(false); }}
+                  style={{width:"100%",padding:"11px",borderRadius:9,border:"1px solid #d8d4cc",background:"#fff",
+                    color:"#5a5048",fontSize:14,cursor:"pointer"}}>關閉</button>
+                {rows.length > 0 && (
+                  <div style={{fontSize:10,color:"#9a968e",marginTop:9,lineHeight:1.6}}>
+                    補扣前請先抽查幾項架上實際數量。如果架上跟系統現在的數字一致，
+                    代表這些貨其實沒賣掉（可能是測試單或已取消），那就不要補扣。
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── 組合商品：挑選成分 ── */}
       {bundlePick && (function(){
