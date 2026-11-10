@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261108-2240 */window.__BUILD_VERSION="20261108-2240";</script>
+  <script>/* __BUILD_VERSION__:20261110-1737 */window.__BUILD_VERSION="20261110-1737";</script>
 </head>
 <body>
 
@@ -5067,6 +5067,59 @@ function PurchasePanel(props) {
     return true;
   }).sort(function(a,b){ return (b.date||"").localeCompare(a.date||""); });
 
+  // 刪除採購單（限店長）。已入庫的要同時決定庫存回沖與否，
+  // 否則刪了單子、貨卻還掛在庫存上，帳貨就對不起來。
+  function deletePurchase(po) {
+    var stocked = (po.items||[]).reduce(function(s,it){ return s + (Number(it.stockedQty)||0); }, 0);
+    var msg = "確定要刪除採購單 " + po.no + "？\n\n此動作無法復原。";
+    if (!confirm(msg)) return;
+
+    var reverse = false;
+    if (stocked > 0) {
+      reverse = confirm(
+        "這張單有 " + stocked + " 件已經入庫。\n\n" +
+        "【確定】把這 " + stocked + " 件從庫存扣回\n" +
+        "　→ 這批貨其實沒進店裡，或是重複入庫要沖掉\n\n" +
+        "【取消】庫存維持不動\n" +
+        "　→ 貨實際有進來，只是要刪掉這張重複的單子"
+      );
+    }
+
+    if (reverse && setSharedStocks) {
+      var logs = [];
+      var now = new Date();
+      setSharedStocks(function(prev){
+        var next = Object.assign({}, prev);
+        (po.items||[]).forEach(function(it){
+          var sq = Number(it.stockedQty)||0;
+          if (!sq || it.id === undefined) return;
+          var cur = next[it.id] !== undefined ? next[it.id] : 0;
+          var after = cur - sq;
+          next[it.id] = after;
+          logs.push({
+            id: Date.now() + Math.random() + "-" + it.id,
+            date: localDate(now), time: localTime(now),
+            productId: it.id, sku: it.sku || "", name: it.name || "",
+            main: it.main, sub: it.sub,
+            reason: "刪除採購單回沖（" + po.no + "）",
+            change: -sq, before: cur, after: after,
+            operator: currentStaff ? currentStaff.name : "—"
+          });
+        });
+        return next;
+      });
+      if (sharedAddLog && logs.length) sharedAddLog(logs);
+    }
+
+    setPurchases(function(prev){
+      return (prev||[]).filter(function(p){ return !(p && p.no === po.no); });
+    });
+    setExpandedPo(null);
+    if (window.showToast) {
+      window.showToast("已刪除 " + po.no + (reverse ? "，庫存已回沖" : ""), false);
+    }
+  }
+
   function newPurchase() {
     // 有未完成的草稿 → 詢問是否救回（避免建到一半視窗意外關閉，資料整張消失）
     try {
@@ -5611,6 +5664,16 @@ function PurchasePanel(props) {
                           })}
                         </tbody>
                       </table>
+                    )}
+                    {/* 刪除採購單（限店長） */}
+                    {isManager && (
+                      <div style={{display:"flex",justifyContent:"flex-end",marginTop:10,paddingTop:10,borderTop:"1px solid #f0ede8"}}>
+                        <button onClick={function(e){ e.stopPropagation(); deletePurchase(po); }}
+                          style={{padding:"6px 14px",borderRadius:7,border:"1px solid #e8c4bc",background:"#fff",
+                            color:"#b3261e",fontSize:12,cursor:"pointer"}}>
+                          🗑 刪除這張採購單
+                        </button>
+                      </div>
                     )}
                   </div>
                 )}
