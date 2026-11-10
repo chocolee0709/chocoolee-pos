@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261110-1753 */window.__BUILD_VERSION="20261110-1753";</script>
+  <script>/* __BUILD_VERSION__:20261110-1852 */window.__BUILD_VERSION="20261110-1852";</script>
 </head>
 <body>
 
@@ -6087,6 +6087,13 @@ function PurchaseEditor(props) {
                         onChange={function(e){setF("price", Number(e.target.value)||0);}} style={inp}/>
                     </div>
                   )}
+                  <div style={{gridColumn:"1 / -1"}}>
+                    <label style={lbl}>材質{!item.isNew && " 🔒"}</label>
+                    <input value={item.material||""} disabled={!item.isNew}
+                      placeholder="例：不鏽鋼、木質、矽膠、925純銀"
+                      onChange={function(e){setF("material", e.target.value);}}
+                      style={Object.assign({},inp,{background:item.isNew?"#fff":"#f5f4f0"})}/>
+                  </div>
                 </div>
 
                 {!item.isNew && (
