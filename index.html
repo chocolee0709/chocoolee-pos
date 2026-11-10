@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261105-0053 */window.__BUILD_VERSION="20261105-0053";</script>
+  <script>/* __BUILD_VERSION__:20261108-2240 */window.__BUILD_VERSION="20261108-2240";</script>
 </head>
 <body>
 
@@ -12304,6 +12304,35 @@ function POSSystem() {
       updatedAt: new Date().toISOString()
     };
     saveOrders(function(prev){ return [newOrder].concat(prev); });
+
+    // ★ 存檔確認：訂單必須真的落地才扣庫存。
+    // 曾發生空間滿／寫入失敗時訂單沒存到、庫存卻扣了，造成帳貨不符。
+    var orderSaved = false;
+    try {
+      var chk = JSON.parse(localStorage.getItem("chocoolee-orders") || "[]");
+      orderSaved = chk.some(function(o){ return o && o.no === orderNo; });
+    } catch(e) { orderSaved = false; }
+    if (!orderSaved) {
+      // 再試一次：先清空間再存
+      try {
+        if (window.autoCleanStorage) window.autoCleanStorage("quota");
+        var all = JSON.parse(localStorage.getItem("chocoolee-orders") || "[]");
+        all.unshift(newOrder);
+        localStorage.setItem("chocoolee-orders", JSON.stringify(all));
+        var chk2 = JSON.parse(localStorage.getItem("chocoolee-orders") || "[]");
+        orderSaved = chk2.some(function(o){ return o && o.no === orderNo; });
+        if (orderSaved && window.__reactSetters && window.__reactSetters.orders) {
+          window.__reactSetters.orders(chk2);
+        }
+      } catch(e2) { orderSaved = false; }
+    }
+    if (!orderSaved) {
+      // 存不住就整筆中止，庫存一律不動——寧可重 key 一次，也不要帳貨不符
+      alert("⚠️ 這筆訂單沒有存檔成功，已經中止，庫存沒有變動。\n\n"
+          + "請到選單『儲存空間』清理後再結一次。\n"
+          + "如果清理後還是失敗，先用紙本記下這筆（$" + total + "），事後補登。");
+      return;
+    }
 
     // 扣庫存：依購物車每項商品數量扣除（業外收入類不扣）
     // ★ 先在 sharedStocks 快照上算好 saleLogs（同步），再用 saveStocks updater 套用
