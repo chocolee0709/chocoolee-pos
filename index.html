@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261111-2253 */window.__BUILD_VERSION="20261111-2253";</script>
+  <script>/* __BUILD_VERSION__:20261111-2310 */window.__BUILD_VERSION="20261111-2310";</script>
 </head>
 <body>
 
@@ -328,11 +328,16 @@
                     var localPurchases = JSON.parse(oldVal || "[]") || [];
                     // 採購單用 "no" 為識別（不是 "id"！）
                     var mergedP = mergeByUpdatedAt(fbPurchases, localPurchases, "no");
+                    // 已刪除的採購單名單：擋掉別台裝置帶回來的殭屍單
+                    var delPoMap = {};
+                    try { delPoMap = JSON.parse(localStorage.getItem("chocoolee-deletedpos") || "{}") || {}; } catch(e) {}
+                    var fbCleanLen = fbPurchases.filter(function(x){ return !(x && delPoMap[x.no]); }).length;
+                    mergedP = mergedP.filter(function(x){ return !(x && delPoMap[x.no]); });
                     var mergedPStr = JSON.stringify(mergedP);
                     localStorage.setItem("chocoolee-" + key, mergedPStr);
                     changed.push(key);
                     // 自癒：本機有雲端沒有的採購單 → 自動補推聯集回雲端
-                    if (mergedP.length > fbPurchases.length && window.pushToFirebase) {
+                    if ((mergedP.length > fbCleanLen || fbCleanLen !== fbPurchases.length) && window.pushToFirebase) {
                       var diffP = mergedP.length - fbPurchases.length;
                       setTimeout(function(){ window.pushToFirebase("purchases", mergedPStr); }, 1500);
                       if (window.showToast) window.showToast("🔄 偵測到 " + diffP + " 張採購單未同步，已自動補推");
@@ -1342,6 +1347,23 @@ function expandForStock(line) {
       qty: (Number(c.qty) || 1) * (Number(line.qty) || 1)
     };
   });
+}
+
+// 寄售毛利率：對方抽成後我們實收 售價×(1−抽成)，再扣成本。
+// 分母一樣用售價，才能跟店內毛利率直接比較。
+function consignMargin(price, cost, ratePct) {
+  var p = Number(price) || 0;
+  if (p <= 0) return null;
+  var c = Number(cost) || 0;
+  var net = p * (1 - (Number(ratePct)||0) / 100);
+  return Math.round((net - c) / p * 100);
+}
+// 毛利率夠不夠：30% 以上還行，15~30 偏低，15 以下（或負的）要留意
+function marginColor(m) {
+  if (m === null) return "#9a968e";
+  if (m < 15) return "#b3261e";
+  if (m < 30) return "#c2410c";
+  return "#3a7a30";
 }
 
 // 非員林店：本店 stocks 沒有的商品一律補 0
@@ -5098,6 +5120,14 @@ function PurchasePanel(props) {
       });
       if (sharedAddLog && logs.length) sharedAddLog(logs);
     }
+
+    // 記進「已刪除」名單，否則別台裝置下載時會把它當成雲端遺失、又補推回來
+    try {
+      var delMapPo = JSON.parse(localStorage.getItem("chocoolee-deletedpos") || "{}") || {};
+      delMapPo[po.no] = new Date().toISOString();
+      localStorage.setItem("chocoolee-deletedpos", JSON.stringify(delMapPo));
+      saveData("deletedpos", JSON.stringify(delMapPo));
+    } catch(e) {}
 
     setPurchases(function(prev){
       return (prev||[]).filter(function(p){ return !(p && p.no === po.no); });
@@ -8984,7 +9014,11 @@ function OutboundPanel(props) {
       })()}
 
       <div style={{fontSize:11,color:"#9a968e",flexShrink:0}}>
-        累計抽成 ${commission.toLocaleString()}（{site.rate||0}%）
+        累計抽成 ${commission.toLocaleString()}（{site.rate||0}%）　·
+        寄售毛利 ＝ 售價扣掉 {site.rate||0}% 抽成後，再扣成本（
+        <span style={{color:"#3a7a30",fontWeight:700}}>30% 以上</span>
+        <span style={{color:"#c2410c",fontWeight:700}}>15–30% 偏低</span>
+        <span style={{color:"#b3261e",fontWeight:700}}>15% 以下要留意</span>）
       </div>
 
       {/* 在庫明細 */}
@@ -8992,7 +9026,7 @@ function OutboundPanel(props) {
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
           <thead>
             <tr style={{background:"#faf9f7"}}>
-              {["貨號","品名","鋪貨","已售","退回","在庫","銷售金額"].map(function(h,i){
+              {["貨號","品名","寄售毛利","鋪貨","已售","退回","在庫","銷售金額"].map(function(h,i){
                 return <th key={h} style={{padding:"9px 10px",textAlign:i>=2?"right":"left",fontSize:11,color:"#9a968e",
                   borderBottom:"1px solid #e8e4de",position:"sticky",top:0,background:"#faf9f7"}}>{h}</th>;
               })}
@@ -9000,14 +9034,18 @@ function OutboundPanel(props) {
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr><td colSpan="7" style={{padding:"34px",textAlign:"center",color:"#9a968e",fontSize:13}}>
+              <tr><td colSpan="8" style={{padding:"34px",textAlign:"center",color:"#9a968e",fontSize:13}}>
                 還沒有鋪貨記錄，按右上角「📦 鋪貨」開始
               </td></tr>
             ) : rows.map(function(r){
+              var prod = productById[String(r.productId)] || {};
+              var cm = consignMargin(prod.price, prod.cost, site.rate);
               return (
                 <tr key={r.productId}>
                   <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0",fontFamily:"monospace",fontSize:11,color:"#9a968e"}}>{r.sku}</td>
                   <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0"}}>{r.name}</td>
+                  <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0",textAlign:"right",
+                    fontWeight:700,color:marginColor(cm)}}>{cm===null?"—":cm+"%"}</td>
                   <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0",textAlign:"right"}}>{r.ship}</td>
                   <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0",textAlign:"right",color:"#b8910a",fontWeight:600}}>{r.sale}</td>
                   <td style={{padding:"8px 10px",borderBottom:"1px solid #f5f4f0",textAlign:"right",color:"#9a968e"}}>{r.ret}</td>
@@ -9300,6 +9338,16 @@ function OutboundEntryModal(props) {
                         {p.sub ? "　" + p.sub : ""}
                       </div>
                     </div>
+                    {(function(){
+                      var cm = consignMargin(p.price, p.cost, props.site.rate);
+                      if (cm === null) return null;
+                      return (
+                        <span style={{flexShrink:0,textAlign:"right",marginRight:4}}>
+                          <span style={{fontSize:9,color:"#9a968e",display:"block"}}>寄售毛利</span>
+                          <span style={{fontSize:12,fontWeight:700,color:marginColor(cm)}}>{cm}%</span>
+                        </span>
+                      );
+                    })()}
                     <span style={{color:picked?"#3a7a30":(inStock<=0?"#c2410c":"#9a968e"),fontSize:11,
                       flexShrink:0,textAlign:"right"}}>
                       {picked ? "✓ 已加入" : (mode==="ship"?"本店庫存 ":"在該點 ") + inStock}
@@ -9316,31 +9364,82 @@ function OutboundEntryModal(props) {
             <div style={{textAlign:"center",color:"#9a968e",fontSize:13,padding:"26px 0"}}>
               還沒有挑選任何商品
             </div>
-          ) : lines.map(function(l, idx){
-            var p = productById[String(l.productId)] || {};
-            return (
-              <div key={l.productId} style={{display:"flex",alignItems:"center",gap:9,padding:"8px 0",borderBottom:"1px solid #f5f4f0"}}>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:13,color:"#2a2520"}}>{p.name}</div>
-                  <div style={{fontSize:10,color:"#9a968e",fontFamily:"monospace"}}>{p.sku}</div>
-                </div>
-                <div>
-                  <div style={{fontSize:10,color:"#9a968e"}}>數量</div>
-                  <input type="number" min="1" value={l.qty} style={{width:62,padding:"5px 7px",fontSize:13,border:"1px solid #e8e4de",borderRadius:6,textAlign:"center"}}
-                    onChange={function(e){ setLine(idx,{qty:Number(e.target.value)||0}); }}/>
-                </div>
-                {mode==="sale" && (
-                  <div>
-                    <div style={{fontSize:10,color:"#9a968e"}}>售價</div>
-                    <input type="number" value={l.price} style={{width:82,padding:"5px 7px",fontSize:13,border:"1px solid #e8e4de",borderRadius:6,textAlign:"right"}}
-                      onChange={function(e){ setLine(idx,{price:Number(e.target.value)||0}); }}/>
-                  </div>
-                )}
-                <button onClick={function(){ setLines(lines.filter(function(x,i){return i!==idx;})); }}
-                  style={{border:"none",background:"none",color:"#b3261e",cursor:"pointer",fontSize:17}}>×</button>
+          ) : (
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",
+                padding:"4px 0 8px",borderBottom:"1px solid #e8e4de",marginBottom:4}}>
+                <span style={{fontSize:11,fontWeight:700,color:"#5a5048"}}>已挑選 {lines.length} 項</span>
+                <span style={{fontSize:11,color:"#9a968e"}}>
+                  合計 {lines.reduce(function(s,l){ return s + (Number(l.qty)||0); }, 0)} 件
+                </span>
               </div>
-            );
-          })}
+              {lines.map(function(l, idx){
+                var p = productById[String(l.productId)] || {};
+                var qty = Number(l.qty)||0;
+                // 鋪貨看本店庫存夠不夠；銷售／退回看該點在庫夠不夠
+                var cap = mode==="ship"
+                  ? (props.stocks[l.productId]!==undefined ? props.stocks[l.productId] : 0)
+                  : ((balance[String(l.productId)]||{}).left || 0);
+                var over = qty > cap;
+                var stepBtn = {width:30,height:30,borderRadius:7,border:"1px solid #e8e4de",
+                  background:"#fff",color:"#5a5048",fontSize:16,cursor:"pointer",lineHeight:1,flexShrink:0};
+                return (
+                  <div key={l.productId} style={{display:"flex",alignItems:"center",gap:9,padding:"9px 0",
+                    borderBottom:"1px solid #f5f4f0"}}>
+                    {resolveProductImage(p) ? (
+                      <img src={resolveProductImage(p)} alt="" style={{width:42,height:42,borderRadius:6,objectFit:"cover",flexShrink:0}}/>
+                    ) : (
+                      <div style={{width:42,height:42,borderRadius:6,background:"#f5f4f0",flexShrink:0,
+                        display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,color:"#d8d4cc"}}>📦</div>
+                    )}
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:13,color:"#2a2520"}}>{p.name}</div>
+                      <div style={{fontSize:10,color:"#9a968e"}}>
+                        <span style={{fontFamily:"monospace"}}>{p.sku}</span>
+                        {p.sub ? "　"+p.sub : ""}
+                        <span style={{color:over?"#c2410c":"#9a968e"}}>
+                          　{mode==="ship"?"本店庫存 ":"在該點 "}{cap}
+                        </span>
+                        {(function(){
+                          var cm = consignMargin(p.price, p.cost, props.site.rate);
+                          if (cm === null) return null;
+                          return (
+                            <span style={{color:marginColor(cm),fontWeight:700}}>
+                              　寄售毛利 {cm}%
+                            </span>
+                          );
+                        })()}
+                      </div>
+                    </div>
+
+                    {/* 數量：可以按加減，也可以直接打字 */}
+                    <div style={{display:"flex",alignItems:"center",gap:5,flexShrink:0}}>
+                      <button style={stepBtn} onClick={function(){ setLine(idx,{qty:Math.max(1, qty-1)}); }}>−</button>
+                      <input type="number" min="1" value={l.qty}
+                        style={{width:54,padding:"6px 4px",fontSize:14,fontWeight:700,textAlign:"center",
+                          border:over?"1.5px solid #c2410c":"1px solid #e8e4de",borderRadius:7,
+                          color:over?"#c2410c":"#2a2520"}}
+                        onChange={function(e){ setLine(idx,{qty:Number(e.target.value)||0}); }}/>
+                      <button style={stepBtn} onClick={function(){ setLine(idx,{qty:qty+1}); }}>＋</button>
+                    </div>
+
+                    {mode==="sale" && (
+                      <div style={{flexShrink:0}}>
+                        <div style={{fontSize:9,color:"#9a968e",textAlign:"right"}}>售價</div>
+                        <input type="number" value={l.price}
+                          style={{width:78,padding:"5px 7px",fontSize:13,border:"1px solid #e8e4de",borderRadius:6,textAlign:"right"}}
+                          onChange={function(e){ setLine(idx,{price:Number(e.target.value)||0}); }}/>
+                      </div>
+                    )}
+
+                    <button onClick={function(){ setLines(lines.filter(function(x,i){return i!==idx;})); }}
+                      title="移除"
+                      style={{border:"none",background:"none",color:"#b3261e",cursor:"pointer",fontSize:18,flexShrink:0,padding:"0 2px"}}>×</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div style={{padding:"13px 18px",borderTop:"1px solid #f0ede8",background:"#faf9f7",flexShrink:0}}>
@@ -10964,6 +11063,26 @@ window.sweepLocalPOImages = function() {
 };
 setTimeout(function(){ if (window.sweepLocalPOImages) window.sweepLocalPOImages(); }, 6000);
 
+// 開機清理：把已刪除名單上的採購單從本機掃掉。
+// 舊版裝置可能還留著殭屍單，這段確保它們一上線就被清乾淨、不會再被補推回雲端。
+setTimeout(function(){
+  try {
+    var dm = JSON.parse(localStorage.getItem("chocoolee-deletedpos") || "{}") || {};
+    var keys = Object.keys(dm);
+    if (!keys.length) return;
+    var raw = localStorage.getItem("chocoolee-purchases");
+    if (!raw) return;
+    var arr = JSON.parse(raw) || [];
+    var kept = arr.filter(function(p){ return !(p && dm[p.no]); });
+    if (kept.length === arr.length) return;
+    localStorage.setItem("chocoolee-purchases", JSON.stringify(kept));
+    if (window.__reactSetters && window.__reactSetters.purchases) {
+      window.__reactSetters.purchases(kept);
+    }
+    console.log("[已刪除採購單] 本機清掉 " + (arr.length - kept.length) + " 張殭屍單");
+  } catch(e) {}
+}, 7000);
+
 // ── 清理本體：手動按鈕和自動清理都走這裡 ──────────────────────────
 // onLog 可選；回傳釋放的位元組數。只動「雲端已有或可重新下載」的東西。
 window.cleanStorage = function(onLog) {
@@ -11037,7 +11156,7 @@ window.autoCleanStorage = function(reason) {
     }
     // 清完還是很滿 → 這時才需要人介入
     if (pctAfter >= 85 && window.showToast) {
-      window.showToast("⚠️ 清理後空間仍達 " + pctAfter + "%，請到選單『儲存空間』查看", true);
+      window.showToast("⚠️ 清理後空間仍達 " + pctAfter + "%，請回報給系統維護", true);
     }
     return true;
   } catch(e) { console.warn("[自動清理] 失敗", e); return false; }
@@ -12484,7 +12603,7 @@ function POSSystem() {
     if (!orderSaved) {
       // 存不住就整筆中止，庫存一律不動——寧可重 key 一次，也不要帳貨不符
       alert("⚠️ 這筆訂單沒有存檔成功，已經中止，庫存沒有變動。\n\n"
-          + "請到選單『儲存空間』清理後再結一次。\n"
+          + "請重新整理頁面後再結一次（系統會自動清理空間）。\n"
           + "如果清理後還是失敗，先用紙本記下這筆（$" + total + "），事後補登。");
       return;
     }
@@ -12808,40 +12927,6 @@ function POSSystem() {
 
               {/* 系統版本 + 資料管理 */}
               <div style={{padding:"8px 14px",borderTop:"1px solid #f0ede8"}}>
-
-                {/* 儲存空間 — 全員可用（空間滿了店員也要能自救） */}
-                <button onClick={function(){
-                  setShowMenu(false);
-                  if (window.openStoragePanel) window.openStoragePanel();
-                }}
-                data-slot="storage"
-                  style={{width:"100%",padding:"9px 14px",border:"none",background:"transparent",
-                    cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
-                    borderBottom:"1px solid #f0ede8",transition:"background 0.1s"}}
-                  onMouseEnter={function(e){e.currentTarget.style.background="#f5f2ec";}}
-                  onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
-                  <span style={{fontSize:16,width:24,textAlign:"center"}}>💾</span>
-                  <div>
-                    <div style={{fontSize:12,fontWeight:600,color:"#6b5b45"}}>儲存空間</div>
-                    <div style={{fontSize:10,color:"#9a968e"}}>查看用量、清出空間（存不下時用這個）</div>
-                  </div>
-                </button>
-
-                {/* 庫存稽核：找出賣了卻沒扣庫存的訂單 — 限店長 */}
-                {isManager && (
-                  <button onClick={function(){ setMenuOpen(false); setShowAudit(true); }}
-                    style={{width:"100%",padding:"9px 14px",border:"none",background:"transparent",
-                      cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10,
-                      borderBottom:"1px solid #f0ede8",transition:"background 0.1s"}}
-                    onMouseEnter={function(e){e.currentTarget.style.background="#f5f2ec";}}
-                    onMouseLeave={function(e){e.currentTarget.style.background="transparent";}}>
-                    <span style={{fontSize:16,width:24,textAlign:"center"}}>🔍</span>
-                    <div>
-                      <div style={{fontSize:12,fontWeight:600,color:"#6b5b45"}}>庫存稽核</div>
-                      <div style={{fontSize:10,color:"#9a968e"}}>找出賣了卻沒扣到庫存的訂單</div>
-                    </div>
-                  </button>
-                )}
 
 
                 {/* 匯出/匯入資料備份 — 限店長 */}
