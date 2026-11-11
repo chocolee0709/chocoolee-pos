@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261111-2345 */window.__BUILD_VERSION="20261111-2345";</script>
+  <script>/* __BUILD_VERSION__:20261112-0015 */window.__BUILD_VERSION="20261112-0015";</script>
 </head>
 <body>
 
@@ -3372,7 +3372,9 @@ function BundleManager(props) {
               return (
                 <div key={b.id} style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:14,
                   opacity: b.active===false ? 0.55 : 1}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:9}}>
+                    {b.image && <img src={b.image} alt="" style={{width:52,height:52,borderRadius:8,
+                      objectFit:"cover",flexShrink:0}}/>}
                     <div style={{flex:1}}>
                       <div style={{fontSize:10,color:"#aaA69e",fontFamily:"monospace"}}>{b.sku||"（無貨號）"}</div>
                       <div style={{fontSize:16,fontWeight:700,color:"#2a2520",lineHeight:1.3}}>{b.name}</div>
@@ -3506,8 +3508,51 @@ function BundleEditor(props) {
       </div>
 
       {/* 基本資料 */}
-      <div style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:14}}>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+      <div style={{background:"#fff",border:"1px solid #e8e4de",borderRadius:12,padding:14,
+        display:"flex",gap:14,alignItems:"flex-start"}}>
+        {/* 組合照片 */}
+        <div style={{flexShrink:0}}>
+          <label style={lbl}>照片</label>
+          <label style={{display:"block",width:104,height:104,borderRadius:9,cursor:"pointer",
+            border:"1px dashed #d8d4cc",overflow:"hidden",position:"relative",background:"#faf9f7"}}>
+            {b.image ? (
+              <img src={b.image} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+            ) : (
+              <span style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",
+                alignItems:"center",justifyContent:"center",gap:3,color:"#b0aca4"}}>
+                <span style={{fontSize:25}}>📷</span>
+                <span style={{fontSize:10}}>點此選圖</span>
+              </span>
+            )}
+            <input type="file" accept="image/*" style={{display:"none"}}
+              onChange={function(e){
+                var f = e.target.files[0]; if (!f) return;
+                e.target.value = "";
+                var r = new FileReader();
+                r.onload = function(ev){
+                  var img = new Image();
+                  img.onload = function(){
+                    // 縮到 220px、品質 0.6，一張約 6KB，不會把本機空間吃掉
+                    var c = document.createElement("canvas");
+                    var max = 220, w = img.width, h = img.height;
+                    if (w > h) { if (w>max){ h=Math.round(h*(max/w)); w=max; } }
+                    else { if (h>max){ w=Math.round(w*(max/h)); h=max; } }
+                    c.width = w; c.height = h;
+                    c.getContext("2d").drawImage(img, 0, 0, w, h);
+                    up({image: c.toDataURL("image/jpeg", 0.6)});
+                  };
+                  img.src = ev.target.result;
+                };
+                r.readAsDataURL(f);
+              }}/>
+          </label>
+          {b.image && (
+            <button onClick={function(){ up({image:""}); }}
+              style={{width:104,marginTop:5,padding:"4px 0",borderRadius:6,border:"1px solid #e8e4de",
+                background:"#fff",color:"#9a968e",fontSize:10,cursor:"pointer"}}>移除照片</button>
+          )}
+        </div>
+        <div style={{flex:1,display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
           <div>
             <label style={lbl}>組合名稱</label>
             <input style={inp} value={b.name} placeholder="例：擴香石禮盒"
@@ -8808,7 +8853,7 @@ function ShipmentPanel(props) {
 
   function totalQty(sh) {
     return (sh.items||[]).reduce(function(s,it){
-      return s + (Number(it.qty)||0) + (Number(it.sampleQty)||0) + (Number(it.spareQty)||0);
+      return s + (Number(it.qty)||0) + (Number(it.sampleQty)||0);
     }, 0);
   }
 
@@ -8824,8 +8869,7 @@ function ShipmentPanel(props) {
     (sh.items||[]).forEach(function(it){
       var sell  = Number(it.qty)||0;
       var samp  = Number(it.sampleQty)||0;
-      var spare = Number(it.spareQty)||0;
-      var out = sell + samp + spare;
+      var out = sell + samp;
       if (out <= 0) return;
       var p = productById[String(it.id)] || {};
       entries.push({
@@ -8835,21 +8879,23 @@ function ShipmentPanel(props) {
         note: "出貨單 " + sh.no,
         createdAt: now.toISOString()
       });
+      // 業外收入／備品分類＝紙袋、包材、陳列道具這類非銷售品，
+      // 出貨後自動從可賣在庫扣掉，月結算才不會把它們當成「還沒賣出去」
+      if (p.main === "業外收入") {
+        entries.push({
+          id: Date.now()+Math.random()+"-p-"+it.id, siteId: sh.siteId, date: dateStr, type: "spare",
+          productId: it.id, sku: it.sku||p.sku||"", name: it.name||p.name||"",
+          qty: out, price: 0,
+          note: "出貨單 " + sh.no + "（非銷售品）",
+          createdAt: now.toISOString()
+        });
+      }
       if (samp > 0) {
         entries.push({
           id: Date.now()+Math.random()+"-s-"+it.id, siteId: sh.siteId, date: dateStr, type: "sample",
           productId: it.id, sku: it.sku||p.sku||"", name: it.name||p.name||"",
           qty: samp, price: Number(it.price)||Number(p.price)||0,
           note: "出貨單 " + sh.no + " 隨貨樣品",
-          createdAt: now.toISOString()
-        });
-      }
-      if (spare > 0) {
-        entries.push({
-          id: Date.now()+Math.random()+"-p-"+it.id, siteId: sh.siteId, date: dateStr, type: "spare",
-          productId: it.id, sku: it.sku||p.sku||"", name: it.name||p.name||"",
-          qty: spare, price: 0,
-          note: "出貨單 " + sh.no + " 隨貨備品",
           createdAt: now.toISOString()
         });
       }
@@ -8879,8 +8925,7 @@ function ShipmentPanel(props) {
         + '<td style="text-align:right">' + (Number(it.price)||Number(p.price)||0).toLocaleString() + '</td>'
         + '<td style="text-align:center">' + (Number(it.qty)||0) + '</td>'
         + '<td style="text-align:center">' + (Number(it.sampleQty)||0) + '</td>'
-        + '<td style="text-align:center">' + (Number(it.spareQty)||0) + '</td>'
-        + '<td style="text-align:center"><b>' + ((Number(it.qty)||0)+(Number(it.sampleQty)||0)+(Number(it.spareQty)||0)) + '</b></td>'
+        + '<td style="text-align:center"><b>' + ((Number(it.qty)||0)+(Number(it.sampleQty)||0)) + '</b></td>'
         + '</tr>';
     }).join("");
     var sum = function(f){ return (sh.items||[]).reduce(function(s,it){ return s + (Number(it[f])||0); }, 0); };
@@ -8912,12 +8957,11 @@ function ShipmentPanel(props) {
       + '<table><thead><tr>'
       +   '<th style="width:32px">#</th><th style="width:88px">貨號</th><th>品名</th>'
       +   '<th style="width:62px">售價</th><th style="width:48px">販售</th>'
-      +   '<th style="width:48px">樣品</th><th style="width:48px">備品</th><th style="width:48px">合計</th>'
+      +   '<th style="width:48px">樣品</th><th style="width:52px">合計</th>'
       + '</tr></thead><tbody>' + rows + '</tbody>'
       + '<tfoot><tr><td colspan="4" style="text-align:right">合計</td>'
       +   '<td style="text-align:center">' + sum("qty") + '</td>'
       +   '<td style="text-align:center">' + sum("sampleQty") + '</td>'
-      +   '<td style="text-align:center">' + sum("spareQty") + '</td>'
       +   '<td style="text-align:center">' + totalQty(sh) + '</td></tr></tfoot></table>'
       + '<div class="sign"><div>出貨人簽章</div><div>收貨人簽章</div></div>'
       + '<scr' + 'ipt>window.onload=function(){window.print();}</scr' + 'ipt>'
@@ -8991,7 +9035,7 @@ function ShipmentPanel(props) {
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,marginTop:10}}>
                     <thead>
                       <tr style={{background:"#faf9f7"}}>
-                        {["貨號","品名","販售","樣品","備品","合計"].map(function(h,i){
+                        {["貨號","品名","販售","樣品","合計"].map(function(h,i){
                           return <th key={h} style={{padding:"6px 8px",textAlign:i>=2?"center":"left",
                             fontSize:10,color:"#9a968e",borderBottom:"1px solid #e8e4de"}}>{h}</th>;
                         })}
@@ -8999,14 +9043,13 @@ function ShipmentPanel(props) {
                     </thead>
                     <tbody>
                       {(sh.items||[]).map(function(it){
-                        var tot = (Number(it.qty)||0)+(Number(it.sampleQty)||0)+(Number(it.spareQty)||0);
+                        var tot = (Number(it.qty)||0)+(Number(it.sampleQty)||0);
                         return (
                           <tr key={it.id}>
                             <td style={{padding:"5px 8px",borderBottom:"1px solid #f5f4f0",fontFamily:"monospace",fontSize:10,color:"#9a968e"}}>{it.sku}</td>
                             <td style={{padding:"5px 8px",borderBottom:"1px solid #f5f4f0"}}>{it.name}</td>
                             <td style={{padding:"5px 8px",borderBottom:"1px solid #f5f4f0",textAlign:"center"}}>{it.qty||0}</td>
                             <td style={{padding:"5px 8px",borderBottom:"1px solid #f5f4f0",textAlign:"center",color:"#8a6ab0"}}>{it.sampleQty||0}</td>
-                            <td style={{padding:"5px 8px",borderBottom:"1px solid #f5f4f0",textAlign:"center",color:"#2a7080"}}>{it.spareQty||0}</td>
                             <td style={{padding:"5px 8px",borderBottom:"1px solid #f5f4f0",textAlign:"center",fontWeight:700}}>{tot}</td>
                           </tr>
                         );
@@ -9096,7 +9139,7 @@ function ShipmentEditor(props) {
   function addItem(p) {
     if ((sh.items||[]).some(function(it){ return String(it.id)===String(p.id); })) return;
     up({items: (sh.items||[]).concat([{id:p.id, sku:p.sku, name:p.name,
-      price:Number(p.price)||0, qty:1, sampleQty:0, spareQty:0}])});
+      price:Number(p.price)||0, qty:1, sampleQty:0}])});
     setQ("");
   }
 
@@ -9115,7 +9158,7 @@ function ShipmentEditor(props) {
     border:"1px solid #e8e4de",borderRadius:6};
 
   var grand = (sh.items||[]).reduce(function(s,it){
-    return s + (Number(it.qty)||0)+(Number(it.sampleQty)||0)+(Number(it.spareQty)||0); }, 0);
+    return s + (Number(it.qty)||0)+(Number(it.sampleQty)||0); }, 0);
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:11,height:"100%",overflowY:"auto",paddingRight:4}}>
@@ -9195,18 +9238,17 @@ function ShipmentEditor(props) {
             還沒有挑選商品
           </div>
         ) : (
-          <div>
+          <div style={{maxHeight:330,overflowY:"auto"}}>
             <div style={{display:"flex",gap:8,fontSize:10,color:"#9a968e",paddingBottom:6,
               borderBottom:"1px solid #e8e4de",marginBottom:4}}>
               <span style={{flex:1}}>品項</span>
               <span style={{width:52,textAlign:"center"}}>販售</span>
               <span style={{width:52,textAlign:"center"}}>樣品</span>
-              <span style={{width:52,textAlign:"center"}}>備品</span>
               <span style={{width:40,textAlign:"center"}}>合計</span>
               <span style={{width:20}}></span>
             </div>
             {(sh.items||[]).map(function(it, idx){
-              var tot = (Number(it.qty)||0)+(Number(it.sampleQty)||0)+(Number(it.spareQty)||0);
+              var tot = (Number(it.qty)||0)+(Number(it.sampleQty)||0);
               var st = stocks[it.id]!==undefined ? stocks[it.id] : 0;
               var over = tot > st;
               return (
@@ -9222,8 +9264,6 @@ function ShipmentEditor(props) {
                     onChange={function(e){ setItem(idx,{qty:Number(e.target.value)||0}); }}/>
                   <input type="number" min="0" value={it.sampleQty} style={Object.assign({},numInp,{color:"#8a6ab0"})}
                     onChange={function(e){ setItem(idx,{sampleQty:Number(e.target.value)||0}); }}/>
-                  <input type="number" min="0" value={it.spareQty} style={Object.assign({},numInp,{color:"#2a7080"})}
-                    onChange={function(e){ setItem(idx,{spareQty:Number(e.target.value)||0}); }}/>
                   <span style={{width:40,textAlign:"center",fontWeight:700,fontSize:13,
                     color:over?"#c2410c":"#2a2520"}}>{tot}</span>
                   <button onClick={function(){ up({items:(sh.items||[]).filter(function(x,i){return i!==idx;})}); }}
@@ -9235,9 +9275,9 @@ function ShipmentEditor(props) {
         )}
         <div style={{fontSize:10,color:"#9a968e",marginTop:9,lineHeight:1.7}}>
           <b style={{color:"#5a5048"}}>販售</b>＝可販售的數量　
-          <b style={{color:"#8a6ab0"}}>樣品</b>＝開封陳列、不販售　
-          <b style={{color:"#2a7080"}}>備品</b>＝紙袋、包材、陳列道具等隨貨附帶、不販售的東西<br/>
-          三種都會從本店庫存扣掉；樣品和備品在寄售點不計入可賣在庫。
+          <b style={{color:"#8a6ab0"}}>樣品</b>＝開封陳列、不販售<br/>
+          兩種都會從本店庫存扣掉。「業外收入／備品」分類的品項（紙袋、包材、陳列道具）
+          系統會自動當成非銷售品，不計入寄售點的可賣在庫。
         </div>
       </div>
 
@@ -9340,6 +9380,38 @@ function OutboundPanel(props) {
       delta[e.productId] = e.type === "ship" ? (Number(e.qty)||0) : -(Number(e.qty)||0);
       props.applyStock(delta, e.type === "ship" ? "return" : "ship", site.name, [e]);
     }
+  }
+
+  // 把整個據點歸零：刪掉所有記錄，並把出去的貨全部加回本店庫存。
+  // 測試完清場用，正式營運後要小心。
+  function resetSite() {
+    var mine = log.filter(function(e){ return String(e.siteId)===String(site.id); });
+    if (!mine.length) { alert("這個據點還沒有任何記錄"); return; }
+
+    // 淨額＝出去的 − 已退回的，這些要還回本店
+    var back = {};
+    mine.forEach(function(e){
+      var q = Number(e.qty)||0;
+      if (e.type === "ship")   back[e.productId] = (back[e.productId]||0) + q;
+      if (e.type === "return") back[e.productId] = (back[e.productId]||0) - q;
+    });
+    var totalBack = Object.keys(back).reduce(function(s,k){ return s + back[k]; }, 0);
+
+    if (!confirm("把「" + site.name + "」的所有記錄清空？\n\n"
+      + "· 刪除 " + mine.length + " 筆異動記錄（出貨、銷售、樣品、備品、退回）\n"
+      + "· 本店庫存加回 " + totalBack + " 件\n\n"
+      + "此動作無法復原。")) return;
+    if (!confirm("再確認一次：" + site.name + " 會變成完全沒有鋪過貨的狀態。\n\n確定嗎？")) return;
+
+    setLog(function(prev){
+      return (prev||[]).filter(function(e){ return String(e.siteId)!==String(site.id); });
+    });
+    var delta = {};
+    Object.keys(back).forEach(function(k){ if (back[k] !== 0) delta[k] = back[k]; });
+    if (props.applyStock && Object.keys(delta).length) {
+      props.applyStock(delta, "return", site.name + "（清空）", []);
+    }
+    if (window.showToast) window.showToast("已清空 " + site.name + "，庫存加回 " + totalBack + " 件", false);
   }
 
   // 修改鋪貨數量：不去改舊記錄，而是補一筆差額，帳才追得到來源。
@@ -9509,7 +9581,7 @@ function OutboundPanel(props) {
                ["貨號","品名","期初","出貨","已售","樣品","備品","退回","期末","銷售金額","寄售毛利%"]];
     rows.forEach(function(r){
       var p = productById[String(r.productId)] || {};
-      aoa.push([r.sku, r.name, r.open, r.ship, r.sale, r.sample, r.spare, r.ret, r.left, r.revenue,
+      aoa.push([r.sku, r.name, r.open, r.ship, r.sale, r.sample, r.spare||0, r.ret, r.left, r.revenue,
                 consignMargin(p.price, p.cost, site.rate)]);
     });
     aoa.push([]);
@@ -9552,6 +9624,7 @@ function OutboundPanel(props) {
         </div>
         <div style={{display:"flex",gap:7}}>
           <button onClick={function(){ setModal("sale"); }}   style={Object.assign({},btn,{background:"#b8910a"})}>💰 登錄銷售</button>
+          <button onClick={resetSite} style={Object.assign({},btn,{background:"#fff",color:"#b3261e",border:"1px solid #e8c4bc"})}>清空</button>
           <button onClick={function(){ setModal("sample"); }} style={Object.assign({},btn,{background:"#8a6ab0"})}>🎁 轉樣品</button>
           <button onClick={function(){ setModal("return"); }} style={Object.assign({},btn,{background:"#9a968e"})}>↩︎ 退回</button>
         </div>
@@ -13939,6 +14012,10 @@ function POSSystem() {
                       minHeight:95,transition:"box-shadow 0.18s, transform 0.18s"}}
                     onMouseEnter={function(e){e.currentTarget.style.boxShadow="0 4px 12px rgba(42,37,32,0.10)";e.currentTarget.style.transform="translateY(-1px)";}}
                     onMouseLeave={function(e){e.currentTarget.style.boxShadow="0 1px 3px rgba(42,37,32,0.06)";e.currentTarget.style.transform="none";}}>
+                    {b.image ? (
+                      <img src={b.image} alt="" style={{width:"100%",height:62,borderRadius:7,
+                        objectFit:"cover",marginBottom:2}}/>
+                    ) : null}
                     <div style={{fontSize:10,color:"#b09a6a",fontFamily:"monospace"}}>🎁 {b.sku||"組合"}</div>
                     <div style={{fontSize:17,fontWeight:700,color:"#2a2520",lineHeight:1.25,flex:1}}>{b.name}</div>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -14672,7 +14749,10 @@ function POSSystem() {
             onClick={function(e){if(e.target===e.currentTarget)setBundlePick(null);}}>
             <div style={{background:"#ffffff",borderRadius:16,width:620,maxWidth:"95vw",maxHeight:"86vh",display:"flex",flexDirection:"column",overflow:"hidden",boxShadow:"0 12px 48px rgba(0,0,0,0.3)"}}>
               <div style={{padding:"15px 18px",borderBottom:"1px solid #f0ede8",flexShrink:0}}>
-                <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>🎁 {b.name}</div>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  {b.image && <img src={b.image} alt="" style={{width:44,height:44,borderRadius:7,objectFit:"cover"}}/>}
+                  <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>🎁 {b.name}</div>
+                </div>
                 <div style={{fontSize:12,color:"#9a968e",marginTop:3}}>
                   請挑選 {need} 件
                   {hasAllowance ? "，內含 $" + Number(c.allowance).toLocaleString() + " 額度，超過的部分補價差" : "（不限價格）"}
