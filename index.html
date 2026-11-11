@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261112-0049 */window.__BUILD_VERSION="20261112-0049";</script>
+  <script>/* __BUILD_VERSION__:20261112-0055 */window.__BUILD_VERSION="20261112-0055";</script>
 </head>
 <body>
 
@@ -1835,7 +1835,7 @@ function CatalogPanel(props) {
     return hit.type === "po" ? "採購單 " + hit.po + " 的「" + hit.name + "」" : "商品「" + hit.name + "」";
   }
 
-  var subOptions = filterMain ? (CAT_STRUCT[filterMain]||[]) : [];
+  var subOptions = (filterMain && filterMain!=="__orphan__") ? (CAT_STRUCT[filterMain]||[]) : [];
 
   // ── 分頁 ──
 
@@ -1979,8 +1979,10 @@ function CatalogPanel(props) {
   // ── 篩選結果 & 分頁 ──
   var filtered = products.filter(function(p){
     var mQ = !q || p.name.indexOf(q)>=0 || p.sku.indexOf(q)>=0 || (p.material||"").indexOf(q)>=0;
-    var mM = !filterMain || p.main===filterMain;
-    var mS = !filterSub  || p.sub===filterSub;
+    // __orphan__＝分類掛在 CAT_STRUCT 不存在的名稱上（改過分類名後沒跟著改的商品）
+    var isOrphan = !CAT_STRUCT[p.main] || (CAT_STRUCT[p.main]||[]).indexOf(p.sub) < 0;
+    var mM = filterMain === "__orphan__" ? isOrphan : (!filterMain || p.main===filterMain);
+    var mS = filterMain === "__orphan__" ? true : (!filterSub || p.sub===filterSub);
     var isOff = !!(p.delisted || (p.storeOff && p.storeOff[props.currentStore]));
     var mL = filterListing === "" ? true
            : filterListing === "on" ? !isOff
@@ -2510,11 +2512,17 @@ function CatalogPanel(props) {
           style={Object.assign({},inp,{width:"auto",cursor:"pointer",flex:"0 0 auto"})}>
           <option value="">全部大分類</option>
           {MAIN_CATS.map(function(m){return <option key={m} value={m}>{m}</option>;})}
+          {(function(){
+            var n = products.filter(function(p){
+              return !CAT_STRUCT[p.main] || (CAT_STRUCT[p.main]||[]).indexOf(p.sub) < 0;
+            }).length;
+            return n > 0 ? <option value="__orphan__">⚠ 舊分類／未分類（{n}）</option> : null;
+          })()}
         </select>
         <select value={filterSub} onChange={function(e){setFilterSub(e.target.value);setPage(0);}}
-          disabled={!filterMain}
-          style={Object.assign({},inp,{width:"auto",cursor:filterMain?"pointer":"not-allowed",flex:"0 0 auto",opacity:filterMain?1:0.5})}>
-          <option value="">{filterMain?"全部小分類":"請先選大分類"}</option>
+          disabled={!filterMain || filterMain==="__orphan__"}
+          style={Object.assign({},inp,{width:"auto",cursor:filterMain?"pointer":"not-allowed",flex:"0 0 auto",opacity:filterMain&&filterMain!=="__orphan__"?1:0.5})}>
+          <option value="">{filterMain==="__orphan__"?"（不適用）":(filterMain?"全部小分類":"請先選大分類")}</option>
           {subOptions.map(function(s){return <option key={s} value={s}>{s}</option>;})}
         </select>
         <select value={filterListing} onChange={function(e){setFilterListing(e.target.value);setPage(0);}}
