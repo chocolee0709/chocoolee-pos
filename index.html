@@ -34,7 +34,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261112-0055 */window.__BUILD_VERSION="20261112-0055";</script>
+  <script>/* __BUILD_VERSION__:20261112-0102 */window.__BUILD_VERSION="20261112-0102";</script>
 </head>
 <body>
 
@@ -6383,7 +6383,7 @@ function ItemPicker(props) {
     return (p.name||"").toLowerCase().indexOf(qq) !== -1 || (p.sku||"").toLowerCase().indexOf(qq) !== -1;
   });
   // 有搜尋/篩選時放寬顯示上限（避免商品被 slice 截掉而「搜尋不到」）
-  var LIMIT = (query || fMain || fSub) ? 300 : 50;
+  var LIMIT = (query || fMain || fSub) ? 400 : 50;
   var filtered = allMatched.slice(0, LIMIT);
   var moreCount = allMatched.length - filtered.length;
 
@@ -6499,6 +6499,9 @@ function ItemPicker(props) {
                 ✓ 已加入 {existingSkus.length} 項商品
               </div>
             )}
+            <div style={{fontSize:10,color:"#9a968e",marginBottom:5}}>
+              符合 {allMatched.length} 項{moreCount > 0 ? "（只顯示前 "+LIMIT+" 項，請用搜尋縮小範圍）" : ""}
+            </div>
             <div style={{flex:1,overflowY:"auto",border:"1px solid #f0ede8",borderRadius:6,maxHeight:380}}>
               {filtered.length === 0 ? (
                 <div style={{padding:24,textAlign:"center",color:"#9a968e",fontSize:11}}>沒有符合條件的商品</div>
@@ -9165,7 +9168,8 @@ function ShipmentEditor(props) {
     return true;
   });
   var hasFilter = !!(q || fMain || fSub);
-  var found = hasFilter ? filtered.slice(0,60) : [];
+  var LIST_MAX = 400;
+  var found = hasFilter ? filtered.slice(0,LIST_MAX) : [];
 
   var inp = {width:"100%",padding:"9px 11px",fontSize:14,border:"1px solid #e8e4de",borderRadius:8};
   var lbl = {fontSize:11,color:"#9a968e",marginBottom:4,display:"block"};
@@ -9215,8 +9219,13 @@ function ShipmentEditor(props) {
         </div>
         <input style={inp} value={q} placeholder="搜尋商品名稱或貨號，或用上面的分類瀏覽"
           onChange={function(e){ setQ(e.target.value); }}/>
+        {hasFilter && (
+          <div style={{fontSize:10,color:"#9a968e",marginTop:6}}>
+            符合 {filtered.length} 項{filtered.length > LIST_MAX ? "（只顯示前 "+LIST_MAX+" 項，請用搜尋縮小範圍）" : ""}
+          </div>
+        )}
         {found.length > 0 && (
-          <div style={{marginTop:7,maxHeight:230,overflowY:"auto",border:"1px solid #f0ede8",borderRadius:8}}>
+          <div style={{marginTop:7,maxHeight:320,overflowY:"auto",border:"1px solid #f0ede8",borderRadius:8}}>
             {found.map(function(p){
               var picked = (sh.items||[]).some(function(it){ return String(it.id)===String(p.id); });
               var st = stocks[p.id]!==undefined ? stocks[p.id] : 0;
@@ -10029,8 +10038,9 @@ function OutboundEntryModal(props) {
     return true;
   });
   var hasFilter = !!(q || fMain || fSub);
-  var found = hasFilter ? filtered.slice(0,60)
-            : (mode==="ship" ? [] : pool.slice(0,40));
+  var LIST_MAX = 400;
+  var found = hasFilter ? filtered.slice(0,LIST_MAX)
+            : (mode==="ship" ? [] : pool.slice(0,LIST_MAX));
 
   function addLine(p) {
     if (lines.some(function(l){ return String(l.productId)===String(p.id); })) return;
@@ -10116,8 +10126,13 @@ function OutboundEntryModal(props) {
               這個條件下沒有商品
             </div>
           )}
+          {hasFilter && (
+            <div style={{fontSize:10,color:"#9a968e",marginTop:6}}>
+              符合 {filtered.length} 項{filtered.length > LIST_MAX ? "（只顯示前 "+LIST_MAX+" 項）" : ""}
+            </div>
+          )}
           {found.length > 0 && (
-            <div style={{marginTop:7,maxHeight:260,overflowY:"auto",border:"1px solid #f0ede8",borderRadius:8}}>
+            <div style={{marginTop:7,maxHeight:320,overflowY:"auto",border:"1px solid #f0ede8",borderRadius:8}}>
               {found.map(function(p){
                 var inStock = mode==="ship"
                   ? (props.stocks[p.id]!==undefined ? props.stocks[p.id] : 0)
