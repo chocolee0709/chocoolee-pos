@@ -3,6 +3,7 @@
 <head>
 
 
+
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
@@ -34,9 +35,10 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261112-0102 */window.__BUILD_VERSION="20261112-0102";</script>
+  <script>/* __BUILD_VERSION__:20261115-0049 */window.__BUILD_VERSION="20261115-0049";</script>
 </head>
 <body>
+
 
 
   <div id="root"></div>
@@ -157,9 +159,39 @@
                 }
               } catch(e) {}
             }
+            // 已刪除採購單名單：同樣要先處理，purchases 合併時才過濾得掉殭屍單
+            if (data["deletedpos"] !== undefined) {
+              try {
+                var _toPoMap = function(raw) {
+                  var m = {};
+                  if (!raw) return m;
+                  var parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+                  if (Array.isArray(parsed)) { parsed.forEach(function(s){ if(s) m[s]=1; }); }
+                  else if (parsed && typeof parsed === "object") { m = parsed; }
+                  return m;
+                };
+                var _fbPo = _toPoMap(data["deletedpos"]);
+                var _lcPo = _toPoMap(localStorage.getItem("chocoolee-deletedpos"));
+                var _mgPo = {};
+                Object.keys(_fbPo).forEach(function(s){ _mgPo[s] = _fbPo[s]; });
+                Object.keys(_lcPo).forEach(function(s){
+                  if (!_mgPo[s] || _lcPo[s] > _mgPo[s]) _mgPo[s] = _lcPo[s];
+                });
+                var _mgPoStr = JSON.stringify(_mgPo);
+                if (_mgPoStr !== localStorage.getItem("chocoolee-deletedpos")) {
+                  localStorage.setItem("chocoolee-deletedpos", _mgPoStr);
+                  changed.push("deletedpos");
+                }
+                // 本機名單比雲端多 → 補推上去，別台才擋得掉
+                if (Object.keys(_mgPo).length > Object.keys(_fbPo).length && window.pushToFirebase) {
+                  window.pushToFirebase("deletedpos", _mgPoStr);
+                }
+              } catch(e) {}
+            }
             Object.keys(data).forEach(function(key){
               try {
                 if (key === "deletedskus") return; // 已先處理
+                if (key === "deletedpos") return;  // 已先處理
                 // ── 分店：庫存節點映射 ──
                 // 本店代碼（yl 沿用 "stocks" 節點；其他店用 "stocks-{code}"）
                 var myStore = (function(){ try { return localStorage.getItem("chocoolee-store") || "yl"; } catch(e){ return "yl"; } })();
@@ -3215,6 +3247,7 @@ function CatalogPanel(props) {
               <div>
                 <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>📋 庫存異動明細帳</div>
                 <div style={{fontSize:11,color:"#9a968e",marginTop:2}}>查閱指定時間與分類的庫存增減明細與結餘</div>
+                <SyncStatusLine/>
               </div>
               <button onClick={function(){setShowLedger(false);}} style={{background:"none",border:"none",color:"#9a968e",cursor:"pointer",fontSize:22}}>×</button>
             </div>
@@ -3285,6 +3318,77 @@ function CatalogPanel(props) {
         </div>
       )}
       </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// 同步狀態：本機筆數 / 雲端筆數 / 待推送，用來比對多台裝置是否一致
+function SyncStatusLine() {
+  var st = useState(null); var info = st[0], setInfo = st[1];
+  var bs = useState(false); var busy = bs[0], setBusy = bs[1];
+
+  function localCount() {
+    try { return (JSON.parse(localStorage.getItem("chocoolee-stocklog")||"[]")||[]).length; }
+    catch(e) { return -1; }
+  }
+  function pendingCount() {
+    try { return (JSON.parse(localStorage.getItem("chocoolee-pending-stocklog")||"[]")||[]).length; }
+    catch(e) { return 0; }
+  }
+
+  function check() {
+    setBusy(true);
+    var base = {local: localCount(), pending: pendingCount(), cloud: null, err: null};
+    if (!window.getFirebaseToken) { base.err = "沒有雲端連線"; setInfo(base); setBusy(false); return; }
+    window.getFirebaseToken(function(token){
+      if (!token) { base.err = "取不到憑證"; setInfo(base); setBusy(false); return; }
+      // 只取筆數，不把整包拉下來
+      fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/stocklog.json?shallow=true&auth=" + token)
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(v){
+          base.cloud = v ? Object.keys(v).length : 0;
+          setInfo(base); setBusy(false);
+        })
+        .catch(function(e){ base.err = "查詢失敗"; setInfo(base); setBusy(false); });
+    });
+  }
+
+  if (!info) {
+    return (
+      <div style={{fontSize:10,marginTop:4}}>
+        <span onClick={check} style={{color:"#9a7a4a",cursor:"pointer",textDecoration:"underline"}}>
+          {busy ? "查詢中…" : "檢查同步狀態"}
+        </span>
+      </div>
+    );
+  }
+
+  var same = info.cloud !== null && info.local === info.cloud;
+  return (
+    <div style={{fontSize:10,marginTop:4,color:"#7a7068"}}>
+      本機 <b>{info.local}</b> 筆　·　雲端 <b>{info.cloud === null ? "—" : info.cloud}</b> 筆
+      {info.pending > 0 && <span style={{color:"#c2410c"}}>　·　待推送 <b>{info.pending}</b> 筆</span>}
+      {info.err && <span style={{color:"#b3261e"}}>　·　{info.err}</span>}
+      {info.cloud !== null && !info.err && (
+        <span style={{color: same ? "#3a7a30" : "#c2410c", fontWeight:700}}>
+          　{same ? "✓ 一致" : "⚠ 不一致"}
+        </span>
+      )}
+      <span onClick={check} style={{color:"#9a7a4a",cursor:"pointer",textDecoration:"underline",marginLeft:8}}>
+        重新檢查
+      </span>
+      {info.cloud !== null && info.local < info.cloud && (
+        <span onClick={function(){
+            if (!confirm("從雲端重新下載完整的異動明細？\n\n本機目前 " + info.local
+              + " 筆，雲端 " + info.cloud + " 筆。\n下載後會以雲端為準。")) return;
+            if (window.loadFromFirebase) {
+              window.loadFromFirebase(function(){ location.reload(); });
+            } else { location.reload(); }
+          }}
+          style={{color:"#2a7080",cursor:"pointer",textDecoration:"underline",marginLeft:8}}>
+          從雲端補齊
+        </span>
       )}
     </div>
   );
@@ -5136,7 +5240,14 @@ function PurchasePanel(props) {
   var sf  = useState("pending"); var filter = sf[0], setFilter = sf[1];
 
   // 全員可見所有狀態（店員需要查已完成單的售價來整理貨品/貼標）
+  // 已刪除名單：就算別台裝置又把單子推回來，這裡一律不顯示
+  var deletedPoMap = (function(){
+    try { return JSON.parse(localStorage.getItem("chocoolee-deletedpos") || "{}") || {}; }
+    catch(e) { return {}; }
+  })();
+
   var visiblePurchases = purchases.filter(function(p){
+    if (p && deletedPoMap[p.no]) return false;
     if (filter === "pending"  && p.status !== "pending") return false;
     if (filter === "review"   && p.status !== "review")  return false;
     if (filter === "completed"&& p.status !== "completed")return false;
