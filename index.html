@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261117-0213 */window.__BUILD_VERSION="20261117-0213";</script>
+  <script>/* __BUILD_VERSION__:20261117-0221 */window.__BUILD_VERSION="20261117-0221";</script>
 </head>
 <body>
 
@@ -461,16 +461,22 @@
                     // 不然 localStorage 寫入失敗就會讀回舊資料、畫面永遠不更新
                     if (!window.__freshFromCloud) window.__freshFromCloud = {};
                     window.__freshFromCloud[key] = keepArr;
-                    try {
-                      localStorage.setItem("chocoolee-" + key, JSON.stringify(keepArr));
-                    } catch (quotaErr) {
-                      var halfArr = keepArr.slice(-Math.floor(LOCAL_LOG_MAX/2));
+                    // 逐級退讓，務必寫進去某個大小；否則重新整理後會退回更舊的資料
+                    var sizes = [LOCAL_LOG_MAX, 1500, 800, 400, 200, 80];
+                    var savedN = 0;
+                    for (var si = 0; si < sizes.length; si++) {
                       try {
-                        localStorage.setItem("chocoolee-" + key, JSON.stringify(halfArr));
-                      } catch (e2) {
-                        try { localStorage.removeItem("chocoolee-" + key); } catch(e4) {}
-                        console.warn("[異動明細] 本機空間不足，這次只在記憶體中顯示");
-                      }
+                        var part = keepArr.length > sizes[si] ? keepArr.slice(-sizes[si]) : keepArr;
+                        localStorage.setItem("chocoolee-" + key, JSON.stringify(part));
+                        savedN = part.length;
+                        break;
+                      } catch (quotaErr) { /* 再小一級 */ }
+                    }
+                    if (!savedN) {
+                      try { localStorage.removeItem("chocoolee-" + key); } catch(e4) {}
+                      console.warn("[異動明細] 本機完全存不下，這次只在記憶體顯示");
+                    } else if (savedN < keepArr.length) {
+                      console.warn("[異動明細] 本機空間有限，只存了最近 " + savedN + " 筆");
                     }
                     changed.push(key);
                   } catch(e) {
@@ -12172,12 +12178,13 @@ window.cleanStorage = function(onLog) {
   kill.forEach(function(k){ try { localStorage.removeItem(k); } catch(e){} });
   if (kill.length) say("已清除 " + kill.length + " 筆快取／備份");
 
-  // 3) 本機庫存異動明細只留近 1500 筆（雲端完整保留）
+  // 3) 本機庫存異動明細：只有超過保留上限才裁，不要每次清理都砍
+  //    （砍太兇會跟下載打架：下載存 2500、清理砍成 1500，資料永遠湊不齊）
   try {
     var sl = JSON.parse(localStorage.getItem("chocoolee-stocklog") || "[]");
-    if (sl.length > 1500) {
-      localStorage.setItem("chocoolee-stocklog", JSON.stringify(sl.slice(-1500)));
-      say("庫存異動明細本機保留近 1500 筆（原 " + sl.length + " 筆，雲端完整）");
+    if (sl.length > LOCAL_LOG_MAX) {
+      localStorage.setItem("chocoolee-stocklog", JSON.stringify(sl.slice(-LOCAL_LOG_MAX)));
+      say("庫存異動明細本機保留近 " + LOCAL_LOG_MAX + " 筆（原 " + sl.length + " 筆，雲端完整）");
     }
   } catch(e) {}
 
