@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261117-0231 */window.__BUILD_VERSION="20261117-0231";</script>
+  <script>/* __BUILD_VERSION__:20261117-0244 */window.__BUILD_VERSION="20261117-0244";</script>
 </head>
 <body>
 
@@ -838,24 +838,25 @@
               var pRaw = localStorage.getItem("chocoolee-pending-stocks");
               if (pRaw) { var pObj = JSON.parse(pRaw); Object.keys(pObj).forEach(function(k){ delta[k] = true; }); }
             } catch(e) {}
-            var merged;
-            if (Object.keys(delta).length > 0) {
-              // 有 delta：以 Firebase 為底，只把本裝置變動過的 key 蓋上去
-              merged = Object.assign({}, fbStocks);
-              Object.keys(delta).forEach(function(k){
-                if (localStocks[k] !== undefined) merged[k] = localStocks[k];
-                else delete merged[k];
-              });
-            } else {
-              // 無 delta 記錄（如初始化/手動全量）：保守用本機覆蓋
-              merged = Object.assign({}, fbStocks, localStocks);
+            // 原則：沒有實際改動的裝置，一律不寫回庫存。
+            // 以前「無 delta 就用本機整包覆蓋」會讓開很久的裝置把舊數字洗回雲端，
+            // 別台剛賣出的扣帳就這樣不見了。
+            if (Object.keys(delta).length === 0) {
+              return null;   // 不送出任何寫入
             }
+            // 以 Firebase 為底，只把本裝置真正變動過的 key 蓋上去
+            var merged = Object.assign({}, fbStocks);
+            Object.keys(delta).forEach(function(k){
+              if (localStocks[k] !== undefined) merged[k] = localStocks[k];
+              else delete merged[k];
+            });
             return fetch(FB + "/chocoolee/" + nodeName + ".json?auth=" + token, {
               method:"PUT", headers:{"Content-Type":"application/json"},
               body: JSON.stringify(merged)
             });
           })
           .then(function(r){
+            if (r === null) { return; }   // 本裝置沒有改動，不需要寫入
             if (r && r.ok) {
               window._stocksDelta = {};
               try { localStorage.removeItem("chocoolee-pending-stocks"); } catch(e){}
@@ -874,7 +875,101 @@
     doMerge(3);
   };
   function startSSE() {
-    // 不啟動 SSE，不自動下載資料
+    // 不用 SSE，改用輕量輪詢：只拉庫存與異動明細兩個節點，
+    // 不動商品／訂單／採購單，避免以前整包下載造成的覆蓋問題。
+    startStockSync();
+  }
+
+  // ── 庫存即時同步 ──────────────────────────────────────────────
+  // 沒有這個的話，開著的裝置永遠看不到別台賣出的結果，
+  // 而且記憶體裡的舊庫存還可能被寫回雲端，造成數字倒退。
+  var stockSyncBusy = false;
+  window.syncStocksAndLog = function(silent) {
+    if (stockSyncBusy) return;
+    stockSyncBusy = true;
+    getToken(function(token){
+      if (!token) { stockSyncBusy = false; return; }
+      var node = myStocksNodeName();
+      Promise.all([
+        fetch(FB + "/chocoolee/" + node + ".json?auth=" + token).then(function(r){ return r.ok ? r.json() : null; }),
+        fetch(FB + "/chocoolee/stocklog.json?auth=" + token).then(function(r){ return r.ok ? r.json() : null; })
+      ]).then(function(res){
+        var fbStocks = res[0], fbLog = res[1];
+        var changedAny = false;
+
+        // 庫存：雲端為底，套回本機還沒推成功的變更（pending）
+        if (fbStocks && typeof fbStocks === "object") {
+          var merged = Object.assign({}, fbStocks);
+          try {
+            var pRaw = localStorage.getItem("chocoolee-pending-stocks");
+            if (pRaw) {
+              var pObj = JSON.parse(pRaw);
+              Object.keys(pObj).forEach(function(k){
+                if (pObj[k] === null) delete merged[k]; else merged[k] = pObj[k];
+              });
+            }
+          } catch(e) {}
+          var curStr = localStorage.getItem("chocoolee-stocks");
+          var newStr = JSON.stringify(merged);
+          if (newStr !== curStr) {
+            try { localStorage.setItem("chocoolee-stocks", newStr); } catch(e) {}
+            if (window.__reactSetters && window.__reactSetters.stocks) {
+              window.__reactSetters.stocks(merged);
+            }
+            if (!silent && window.showToast) window.showToast("☁️ 庫存已更新");
+            changedAny = true;
+          }
+        }
+
+        // 異動明細：合併本機未推送的，取最近 2500 筆
+        if (fbLog) {
+          var arr = Array.isArray(fbLog) ? fbLog : Object.values(fbLog);
+          arr = arr.filter(function(x){ return x && x.id !== undefined; });
+          try {
+            var pl = localStorage.getItem("chocoolee-pending-stocklog");
+            if (pl) {
+              var pend = JSON.parse(pl) || [];
+              var ids = {};
+              arr.forEach(function(l){ ids[String(l.id)] = true; });
+              pend.forEach(function(l){ if (l && l.id !== undefined && !ids[String(l.id)]) arr.push(l); });
+            }
+          } catch(e) {}
+          arr.sort(function(a,b){
+            var ka = String(a.date||"") + String(a.time||"");
+            var kb = String(b.date||"") + String(b.time||"");
+            return ka < kb ? -1 : (ka > kb ? 1 : 0);
+          });
+          var keep = arr.length > 2500 ? arr.slice(-2500) : arr;
+          var prevLen = 0;
+          try { prevLen = (JSON.parse(localStorage.getItem("chocoolee-stocklog")||"[]")||[]).length; } catch(e) {}
+          if (keep.length !== prevLen) {
+            var sizes = [2500, 1500, 800, 400, 200, 80];
+            for (var si = 0; si < sizes.length; si++) {
+              try {
+                var part = keep.length > sizes[si] ? keep.slice(-sizes[si]) : keep;
+                localStorage.setItem("chocoolee-stocklog", JSON.stringify(part));
+                break;
+              } catch(q) {}
+            }
+            if (window.__reactSetters && window.__reactSetters.stocklog) {
+              window.__reactSetters.stocklog(keep);
+            }
+            changedAny = true;
+          }
+        }
+        if (changedAny && silent && window.showToast) window.showToast("☁️ 資料已更新");
+        stockSyncBusy = false;
+      }).catch(function(){ stockSyncBusy = false; });
+    });
+  };
+
+  function startStockSync() {
+    // 每 90 秒拉一次，切回頁面時立刻拉一次
+    setInterval(function(){ window.syncStocksAndLog(true); }, 90 * 1000);
+    document.addEventListener("visibilitychange", function(){
+      if (document.visibilityState === "visible") window.syncStocksAndLog(true);
+    });
+    setTimeout(function(){ window.syncStocksAndLog(true); }, 8000);
   }
 
   var pollingTimer = null;
@@ -1186,11 +1281,22 @@
     if (callback) callback(false);
   };
 
-  // iPad 螢幕喚醒或切回頁面時：只拉取最新資料（不主動推送）
+  // 切回頁面時：完整下載一次（等同重新開啟），最多每 2 分鐘一次。
+  // 這樣家裡裝置放著不動，一回來就是最新資料，不用手動重新整理。
+  var lastFullSync = 0;
   document.addEventListener("visibilitychange", function(){
     if (document.visibilityState !== "visible") return;
-    // 只刷新 token，不自動下載資料（資料只在開啟/重新整理/下拉更新時下載）
     fbToken = null;
+    var now = Date.now();
+    if (now - lastFullSync < 2 * 60 * 1000) return;
+    lastFullSync = now;
+    setTimeout(function(){
+      if (window.loadFromFirebase) {
+        window.loadFromFirebase(function(ok){
+          if (ok && window.showToast) window.showToast("☁️ 已更新到最新資料");
+        });
+      }
+    }, 600);
   });
 
   // ── 下拉更新（Pull to Refresh）──
