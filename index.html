@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261117-0244 */window.__BUILD_VERSION="20261117-0244";</script>
+  <script>/* __BUILD_VERSION__:20261117-0252 */window.__BUILD_VERSION="20261117-0252";</script>
 </head>
 <body>
 
@@ -436,7 +436,7 @@
                 if (key === "stocklog") {
                   // 本機只留近期：全量寫入會超出 iPad 的 localStorage 上限，
                   // 寫入一失敗整段就跳掉、changed 不會標記，畫面就永遠停在舊資料。
-                  var LOCAL_LOG_MAX = 2500;
+                  var LOCAL_LOG_MAX = 600;
                   try {
                     var fbLogArr = JSON.parse(newVal) || [];
                     var pendLogRaw = localStorage.getItem("chocoolee-pending-stocklog");
@@ -462,7 +462,7 @@
                     if (!window.__freshFromCloud) window.__freshFromCloud = {};
                     window.__freshFromCloud[key] = keepArr;
                     // 逐級退讓，務必寫進去某個大小；否則重新整理後會退回更舊的資料
-                    var sizes = [LOCAL_LOG_MAX, 1500, 800, 400, 200, 80];
+                    var sizes = [LOCAL_LOG_MAX, 400, 250, 150, 80];
                     var savedN = 0;
                     for (var si = 0; si < sizes.length; si++) {
                       try {
@@ -921,7 +921,7 @@
           }
         }
 
-        // 異動明細：合併本機未推送的，取最近 2500 筆
+        // 異動明細：合併本機未推送的，取最近 600 筆
         if (fbLog) {
           var arr = Array.isArray(fbLog) ? fbLog : Object.values(fbLog);
           arr = arr.filter(function(x){ return x && x.id !== undefined; });
@@ -939,11 +939,11 @@
             var kb = String(b.date||"") + String(b.time||"");
             return ka < kb ? -1 : (ka > kb ? 1 : 0);
           });
-          var keep = arr.length > 2500 ? arr.slice(-2500) : arr;
+          var keep = arr.length > 600 ? arr.slice(-600) : arr;
           var prevLen = 0;
           try { prevLen = (JSON.parse(localStorage.getItem("chocoolee-stocklog")||"[]")||[]).length; } catch(e) {}
           if (keep.length !== prevLen) {
-            var sizes = [2500, 1500, 800, 400, 200, 80];
+            var sizes = [600, 400, 250, 150, 80];
             for (var si = 0; si < sizes.length; si++) {
               try {
                 var part = keep.length > sizes[si] ? keep.slice(-sizes[si]) : keep;
@@ -1524,9 +1524,10 @@ function expandForStock(line) {
   });
 }
 
-// 異動明細本機保留上限（雲端不受限）。
-// 一筆約 180 bytes，2500 筆在 localStorage 約佔 0.9MB，iPad 撐得住。
-var LOCAL_LOG_MAX = 2500;
+// 異動明細本機保留上限（雲端永遠是全量）。
+// 平常不會翻明細，會查都是數字出問題的時候，所以本機只留近期即可；
+// 要看更早的用「載入完整記錄」向雲端拿。600 筆約佔 0.2MB。
+var LOCAL_LOG_MAX = 600;
 
 // 寄售毛利率：對方抽成後我們實收 售價×(1−抽成)，再扣成本。
 // 分母一樣用售價，才能跟店內毛利率直接比較。
@@ -1860,7 +1861,7 @@ function CatalogPanel(props) {
   var nas = useState(false); var showAdd = nas[0], setShowAdd = nas[1];
   var nfs = useState(Object.assign({},EMPTY_PRODUCT)); var newForm = nfs[0], setNewForm = nfs[1];
   var ldg = useState(false); var showLedger = ldg[0], setShowLedger = ldg[1];
-  var ldf = useState({dateFrom:"",dateTo:"",main:"",sub:""}); var ledgerFilter = ldf[0], setLedgerFilter = ldf[1];
+  var ldf = useState({dateFrom:"",dateTo:"",main:"",sub:"",q:""}); var ledgerFilter = ldf[0], setLedgerFilter = ldf[1];
   var eds = useState(null); var editId = eds[0], setEditId = eds[1];
   var efs = useState(null); var editForm = efs[0], setEditForm = efs[1];
 
@@ -3409,6 +3410,13 @@ function CatalogPanel(props) {
             {/* 篩選條件 */}
             <div style={{padding:"10px 20px",borderBottom:"1px solid #f0ede8",display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap",flexShrink:0,background:"#f8f7f4"}}>
               <div>
+                <div style={{fontSize:10,color:"#9a968e",marginBottom:3}}>品名／貨號</div>
+                <input value={ledgerFilter.q||""} onChange={function(e){setLF("q",e.target.value);}}
+                  placeholder="例：果汁杯 或 7256"
+                  style={{background:"#ffffff",border:"1px solid #d8d4cc",borderRadius:6,padding:"5px 9px",
+                    color:"#2a2520",fontSize:12,outline:"none",width:150}}/>
+              </div>
+              <div>
                 <div style={{fontSize:10,color:"#9a968e",marginBottom:3}}>開始日期</div>
                 <input type="date" value={ledgerFilter.dateFrom} onChange={function(e){setLF("dateFrom",e.target.value);}}
                   style={{background:"#ffffff",border:"1px solid #d8d4cc",borderRadius:6,padding:"5px 9px",color:"#2a2520",fontSize:12,outline:"none"}}/>
@@ -3437,9 +3445,16 @@ function CatalogPanel(props) {
                   </select>
                 </div>
               )}
-              <button onClick={function(){setLedgerFilter({dateFrom:"",dateTo:"",main:"",sub:""}); }}
+              <button onClick={function(){setLedgerFilter({dateFrom:"",dateTo:"",main:"",sub:"",q:""}); }}
                 style={{background:"none",border:"1px solid #d8d4cc",borderRadius:6,padding:"5px 10px",color:"#9a968e",fontSize:11,cursor:"pointer"}}>清除</button>
-              <span style={{marginLeft:"auto",fontSize:10,color:"#9a968e"}}>共 {stockLog.length} 筆異動記錄</span>
+              <span style={{marginLeft:"auto",fontSize:10,color:"#9a968e"}}>
+                共 {stockLog.length} 筆異動記錄
+                {(ledgerFilter.q||"").trim() && (
+                  <span style={{display:"block",color:"#c2410c"}}>
+                    本機只有近期記錄，查不到舊的請按上方「載入完整記錄」
+                  </span>
+                )}
+              </span>
             </div>
 
             {/* 明細內容 — 獨立捲動區 */}
@@ -4281,7 +4296,9 @@ function LedgerContent(props) {
     var mD = (!ledgerFilter.dateFrom || l.date>=ledgerFilter.dateFrom) && (!ledgerFilter.dateTo || l.date<=ledgerFilter.dateTo);
     var mM = !ledgerFilter.main || l.main===ledgerFilter.main;
     var mS = !ledgerFilter.sub  || l.sub===ledgerFilter.sub;
-    return mD && mM && mS;
+    var q  = (ledgerFilter.q||"").trim();
+    var mQ = !q || String(l.name||"").indexOf(q) >= 0 || String(l.sku||"").indexOf(q) >= 0;
+    return mD && mM && mS && mQ;
   }).sort(function(a,b){ return (a.date+a.time)<(b.date+b.time)?1:-1; });
 
   if (logs.length===0) {
