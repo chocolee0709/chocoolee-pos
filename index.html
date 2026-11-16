@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261117-0043 */window.__BUILD_VERSION="20261117-0043";</script>
+  <script>/* __BUILD_VERSION__:20261117-0213 */window.__BUILD_VERSION="20261117-0213";</script>
 </head>
 <body>
 
@@ -457,13 +457,20 @@
                     window.__cloudLogCount = fbLogArr.length;
                     var keepArr = fbLogArr.length > LOCAL_LOG_MAX
                       ? fbLogArr.slice(-LOCAL_LOG_MAX) : fbLogArr;
+                    // 先把資料留在記憶體：更新畫面時用這份，
+                    // 不然 localStorage 寫入失敗就會讀回舊資料、畫面永遠不更新
+                    if (!window.__freshFromCloud) window.__freshFromCloud = {};
+                    window.__freshFromCloud[key] = keepArr;
                     try {
                       localStorage.setItem("chocoolee-" + key, JSON.stringify(keepArr));
                     } catch (quotaErr) {
-                      // 還是塞不下就再砍一半，務必要讓畫面拿到新資料
                       var halfArr = keepArr.slice(-Math.floor(LOCAL_LOG_MAX/2));
-                      try { localStorage.setItem("chocoolee-" + key, JSON.stringify(halfArr)); }
-                      catch (e2) {}
+                      try {
+                        localStorage.setItem("chocoolee-" + key, JSON.stringify(halfArr));
+                      } catch (e2) {
+                        try { localStorage.removeItem("chocoolee-" + key); } catch(e4) {}
+                        console.warn("[異動明細] 本機空間不足，這次只在記憶體中顯示");
+                      }
                     }
                     changed.push(key);
                   } catch(e) {
@@ -533,8 +540,15 @@
                 }
                 if (setter) {
                   try {
-                    var val = localStorage.getItem("chocoolee-" + key);
-                    if (val) setter(JSON.parse(val));
+                    // 剛從雲端拿到的優先用記憶體那份（localStorage 可能因空間不足寫不進去）
+                    var fresh = window.__freshFromCloud && window.__freshFromCloud[key];
+                    if (fresh !== undefined && fresh !== null) {
+                      setter(fresh);
+                      delete window.__freshFromCloud[key];
+                    } else {
+                      var val = localStorage.getItem("chocoolee-" + key);
+                      if (val) setter(JSON.parse(val));
+                    }
                   } catch(e){}
                 }
               });
@@ -2627,6 +2641,15 @@ function CatalogPanel(props) {
           style={{background:"#5a5048",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
           📋 庫存異動明細
         </button>
+        {/* 4. 庫存稽核：找出賣了卻沒扣到庫存的訂單 */}
+        {isManager && (
+          <button onClick={function(){ if (props.onOpenAudit) props.onOpenAudit(); }}
+            title="比對訂單與異動明細，找出賣了卻沒扣庫存的"
+            style={{background:"none",border:"1px solid #b4734a",borderRadius:6,padding:"5px 11px",
+              color:"#b4734a",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+            🔍 庫存稽核
+          </button>
+        )}
         {/* 4. 匯出盤點表 */}
         <button onClick={exportInventory}
           style={{background:"#3d9e32",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
@@ -3268,7 +3291,7 @@ function CatalogPanel(props) {
               <div>
                 <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>📋 庫存異動明細帳</div>
                 <div style={{fontSize:11,color:"#9a968e",marginTop:2}}>查閱指定時間與分類的庫存增減明細與結餘</div>
-                <SyncStatusLine/>
+                <SyncStatusLine shown={(stockLog||[]).length}/>
               </div>
               <button onClick={function(){setShowLedger(false);}} style={{background:"none",border:"none",color:"#9a968e",cursor:"pointer",fontSize:22}}>×</button>
             </div>
@@ -3345,10 +3368,12 @@ function CatalogPanel(props) {
 }
 
 // 同步狀態：本機筆數 / 雲端筆數 / 待推送，用來比對多台裝置是否一致
-function SyncStatusLine() {
+function SyncStatusLine(props) {
   var st = useState(null); var info = st[0], setInfo = st[1];
   var bs = useState(false); var busy = bs[0], setBusy = bs[1];
 
+  // 畫面上實際看得到的筆數（記憶體）vs 真正存在本機的筆數
+  function shownCount() { return (props && props.shown !== undefined) ? props.shown : -1; }
   function localCount() {
     try { return (JSON.parse(localStorage.getItem("chocoolee-stocklog")||"[]")||[]).length; }
     catch(e) { return -1; }
@@ -3360,7 +3385,7 @@ function SyncStatusLine() {
 
   function check() {
     setBusy(true);
-    var base = {local: localCount(), pending: pendingCount(), cloud: null, err: null};
+    var base = {local: localCount(), shown: shownCount(), pending: pendingCount(), cloud: null, err: null};
     if (!window.getFirebaseToken) { base.err = "沒有雲端連線"; setInfo(base); setBusy(false); return; }
     window.getFirebaseToken(function(token){
       if (!token) { base.err = "取不到憑證"; setInfo(base); setBusy(false); return; }
@@ -3385,10 +3410,13 @@ function SyncStatusLine() {
     );
   }
 
-  var same = info.cloud !== null && info.local === info.cloud;
+  var same = info.cloud !== null && (info.shown >= 0 ? info.shown : info.local) >= info.cloud;
   return (
     <div style={{fontSize:10,marginTop:4,color:"#7a7068"}}>
-      本機 <b>{info.local}</b> 筆　·　雲端 <b>{info.cloud === null ? "—" : info.cloud}</b> 筆
+      畫面 <b>{info.shown >= 0 ? info.shown : "—"}</b> 筆　·　本機存檔 <b>{info.local}</b> 筆　·　雲端 <b>{info.cloud === null ? "—" : info.cloud}</b> 筆
+      {info.shown >= 0 && info.local >= 0 && info.local < info.shown && (
+        <span style={{color:"#c2410c"}}>　（本機空間不足，重新整理後只會留下存檔的部分）</span>
+      )}
       {info.pending > 0 && <span style={{color:"#c2410c"}}>　·　待推送 <b>{info.pending}</b> 筆</span>}
       {info.err && <span style={{color:"#b3261e"}}>　·　{info.err}</span>}
       {info.cloud !== null && !info.err && (
@@ -3399,7 +3427,7 @@ function SyncStatusLine() {
       <span onClick={check} style={{color:"#9a7a4a",cursor:"pointer",textDecoration:"underline",marginLeft:8}}>
         重新檢查
       </span>
-      {info.cloud !== null && info.local < info.cloud && (
+      {info.cloud !== null && (info.shown >= 0 ? info.shown : info.local) < info.cloud && (
         <span onClick={function(){
             if (!confirm("從雲端載入完整的異動明細？\n\n本機保留近 " + info.local
               + " 筆，雲端有 " + info.cloud + " 筆。\n\n載入後這次開啟期間可以查到全部記錄，"
@@ -14612,7 +14640,8 @@ function POSSystem() {
         {/* ════ 商品 / 庫存 / 訂單 / 會員 ════ */}
         {activeTab !== "pos" && (
           <div style={{flex:1,overflow:"hidden",padding:"16px 20px",display:"flex",flexDirection:"column"}}>
-            {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={storeStockLog} sharedAddLog={sharedAddLog} currentStore={currentStore} storeList={storeList} purchases={purchases} bundles={bundles} setBundles={saveBundles}/>}
+            {activeTab==="catalog"   && <CatalogPanel products={sharedProducts} setSharedProducts={saveProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} sharedStockLog={storeStockLog} sharedAddLog={sharedAddLog} currentStore={currentStore} storeList={storeList} purchases={purchases} bundles={bundles} setBundles={saveBundles}
+              onOpenAudit={function(){ setShowAudit(true); }}/>}
             {activeTab==="orders"    && <OrdersDrawer orders={storeOrders} setOrders={saveOrders} setSharedStocks={saveStocks} sharedStocks={sharedStocks} sharedAddLog={sharedAddLog}/>}
             {activeTab==="members"   && <MembersDrawer members={members} setMembers={saveMembers} currentStore={currentStore} storeList={storeList}/>}
             {activeTab==="purchase"  && <PurchasePanel purchases={storePurchases} setPurchases={savePurchases} products={sharedProducts} currentStaff={currentStaff} isManager={isManager} sharedStocks={sharedStocks} setSharedStocks={saveStocks} setSharedProducts={saveProducts} sharedAddLog={sharedAddLog}/>}
