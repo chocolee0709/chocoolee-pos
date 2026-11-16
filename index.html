@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261115-0049 */window.__BUILD_VERSION="20261115-0049";</script>
+  <script>/* __BUILD_VERSION__:20261117-0043 */window.__BUILD_VERSION="20261117-0043";</script>
 </head>
 <body>
 
@@ -434,6 +434,9 @@
                 // pending 記錄（使用者按儲存後推送失敗的），避免斷線期間的記錄遺失。
                 // pending 會在下次使用者操作觸發儲存推送時一起上傳，不會自動上傳
                 if (key === "stocklog") {
+                  // 本機只留近期：全量寫入會超出 iPad 的 localStorage 上限，
+                  // 寫入一失敗整段就跳掉、changed 不會標記，畫面就永遠停在舊資料。
+                  var LOCAL_LOG_MAX = 2500;
                   try {
                     var fbLogArr = JSON.parse(newVal) || [];
                     var pendLogRaw = localStorage.getItem("chocoolee-pending-stocklog");
@@ -444,13 +447,27 @@
                       pendLogs.forEach(function(l){
                         if (l && l.id !== undefined && !fbLogIds[String(l.id)]) fbLogArr.push(l);
                       });
-                      localStorage.setItem("chocoolee-" + key, JSON.stringify(fbLogArr));
-                    } else {
-                      localStorage.setItem("chocoolee-" + key, newVal);
+                    }
+                    // 依日期時間排序後取最近的，三台裝置才會留到同一批
+                    fbLogArr.sort(function(a,b){
+                      var ka = String((a&&a.date)||"") + String((a&&a.time)||"");
+                      var kb = String((b&&b.date)||"") + String((b&&b.time)||"");
+                      return ka < kb ? -1 : (ka > kb ? 1 : 0);
+                    });
+                    window.__cloudLogCount = fbLogArr.length;
+                    var keepArr = fbLogArr.length > LOCAL_LOG_MAX
+                      ? fbLogArr.slice(-LOCAL_LOG_MAX) : fbLogArr;
+                    try {
+                      localStorage.setItem("chocoolee-" + key, JSON.stringify(keepArr));
+                    } catch (quotaErr) {
+                      // 還是塞不下就再砍一半，務必要讓畫面拿到新資料
+                      var halfArr = keepArr.slice(-Math.floor(LOCAL_LOG_MAX/2));
+                      try { localStorage.setItem("chocoolee-" + key, JSON.stringify(halfArr)); }
+                      catch (e2) {}
                     }
                     changed.push(key);
                   } catch(e) {
-                    localStorage.setItem("chocoolee-" + key, newVal);
+                    try { localStorage.setItem("chocoolee-" + key, newVal); } catch(e3) {}
                     changed.push(key);
                   }
                   return;
@@ -1380,6 +1397,10 @@ function expandForStock(line) {
     };
   });
 }
+
+// 異動明細本機保留上限（雲端不受限）。
+// 一筆約 180 bytes，2500 筆在 localStorage 約佔 0.9MB，iPad 撐得住。
+var LOCAL_LOG_MAX = 2500;
 
 // 寄售毛利率：對方抽成後我們實收 售價×(1−抽成)，再扣成本。
 // 分母一樣用售價，才能跟店內毛利率直接比較。
@@ -3380,14 +3401,31 @@ function SyncStatusLine() {
       </span>
       {info.cloud !== null && info.local < info.cloud && (
         <span onClick={function(){
-            if (!confirm("從雲端重新下載完整的異動明細？\n\n本機目前 " + info.local
-              + " 筆，雲端 " + info.cloud + " 筆。\n下載後會以雲端為準。")) return;
-            if (window.loadFromFirebase) {
-              window.loadFromFirebase(function(){ location.reload(); });
-            } else { location.reload(); }
+            if (!confirm("從雲端載入完整的異動明細？\n\n本機保留近 " + info.local
+              + " 筆，雲端有 " + info.cloud + " 筆。\n\n載入後這次開啟期間可以查到全部記錄，"
+              + "但不會存進本機（避免空間不足）。")) return;
+            if (!window.getFirebaseToken) { alert("沒有雲端連線"); return; }
+            window.getFirebaseToken(function(token){
+              if (!token) { alert("取不到憑證"); return; }
+              fetch("https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee/stocklog.json?auth=" + token)
+                .then(function(r){ return r.ok ? r.json() : null; })
+                .then(function(v){
+                  var arr = Array.isArray(v) ? v : (v ? Object.values(v) : []);
+                  arr = arr.filter(function(x){ return x && x.id !== undefined; });
+                  if (!arr.length) { alert("雲端沒有資料"); return; }
+                  // 只放進記憶體，不寫 localStorage
+                  if (window.__reactSetters && window.__reactSetters.stocklog) {
+                    window.__reactSetters.stocklog(arr);
+                    alert("已載入 " + arr.length + " 筆（本次開啟有效，重新整理後恢復近期檢視）");
+                  } else {
+                    alert("載入失敗：找不到畫面更新介面");
+                  }
+                })
+                .catch(function(){ alert("載入失敗，請檢查網路"); });
+            });
           }}
           style={{color:"#2a7080",cursor:"pointer",textDecoration:"underline",marginLeft:8}}>
-          從雲端補齊
+          載入完整記錄
         </span>
       )}
     </div>
@@ -5256,6 +5294,63 @@ function PurchasePanel(props) {
 
   // 刪除採購單（限店長）。已入庫的要同時決定庫存回沖與否，
   // 否則刪了單子、貨卻還掛在庫存上，帳貨就對不起來。
+  // 一次清除指定採購單：寫入已刪除名單 → 清本機 → 直接寫雲端並驗證。
+  // 一般存檔是推出去就不管結果，這裡會明確回報成功或失敗。
+  function purgePurchases() {
+    var input = prompt("輸入要清除的採購單號（一行一個，或用逗號分隔）：", "");
+    if (!input) return;
+    var nos = input.split(/[\s,，、]+/).map(function(x){ return x.trim(); })
+      .filter(function(x){ return x; });
+    if (!nos.length) return;
+
+    var existing = (purchases||[]).filter(function(p){ return p && nos.indexOf(p.no) >= 0; });
+    var stocked = existing.reduce(function(sum,p){
+      return sum + (p.items||[]).reduce(function(s,it){ return s + (Number(it.stockedQty)||0); }, 0);
+    }, 0);
+
+    var msg = "要清除這 " + nos.length + " 張採購單嗎？\n\n" + nos.join("\n")
+      + "\n\n本機找到 " + existing.length + " 張"
+      + (stocked > 0 ? "（其中 " + stocked + " 件已入庫，庫存不會變動）" : "")
+      + "\n\n會同時寫入「已刪除名單」，其他裝置下載時也會擋掉。";
+    if (!confirm(msg)) return;
+
+    // 1) 已刪除名單
+    var dm = {};
+    try { dm = JSON.parse(localStorage.getItem("chocoolee-deletedpos") || "{}") || {}; } catch(e) {}
+    var now = new Date().toISOString();
+    nos.forEach(function(n){ dm[n] = now; });
+    try { localStorage.setItem("chocoolee-deletedpos", JSON.stringify(dm)); } catch(e) {}
+
+    // 2) 本機移除
+    var kept = (purchases||[]).filter(function(p){ return !(p && nos.indexOf(p.no) >= 0); });
+    setPurchases(kept);
+
+    // 3) 直接寫雲端並確認結果
+    if (!window.getFirebaseToken) { alert("本機已清除，但沒有雲端連線，請連線後重開一次"); return; }
+    window.getFirebaseToken(function(token){
+      if (!token) { alert("本機已清除，但取不到雲端憑證"); return; }
+      var FB = "https://chocoolee-pos-default-rtdb.firebaseio.com/chocoolee";
+      function put(path, body) {
+        return fetch(FB + path + ".json?auth=" + token, {
+          method: "PUT", headers: {"Content-Type":"application/json"},
+          body: JSON.stringify(body)
+        }).then(function(r){ return {path: path, ok: r.ok, status: r.status}; })
+          .catch(function(){ return {path: path, ok: false, status: "網路錯誤"}; });
+      }
+      Promise.all([put("/purchases", kept), put("/deletedpos", dm)]).then(function(res){
+        var bad = res.filter(function(x){ return !x.ok; });
+        if (!bad.length) {
+          alert("✓ 已清除 " + nos.length + " 張採購單\n\n"
+            + "本機和雲端都處理完成，其他裝置重新整理後就看不到了。");
+        } else {
+          alert("⚠ 本機已清除，但雲端寫入失敗：\n"
+            + bad.map(function(x){ return x.path + "（" + x.status + "）"; }).join("\n")
+            + "\n\n請換個網路再執行一次。");
+        }
+      });
+    });
+  }
+
   // 要刪的單（null = 沒有）。用自訂視窗而不是 confirm，
   // 因為「扣回庫存 / 不扣」是兩個對等選項，confirm 的確定／取消容易按錯。
   var dp = useState(null); var delPo = dp[0], setDelPo = dp[1];
@@ -5758,8 +5853,15 @@ function PurchasePanel(props) {
         <div style={{display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
           <div style={{fontSize:16,fontWeight:700,color:"#2a2520"}}>📋 採購單管理</div>
           {isManager && (
+            <button onClick={purgePurchases} title="輸入單號，一次從本機和雲端清除"
+              style={{marginLeft:"auto",background:"#fff",border:"1px solid #e8c4bc",borderRadius:6,
+                padding:"6px 12px",color:"#b3261e",fontSize:12,cursor:"pointer"}}>
+              🧹 清除指定單號
+            </button>
+          )}
+          {isManager && (
             <button onClick={newPurchase}
-              style={{marginLeft:"auto",background:"#b8910a",border:"none",borderRadius:6,padding:"6px 14px",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+              style={{background:"#b8910a",border:"none",borderRadius:6,padding:"6px 14px",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>
               ＋ 新增採購單
             </button>
           )}
@@ -12407,13 +12509,14 @@ function saveData(key, value) {
           }
         } catch(e4) {}
 
-        // 仍不足 → 砍掉本機舊庫存異動明細（雲端完整保留，本機只留近 1500 筆）
+        // 仍不足 → 再砍一半異動明細（雲端完整保留）
         try {
           var slRaw = localStorage.getItem("chocoolee-stocklog");
           if (slRaw) {
             var slArr = JSON.parse(slRaw);
-            if (slArr.length > 1500) {
-              localStorage.setItem("chocoolee-stocklog", JSON.stringify(slArr.slice(-1500)));
+            var half = Math.floor(LOCAL_LOG_MAX / 2);
+            if (slArr.length > half) {
+              localStorage.setItem("chocoolee-stocklog", JSON.stringify(slArr.slice(-half)));
               localStorage.setItem(k, v);
               return true;
             }
@@ -12444,6 +12547,17 @@ function saveData(key, value) {
       }
     }
 
+    // 異動明細本機只保留近期：全部存進去會撐爆 iPad，而且撐爆的時機每台不同，
+    // 會造成三台裝置內容不一致。雲端仍是全量，要查更早的從雲端載入。
+    if (key === "stocklog") {
+      try {
+        var fullLog = typeof value === "string" ? JSON.parse(value) : value;
+        if (Array.isArray(fullLog) && fullLog.length > LOCAL_LOG_MAX) {
+          serialized = JSON.stringify(fullLog.slice(-LOCAL_LOG_MAX));
+        }
+      } catch(e) {}
+    }
+
     if (window.storage) {
       window.storage.set("chocoolee-"+key, serialized).catch(function(){});
     }
@@ -12452,7 +12566,7 @@ function saveData(key, value) {
       // stocklog 和 stocks 用合併推送，避免多台裝置整包覆蓋
       if (key === "stocklog" && window.pushStockLogMerged) {
         var arr2 = typeof value === "string" ? JSON.parse(value) : value;
-        window.pushStockLogMerged(arr2);
+        window.pushStockLogMerged(arr2);   // 推雲端用完整的，雲端永遠是全量
       } else if (key === "stocks" && window.pushStocksMerged) {
         var obj2 = typeof value === "string" ? JSON.parse(value) : value;
         window.pushStocksMerged(obj2);
