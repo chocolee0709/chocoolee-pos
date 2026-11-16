@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261117-0221 */window.__BUILD_VERSION="20261117-0221";</script>
+  <script>/* __BUILD_VERSION__:20261117-0231 */window.__BUILD_VERSION="20261117-0231";</script>
 </head>
 <body>
 
@@ -2648,14 +2648,12 @@ function CatalogPanel(props) {
           📋 庫存異動明細
         </button>
         {/* 4. 庫存稽核：找出賣了卻沒扣到庫存的訂單 */}
-        {isManager && (
-          <button onClick={function(){ if (props.onOpenAudit) props.onOpenAudit(); }}
-            title="比對訂單與異動明細，找出賣了卻沒扣庫存的"
-            style={{background:"none",border:"1px solid #b4734a",borderRadius:6,padding:"5px 11px",
-              color:"#b4734a",fontSize:12,fontWeight:700,cursor:"pointer"}}>
-            🔍 庫存稽核
-          </button>
-        )}
+        <button onClick={function(){ if (props.onOpenAudit) props.onOpenAudit(); }}
+          title="比對訂單與異動明細，找出賣了卻沒扣庫存的"
+          style={{background:"#b4734a",border:"none",borderRadius:6,padding:"6px 12px",
+            color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
+          🔍 庫存稽核
+        </button>
         {/* 4. 匯出盤點表 */}
         <button onClick={exportInventory}
           style={{background:"#3d9e32",border:"none",borderRadius:6,padding:"6px 12px",color:"#ffffff",fontSize:15,fontWeight:700,cursor:"pointer"}}>
@@ -14780,8 +14778,21 @@ function POSSystem() {
           logged[k] = (logged[k] || 0) + Math.abs(Number(l.change)||0);
         });
 
+        // 每個商品最後一次盤點／調整的時間點：在那之前的訂單，
+        // 效果已經被實際盤點數字蓋過去了，再補扣會變成少算兩次。
+        var baselineAt = {};
+        (sharedStockLog||[]).forEach(function(l){
+          if (!l || l.productId === undefined) return;
+          var r = String(l.reason||"");
+          if (r.indexOf("盤點") < 0 && r.indexOf("校正") < 0 && r.indexOf("調整") < 0) return;
+          var k = String(l.productId);
+          var t = String(l.date||"") + String(l.time||"");
+          if (!baselineAt[k] || t > baselineAt[k]) baselineAt[k] = t;
+        });
+
         var missing = {};   // productId -> {name, sku, qty, orders:[]}
         var affected = [];
+        var skippedByBaseline = 0;
         myOrders.forEach(function(o){
           var lines = [];
           (o.cartSnapshot||[]).forEach(function(it){ lines = lines.concat(expandForStock(it)); });
@@ -14793,6 +14804,12 @@ function POSSystem() {
             var got = logged[k] || 0;
             var gap = want - got;
             if (gap <= 0) return;
+            // 這筆訂單早於該商品最後一次盤點 → 盤點已涵蓋，不列入補扣
+            var base = baselineAt[String(it.id)];
+            if (base) {
+              var ot = String(o.date||"") + String(o.time||"");
+              if (ot < base) { skippedByBaseline++; return; }
+            }
             hit = true;
             var key = String(it.id);
             if (!missing[key]) missing[key] = {id:it.id, name:it.name, sku:it.sku, main:it.main, sub:it.sub, qty:0, orders:[]};
@@ -14952,6 +14969,11 @@ function POSSystem() {
                       borderRadius:"0 8px 8px 0",fontSize:13,color:"#7a5a3a",marginBottom:13}}>
                       有 <b>{affected.length} 張訂單</b>、合計 <b>{totalQty} 件</b>沒有扣到庫存。
                       代表系統裡的庫存數字比實際多。
+                      {skippedByBaseline > 0 && (
+                        <div style={{marginTop:5,fontSize:11,color:"#5a5048"}}>
+                          另有 {skippedByBaseline} 筆早於該商品最後一次盤點，已被盤點數字涵蓋，不列入補扣。
+                        </div>
+                      )}
                     </div>
                     <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
                       <thead>
@@ -14995,7 +15017,9 @@ function POSSystem() {
                 {rows.length > 0 && (
                   <div style={{fontSize:10,color:"#9a968e",marginTop:9,lineHeight:1.6}}>
                     補扣前請先抽查幾項架上實際數量。如果架上跟系統現在的數字一致，
-                    代表這些貨其實沒賣掉（可能是測試單或已取消），那就不要補扣。
+                    代表這些貨其實沒賣掉（可能是測試單或已取消），那就不要補扣。<br/>
+                    已經手動調整過的商品也不要補扣，會變成少算兩次——建議逐項對照架上數量，
+                    用「調整」改成實際數字比較保險。
                   </div>
                 )}
               </div>
