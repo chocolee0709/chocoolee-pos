@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261124-2344 */window.__BUILD_VERSION="20261124-2344";</script>
+  <script>/* __BUILD_VERSION__:20261124-2350 */window.__BUILD_VERSION="20261124-2350";</script>
 </head>
 <body>
 
@@ -820,6 +820,10 @@
     return c === "yl" ? "stocks" : "stocks-" + c;
   }
   window.pushStocksMerged = function(localStocks) {
+    window.__pushInFlight = (window.__pushInFlight||0) + 1;
+    var _done = false;
+    function finish(){ if(!_done){ _done = true; window.__pushInFlight = Math.max(0,(window.__pushInFlight||1)-1); } }
+    setTimeout(finish, 20000);   // 保險：不讓計數卡住
     function doMerge(retry) {
       getToken(function(token){
         if (!token) {
@@ -856,8 +860,9 @@
             });
           })
           .then(function(r){
-            if (r === null) { return; }   // 本裝置沒有改動，不需要寫入
+            if (r === null) { finish(); return; }   // 本裝置沒有改動，不需要寫入
             if (r && r.ok) {
+              finish();
               window._stocksDelta = {};
               try { localStorage.removeItem("chocoolee-pending-stocks"); } catch(e){}
               showToast("☁️ 已同步");
@@ -865,10 +870,13 @@
             else if (r && r.status === 401) {
               fbToken = null;
               if (retry > 0) setTimeout(function(){ doMerge(retry-1); }, 1000);
+              else finish();
             }
+            else { finish(); }
           })
           .catch(function(){
             if (retry > 0) setTimeout(function(){ doMerge(retry-1); }, 3000);
+            else finish();
           });
       });
     }
@@ -884,16 +892,31 @@
   // 沒有這個的話，開著的裝置永遠看不到別台賣出的結果，
   // 而且記憶體裡的舊庫存還可能被寫回雲端，造成數字倒退。
   var stockSyncBusy = false;
-  window.syncStocksAndLog = function(silent) {
+  // 本機剛寫過資料、或還有推送在路上時，一律不要從雲端拉回來蓋掉畫面。
+  // 否則會出現「剛 key 完的數字過幾秒跳回舊值」。
+  window.__lastLocalWrite = 0;
+  window.__pushInFlight = 0;
+  window.__syncSafe = function() {
+    if (window.__pushInFlight > 0) return false;
+    if (Date.now() - (window.__lastLocalWrite||0) < 25000) return false;
+    return true;
+  };
+  window.syncStocksAndLog = function(silent, withLog) {
     if (stockSyncBusy) return;
+    if (!window.__syncSafe()) return;
     stockSyncBusy = true;
     getToken(function(token){
       if (!token) { stockSyncBusy = false; return; }
       var node = myStocksNodeName();
-      Promise.all([
-        fetch(FB + "/chocoolee/" + node + ".json?auth=" + token).then(function(r){ return r.ok ? r.json() : null; }),
-        fetch(FB + "/chocoolee/stocklog.json?auth=" + token).then(function(r){ return r.ok ? r.json() : null; })
-      ]).then(function(res){
+      var jobs = [
+        fetch(FB + "/chocoolee/" + node + ".json?auth=" + token).then(function(r){ return r.ok ? r.json() : null; })
+      ];
+      // 異動明細整包很大（數千筆），每次都抓 iPad 會卡。
+      // 只有明確要求時才抓，平常只同步庫存數字。
+      jobs.push(withLog
+        ? fetch(FB + "/chocoolee/stocklog.json?auth=" + token).then(function(r){ return r.ok ? r.json() : null; })
+        : Promise.resolve(null));
+      Promise.all(jobs).then(function(res){
         var fbStocks = res[0], fbLog = res[1];
         var changedAny = false;
 
@@ -964,12 +987,14 @@
   };
 
   function startStockSync() {
-    // 每 90 秒拉一次，切回頁面時立刻拉一次
-    setInterval(function(){ window.syncStocksAndLog(true); }, 90 * 1000);
+    // 庫存數字每 90 秒同步一次（資料小、要即時）
+    setInterval(function(){ window.syncStocksAndLog(true, false); }, 90 * 1000);
+    // 異動明細每 10 分鐘才抓一次（資料大、不急）
+    setInterval(function(){ window.syncStocksAndLog(true, true); }, 10 * 60 * 1000);
     document.addEventListener("visibilitychange", function(){
-      if (document.visibilityState === "visible") window.syncStocksAndLog(true);
+      if (document.visibilityState === "visible") window.syncStocksAndLog(true, false);
     });
-    setTimeout(function(){ window.syncStocksAndLog(true); }, 8000);
+    setTimeout(function(){ window.syncStocksAndLog(true, true); }, 8000);
   }
 
   var pollingTimer = null;
@@ -1289,6 +1314,7 @@
     fbToken = null;
     var now = Date.now();
     if (now - lastFullSync < 2 * 60 * 1000) return;
+    if (!window.__syncSafe || !window.__syncSafe()) return;  // 剛改過資料就別拉回來蓋
     lastFullSync = now;
     setTimeout(function(){
       if (window.loadFromFirebase) {
@@ -12792,6 +12818,10 @@ function saveData(key, value) {
         }
       } catch(e) {}
     }
+
+    // 記下本機剛寫過資料的時間：自動同步會避開這段時間，
+    // 否則剛 key 完的數字會被雲端舊值蓋回去。
+    window.__lastLocalWrite = Date.now();
 
     if (window.storage) {
       window.storage.set("chocoolee-"+key, serialized).catch(function(){});
