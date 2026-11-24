@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261117-0252 */window.__BUILD_VERSION="20261117-0252";</script>
+  <script>/* __BUILD_VERSION__:20261124-2344 */window.__BUILD_VERSION="20261124-2344";</script>
 </head>
 <body>
 
@@ -5449,6 +5449,60 @@ function PurchasePanel(props) {
 
   // 刪除採購單（限店長）。已入庫的要同時決定庫存回沖與否，
   // 否則刪了單子、貨卻還掛在庫存上，帳貨就對不起來。
+  // 已結案但還有沒入庫的數量 → 補開一張待驗收單。
+  // 用在店長驗收時誤選「廠商不補貨」，但貨其實還會來的情況。
+  function reopenShortfall(po) {
+    var shortItems = [];
+    (po.items||[]).forEach(function(it){
+      var ordered = Number(it.qty)||0;
+      var stocked = Number(it.stockedQty)||0;
+      var gap = ordered - stocked;
+      if (gap <= 0) return;
+      shortItems.push(Object.assign({}, it, {
+        qty: gap, receivedQty: 0, damagedQty: 0, stockedQty: 0,
+        image: (it.image && String(it.image).indexOf("data:")===0) ? it.image : "",
+        srcImgKey: it.srcImgKey || (it.image === "__img__" ? po.no + "_" + (po.items||[]).indexOf(it) : undefined)
+      }));
+    });
+    if (!shortItems.length) { alert("這張單的數量都已入庫，沒有可轉的品項"); return; }
+
+    var detail = shortItems.map(function(it){ return "・" + it.name + " × " + it.qty; }).join("\n");
+    if (!confirm("把還沒入庫的數量另開一張待驗收採購單？\n\n" + detail
+      + "\n\n原單 " + po.no + " 維持結案，庫存不會變動。")) return;
+
+    var d2 = new Date();
+    var ymd = d2.getFullYear() + String(d2.getMonth()+1).padStart(2,"0") + String(d2.getDate()).padStart(2,"0");
+    var maxSeq = 0;
+    (props.purchases||[]).forEach(function(p){
+      var parts = String(p.no||"").split("-");
+      var n = parseInt(parts[parts.length-1], 10);
+      if (!isNaN(n) && n > maxSeq) maxSeq = n;
+    });
+    var newPo = {
+      no: (getMyStoreCode()==="yl" ? "PO-" : "PO-"+getMyStoreCode().toUpperCase()+"-") + ymd + "-" + String(maxSeq+1).padStart(3,"0"),
+      store: getMyStoreCode(),
+      supplier: po.supplier || "",
+      date: d2.toISOString().slice(0,10),
+      eta: "", status: "pending",
+      note: "【補貨單】原採購單 " + po.no + " 未入庫數量轉入" + (po.note ? "\n" + po.note : ""),
+      items: shortItems,
+      fromPo: po.no
+    };
+
+    setPurchases(function(prev){
+      var updated = (prev||[]).map(function(p){
+        if (p.no !== po.no) return p;
+        return Object.assign({}, p, {
+          shortNote: "短少部分已轉入補貨單 " + newPo.no,
+          reopenedTo: newPo.no
+        });
+      });
+      return [newPo].concat(updated);
+    });
+    setExpandedPo(null);
+    alert("📋 已建立待驗收採購單：" + newPo.no + "\n\n貨到之後照一般流程驗收入庫即可。");
+  }
+
   // 一次清除指定採購單：寫入已刪除名單 → 清本機 → 直接寫雲端並驗證。
   // 一般存檔是推出去就不管結果，這裡會明確回報成功或失敗。
   function purgePurchases() {
@@ -6154,6 +6208,31 @@ function PurchasePanel(props) {
                         </tbody>
                       </table>
                     )}
+                    {/* 已結案但還有沒入庫的數量 → 可轉成待驗收單（限店長） */}
+                    {isManager && po.status === "completed" && !po.reopenedTo &&
+                      (po.items||[]).some(function(it){
+                        return (Number(it.qty)||0) - (Number(it.stockedQty)||0) > 0;
+                      }) && (
+                      <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #f0ede8",
+                        display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                        <div style={{fontSize:11,color:"#7a5a3a",flex:1,minWidth:200}}>
+                          這張單有 <b>{(po.items||[]).reduce(function(s,it){
+                            return s + Math.max(0,(Number(it.qty)||0)-(Number(it.stockedQty)||0)); },0)} 件</b>
+                          沒有入庫。廠商之後還會補寄的話，可以轉成新的待驗收單。
+                        </div>
+                        <button onClick={function(e){ e.stopPropagation(); reopenShortfall(po); }}
+                          style={{padding:"7px 14px",borderRadius:7,border:"none",background:"#c2410c",
+                            color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+                          📋 未入庫數量轉待驗收單
+                        </button>
+                      </div>
+                    )}
+                    {po.reopenedTo && (
+                      <div style={{marginTop:9,fontSize:11,color:"#2a7080"}}>
+                        短少部分已轉入補貨單 {po.reopenedTo}
+                      </div>
+                    )}
+
                     {/* 刪除採購單（限店長） */}
                     {isManager && (
                       <div style={{display:"flex",justifyContent:"flex-end",marginTop:10,paddingTop:10,borderTop:"1px solid #f0ede8"}}>
