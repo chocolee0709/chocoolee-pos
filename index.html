@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261125-0045 */window.__BUILD_VERSION="20261125-0045";</script>
+  <script>/* __BUILD_VERSION__:20261125-0104 */window.__BUILD_VERSION="20261125-0104";</script>
 </head>
 <body>
 
@@ -11183,6 +11183,8 @@ function StockFlowPanel(props) {
   var orders    = props.orders || [];
   var purchases = props.purchases || [];
   var currentStore = props.currentStore || "yl";
+  var addLog       = props.addLog;
+  var currentStaff = props.currentStaff;
 
   var stp = useState("flow"); var subTab = stp[0], setSubTab = stp[1]; // flow | purchase | turnover
 
@@ -11264,14 +11266,21 @@ function StockFlowPanel(props) {
       // 區間內異動
       var pLogs = allLogs.filter(function(l){ return l.date>=activeFrom && l.date<=activeTo; });
 
-      // ── 異動分類：盤點/校正計入其他±，維持原欄位設計 ──
-      var purchaseIn=0, saleOut=0, otherIn=0, otherOut=0;
+      // ── 異動分類：庫存調整的每個原因各自一欄 ──
+      // 原因字串對照「庫存調整」下拉：進貨／退貨／報損／調轉貨／轉樣品／盤點校正
+      var purchaseIn=0, saleOut=0;
+      var retOut=0, damageOut=0, moveNet=0, sampleOut=0, countNet=0;
+      var otherIn=0, otherOut=0;
       pLogs.forEach(function(l){
         var r = l.reason||"";
         var ch = l.change||0;
-        // 盤點/校正優先判斷（reason 可能同時含「進貨」字樣，如「盤點校正（補登進貨）」）
-        if (r.indexOf("盤點")>=0 || r.indexOf("校正")>=0) { if(ch>0) otherIn+=ch; else otherOut+=Math.abs(ch); }
-        else if (r.indexOf("採購入庫")>=0 || r.indexOf("進貨")>=0) purchaseIn += Math.abs(ch);
+        // 盤點優先判斷：reason 可能同時含「進貨」字樣，如「盤點校正（補登進貨）」
+        if (r.indexOf("盤點")>=0 || r.indexOf("校正")>=0) { countNet += ch; }
+        else if (r.indexOf("退貨")>=0 || r.indexOf("退廠")>=0) { retOut += Math.abs(ch); }
+        else if (r.indexOf("報損")>=0 || r.indexOf("破損")>=0) { damageOut += Math.abs(ch); }
+        else if (r.indexOf("調轉貨")>=0 || r.indexOf("調撥")>=0) { moveNet += ch; }
+        else if (r.indexOf("樣品")>=0) { sampleOut += Math.abs(ch); }
+        else if (r.indexOf("採購入庫")>=0 || r.indexOf("進貨")>=0) { purchaseIn += Math.abs(ch); }
         else if (r.indexOf("銷售")>=0) { /* 銷售改用訂單計算 */ }
         else if (ch>0) otherIn += ch;
         else if (ch<0) otherOut += Math.abs(ch);
@@ -11364,7 +11373,9 @@ function StockFlowPanel(props) {
       }
 
       // 期末改成正推，才看得出帳有沒有平
-      var endCalc = startStock + purchaseIn - saleOut + otherIn - otherOut;
+      var endCalc = startStock + purchaseIn - saleOut
+                  - retOut - damageOut - sampleOut + moveNet + countNet
+                  + otherIn - otherOut;
       var gap = curStock - endCalc;
 
       // 只顯示「有異動、有銷售、或有庫存」的商品
@@ -11372,6 +11383,8 @@ function StockFlowPanel(props) {
         rows.push({
           sku:p.sku, name:p.name, main:p.main, sub:p.sub,
           startStock:startStock, purchaseIn:purchaseIn, saleOut:saleOut,
+          retOut:retOut, damageOut:damageOut, moveNet:moveNet,
+          sampleOut:sampleOut, countNet:countNet,
           otherIn:otherIn, otherOut:otherOut, endStock:endCalc,
           curStock:curStock, gap:(activeTo>=today2?gap:0), startIsGuess:startIsGuess,
           hasActivity:pLogs.length>0||saleOut>0
@@ -11391,22 +11404,61 @@ function StockFlowPanel(props) {
   var totalPurchase   = rows.reduce(function(s,r){return s+r.purchaseIn;},0);
   var totalSale       = rows.reduce(function(s,r){return s+r.saleOut;},0);
   var totalEnd        = rows.reduce(function(s,r){return s+r.endStock;},0);
+  var totalRet        = rows.reduce(function(s,r){return s+(r.retOut||0);},0);
+  var totalDamage     = rows.reduce(function(s,r){return s+(r.damageOut||0);},0);
+  var totalMove       = rows.reduce(function(s,r){return s+(r.moveNet||0);},0);
+  var totalSample     = rows.reduce(function(s,r){return s+(r.sampleOut||0);},0);
+  var totalCount      = rows.reduce(function(s,r){return s+(r.countNet||0);},0);
+  var totalCur        = rows.reduce(function(s,r){return s+(r.curStock||0);},0);
 
   var inp = {background:"#ffffff",border:"1px solid #d8d4cc",borderRadius:6,padding:"6px 9px",color:"#2a2520",fontSize:12,outline:"none"};
   var th  = {padding:"8px 6px",fontSize:11,color:"#7a7068",fontWeight:600,whiteSpace:"nowrap"};
   var td  = {padding:"7px 6px",fontSize:12,borderBottom:"1px solid #f0ede8",whiteSpace:"nowrap"};
 
+  // 補一筆「盤點調整」把帳面差額補平。只寫記錄，不動庫存。
+  function fixGap(r){
+    if (!r || !r.gap) return;
+    if (!addLog) { alert("這個畫面沒有寫入記錄的權限"); return; }
+    var pd = products.filter(function(p){ return p.sku === r.sku; })[0];
+    if (!pd) { alert("找不到這支商品"); return; }
+    var ok = confirm(
+      r.sku + "　" + r.name + "\n\n"
+      + "帳面算出來：" + r.endStock + "\n"
+      + "現在庫存：　" + r.curStock + "\n"
+      + "差額：　　　" + (r.gap>0?"+":"") + r.gap + "\n\n"
+      + "要補一筆「盤點調整 " + (r.gap>0?"+":"") + r.gap + "」到異動明細嗎？\n\n"
+      + "⚠️ 庫存數字不會改變，還是 " + r.curStock + "。\n"
+      + "這筆記錄只是用來解釋差額，讓帳面對得起來。"
+    );
+    if (!ok) return;
+    var nd = new Date();
+    var ds = nd.getFullYear()+"-"+String(nd.getMonth()+1).padStart(2,"0")+"-"+String(nd.getDate()).padStart(2,"0");
+    var ts = String(nd.getHours()).padStart(2,"0")+":"+String(nd.getMinutes()).padStart(2,"0");
+    addLog({
+      id: Date.now()+Math.random(), date: ds, time: ts,
+      productId: pd.id, sku: pd.sku, name: pd.name, main: pd.main, sub: pd.sub,
+      reason: "盤點調整（補平進銷存差額）",
+      change: r.gap, before: r.endStock, after: r.curStock,
+      operator: currentStaff ? currentStaff.name : "—"
+    });
+    alert("已補上記錄。庫存維持 " + r.curStock + "，沒有變動。\n\n請再按一次「查詢」看結果。");
+  }
+
   function exportExcel(){
     if(!queried || rows.length===0){ alert("請先查詢，且需有資料才能匯出"); return; }
     var aoa=[["進銷存報表"],[activeFrom+" ~ "+activeTo+"　分類："+activeMain+(activeSub!=="全部"?" / "+activeSub:"")],[],
-      ["貨號","商品名稱","大分類","小分類","期初庫存","進貨","銷售","其他增","其他減","期末庫存","現在庫存","差額"]];
+      ["貨號","商品名稱","大分類","小分類","期初庫存","進貨","銷售","退廠","報損","調轉貨","轉樣品","盤點","其他增","其他減","期末庫存","現在庫存","差額"]];
     rows.forEach(function(r){
-      aoa.push([r.sku,r.name,r.main,r.sub,r.startStock,r.purchaseIn,r.saleOut,r.otherIn,r.otherOut,r.endStock,r.curStock,r.gap||0]);
+      aoa.push([r.sku,r.name,r.main,r.sub,r.startStock,r.purchaseIn,r.saleOut,
+        r.retOut||0,r.damageOut||0,r.moveNet||0,r.sampleOut||0,r.countNet||0,
+        r.otherIn,r.otherOut,r.endStock,r.curStock,r.gap||0]);
     });
-    aoa.push(["合計","","","",totalStart,totalPurchase,totalSale,"","",totalEnd,"",""]);
+    aoa.push(["合計","","","",totalStart,totalPurchase,totalSale,
+      totalRet,totalDamage,totalMove,totalSample,totalCount,"","",totalEnd,totalCur,""]);
     var wb=XLSX.utils.book_new();
     var ws=XLSX.utils.aoa_to_sheet(aoa);
-    ws["!cols"]=[{wch:12},{wch:24},{wch:12},{wch:12},{wch:9},{wch:8},{wch:8},{wch:8},{wch:8},{wch:9},{wch:9},{wch:7}];
+    ws["!cols"]=[{wch:12},{wch:24},{wch:12},{wch:12},{wch:9},{wch:8},{wch:8},
+      {wch:7},{wch:7},{wch:8},{wch:8},{wch:7},{wch:8},{wch:8},{wch:9},{wch:9},{wch:7}];
     XLSX.utils.book_append_sheet(wb,ws,"進銷存");
     XLSX.writeFile(wb,"進銷存_"+activeFrom.split("-").join("")+"_"+activeTo.split("-").join("")+".xlsx");
   }
@@ -11499,7 +11551,7 @@ function StockFlowPanel(props) {
         </div>
       ) : (
         <div style={{flex:1,overflow:"auto",background:"#fff",borderRadius:10,border:"1px solid #ece8e0"}}>
-          <table style={{width:"100%",borderCollapse:"collapse",minWidth:720}}>
+          <table style={{width:"100%",borderCollapse:"collapse",minWidth:1120}}>
             <thead style={{position:"sticky",top:0,background:"#f5f2ec",zIndex:1}}>
               <tr style={{borderBottom:"2px solid #e8e4de"}}>
                 <th style={Object.assign({},th,{textAlign:"left"})}>貨號</th>
@@ -11508,9 +11560,15 @@ function StockFlowPanel(props) {
                 <th style={Object.assign({},th,{textAlign:"center"})}>期初</th>
                 <th style={Object.assign({},th,{textAlign:"center",color:"#2a7a4a"})}>進貨</th>
                 <th style={Object.assign({},th,{textAlign:"center",color:"#c06a1a"})}>銷售</th>
+                <th style={Object.assign({},th,{textAlign:"center",color:"#9a7050"})}>退廠</th>
+                <th style={Object.assign({},th,{textAlign:"center",color:"#9a7050"})}>報損</th>
+                <th style={Object.assign({},th,{textAlign:"center",color:"#5a7a9a"})}>調轉貨</th>
+                <th style={Object.assign({},th,{textAlign:"center",color:"#7a5a9a"})}>轉樣品</th>
+                <th style={Object.assign({},th,{textAlign:"center",color:"#7a7068"})}>盤點</th>
                 <th style={Object.assign({},th,{textAlign:"center"})}>其他±</th>
                 <th style={Object.assign({},th,{textAlign:"center",fontWeight:800})}>期末</th>
                 <th style={Object.assign({},th,{textAlign:"center",fontSize:10,color:"#9a968e"})}>現在庫存</th>
+                <th style={Object.assign({},th,{textAlign:"center",fontSize:10,color:"#9a968e"})}>盤點調整</th>
               </tr>
             </thead>
             <tbody>
@@ -11527,12 +11585,28 @@ function StockFlowPanel(props) {
                     </td>
                     <td style={Object.assign({},td,{textAlign:"center",color:r.purchaseIn>0?"#2a7a4a":"#d8d4cc",fontWeight:r.purchaseIn>0?700:400})}>{r.purchaseIn>0?"+"+r.purchaseIn:"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",color:r.saleOut>0?"#c06a1a":"#d8d4cc",fontWeight:r.saleOut>0?700:400})}>{r.saleOut>0?"−"+r.saleOut:"—"}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",fontSize:11,color:r.retOut>0?"#9a7050":"#d8d4cc",fontWeight:r.retOut>0?700:400})}>{r.retOut>0?"−"+r.retOut:"—"}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",fontSize:11,color:r.damageOut>0?"#9a7050":"#d8d4cc",fontWeight:r.damageOut>0?700:400})}>{r.damageOut>0?"−"+r.damageOut:"—"}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",fontSize:11,color:r.moveNet?"#5a7a9a":"#d8d4cc",fontWeight:r.moveNet?700:400})}>{r.moveNet?(r.moveNet>0?"+"+r.moveNet:"−"+Math.abs(r.moveNet)):"—"}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",fontSize:11,color:r.sampleOut>0?"#7a5a9a":"#d8d4cc",fontWeight:r.sampleOut>0?700:400})}>{r.sampleOut>0?"−"+r.sampleOut:"—"}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",fontSize:11,color:r.countNet?"#7a7068":"#d8d4cc",fontWeight:r.countNet?700:400})}>{r.countNet?(r.countNet>0?"+"+r.countNet:"−"+Math.abs(r.countNet)):"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",color:other!==0?(other>0?"#2a7a4a":"#c0302a"):"#d8d4cc",fontSize:11})}>{other!==0?(other>0?"+"+other:other):"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",fontWeight:800,color:"#2a2520"})}>{r.endStock}</td>
                     <td style={Object.assign({},td,{textAlign:"center",fontSize:11,
                       color:r.gap?"#b3261e":"#9a968e",fontWeight:r.gap?700:400})}
                       title={r.gap?("帳上算出來是 "+r.endStock+"，實際庫存 "+r.curStock+"，差 "+(r.gap>0?"+":"")+r.gap):""}>
                       {r.curStock}{r.gap?(r.gap>0?" (+"+r.gap+")":" ("+r.gap+")"):""}
+                    </td>
+                    <td style={Object.assign({},td,{textAlign:"center"})}>
+                      {r.gap ? (
+                        <button onClick={function(){ fixGap(r); }}
+                          title="補一筆盤點調整記錄，庫存不會變"
+                          style={{padding:"3px 9px",fontSize:10,borderRadius:5,cursor:"pointer",
+                            border:"1px solid #d8c8a0",background:"#fdf8ec",color:"#8a6a10",
+                            whiteSpace:"nowrap"}}>
+                          補平
+                        </button>
+                      ) : <span style={{color:"#e0dcd4",fontSize:11}}>—</span>}
                     </td>
                   </tr>
                 );
@@ -11544,8 +11618,14 @@ function StockFlowPanel(props) {
                 <td style={Object.assign({},td,{textAlign:"center"})}>{totalStart}</td>
                 <td style={Object.assign({},td,{textAlign:"center",color:"#2a7a4a"})}>+{totalPurchase}</td>
                 <td style={Object.assign({},td,{textAlign:"center",color:"#c06a1a"})}>−{totalSale}</td>
+                <td style={Object.assign({},td,{textAlign:"center",fontSize:11,color:"#9a7050"})}>{totalRet?"−"+totalRet:"—"}</td>
+                <td style={Object.assign({},td,{textAlign:"center",fontSize:11,color:"#9a7050"})}>{totalDamage?"−"+totalDamage:"—"}</td>
+                <td style={Object.assign({},td,{textAlign:"center",fontSize:11,color:"#5a7a9a"})}>{totalMove?(totalMove>0?"+"+totalMove:totalMove):"—"}</td>
+                <td style={Object.assign({},td,{textAlign:"center",fontSize:11,color:"#7a5a9a"})}>{totalSample?"−"+totalSample:"—"}</td>
+                <td style={Object.assign({},td,{textAlign:"center",fontSize:11,color:"#7a7068"})}>{totalCount?(totalCount>0?"+"+totalCount:totalCount):"—"}</td>
                 <td style={Object.assign({},td,{textAlign:"center"})}>—</td>
                 <td style={Object.assign({},td,{textAlign:"center",fontWeight:800})}>{totalEnd}</td>
+                <td style={Object.assign({},td,{textAlign:"center",fontSize:11})}>{totalCur}</td>
                 <td style={Object.assign({},td,{textAlign:"center"})}>—</td>
               </tr>
             </tfoot>
@@ -15042,7 +15122,7 @@ function POSSystem() {
                 });
                 if (sharedAddLog && logs.length) sharedAddLog(logs);
               }}/>}
-            {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={storeStockLog} sharedStocks={sharedStocks} orders={storeOrders} purchases={storePurchases} currentStore={currentStore}/>}
+            {activeTab==="stockflow" && isManager && <StockFlowPanel products={sharedProducts} stockLog={storeStockLog} sharedStocks={sharedStocks} orders={storeOrders} purchases={storePurchases} currentStore={currentStore} addLog={sharedAddLog} currentStaff={currentStaff}/>}
             {activeTab==="expense"   && isManager && <ExpensePanel expenses={expenses} setExpenses={saveExpenses} orders={storeOrders} products={sharedProducts} currentStaff={currentStaff}/>}
             {activeTab==="history"   && isManager && <HistoryPanel history={history} setHistory={saveHistory}/>}
             {activeTab==="attendance"&& <AttendanceReport shiftLog={shiftLog} setShiftLog={saveShiftLog} staffRates={staffRates} setStaffRates={setStaffRates} schedule={schedule} setSchedule={setSchedule} isManager={isManager} currentStaff={currentStaff}/>}
