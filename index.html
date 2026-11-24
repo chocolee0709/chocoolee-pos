@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261125-0016 */window.__BUILD_VERSION="20261125-0016";</script>
+  <script>/* __BUILD_VERSION__:20261125-0045 */window.__BUILD_VERSION="20261125-0045";</script>
 </head>
 <body>
 
@@ -11312,16 +11312,69 @@ function StockFlowPanel(props) {
         });
       }
 
-      // 期初 = 期末 − 本期所有異動（反推，確保平衡）
-      var startStock = endStock - purchaseIn + saleOut - (otherIn - otherOut);
+      // ── 期初 = 直接讀記錄，不反推 ──────────────────────────────
+      // 以前是用「期末 − 本期異動」倒算期初，結果本機異動明細只留近期，
+      // 舊期間的進貨記錄不在本機 → 進貨算成 0，數字全被擠到期初去。
+      // 現在改成正推，並且分兩種情形：
+      //   1. 經過採購單進的新品 → 建檔當期的期初一定是 0，數字走「進貨」欄
+      //   2. 手動新增商品直接 key 庫存 → 那個數字沒有進貨單據，它就是期初（開帳數）
+      var startStock = null, startIsGuess = false;
+
+      // 商品的「出生記錄」：哪一筆是這支商品第一次有庫存
+      var birth = null;
+      for (var bi = 0; bi < allLogs.length; bi++) {
+        var br = allLogs[bi].reason || "";
+        if (br.indexOf("新品上架") >= 0 || br.indexOf("批次新增") >= 0 || br.indexOf("（新品）") >= 0) {
+          birth = allLogs[bi]; break;
+        }
+      }
+      var bornInPeriod = !!(birth && birth.date >= activeFrom && birth.date <= activeTo);
+      var birthIsManual = !!(birth && ((birth.reason||"").indexOf("新品上架") >= 0
+                                    || (birth.reason||"").indexOf("批次新增") >= 0));
+
+      if (bornInPeriod) {
+        // 這支商品是本期才建檔的，本期之前不存在
+        if (birthIsManual) {
+          // 手動建檔 key 入的庫存 = 開帳數，列到期初，不要重複算進「其他增」
+          startStock = Math.abs(Number(birth.change) || 0);
+          otherIn -= startStock;
+          if (otherIn < 0) otherIn = 0;
+        } else {
+          startStock = 0;   // 採購單進的新品，期初就是 0
+        }
+      } else if (allLogs.length === 0) {
+        // 完全沒有異動記錄（很舊的商品）→ 現有庫存當期初，帳才平
+        startStock = curStock;
+        startIsGuess = true;
+      } else {
+        // 本期之前就存在：讀期間內第一筆的「異動前庫存」
+        for (var si = 0; si < pLogs.length; si++) {
+          var fb = pLogs[si].before;
+          if (fb !== undefined && fb !== null) { startStock = Number(fb) || 0; break; }
+        }
+        if (startStock === null) {
+          // 期間內那幾筆沒存 before（舊佔位記錄）→ 往前找最後一筆的「異動後庫存」
+          var priorLogs = allLogs.filter(function(l){ return l.date < activeFrom; });
+          for (var pi = priorLogs.length - 1; pi >= 0; pi--) {
+            var pa = priorLogs[pi].after;
+            if (pa !== undefined && pa !== null) { startStock = Number(pa) || 0; break; }
+          }
+        }
+        if (startStock === null) { startStock = 0; startIsGuess = true; }
+      }
+
+      // 期末改成正推，才看得出帳有沒有平
+      var endCalc = startStock + purchaseIn - saleOut + otherIn - otherOut;
+      var gap = curStock - endCalc;
 
       // 只顯示「有異動、有銷售、或有庫存」的商品
       if (pLogs.length>0 || saleOut>0 || curStock>0) {
         rows.push({
           sku:p.sku, name:p.name, main:p.main, sub:p.sub,
           startStock:startStock, purchaseIn:purchaseIn, saleOut:saleOut,
-          otherIn:otherIn, otherOut:otherOut, endStock:endStock,
-          curStock:curStock, hasActivity:pLogs.length>0||saleOut>0
+          otherIn:otherIn, otherOut:otherOut, endStock:endCalc,
+          curStock:curStock, gap:(activeTo>=today2?gap:0), startIsGuess:startIsGuess,
+          hasActivity:pLogs.length>0||saleOut>0
         });
       }
     });
@@ -11346,14 +11399,14 @@ function StockFlowPanel(props) {
   function exportExcel(){
     if(!queried || rows.length===0){ alert("請先查詢，且需有資料才能匯出"); return; }
     var aoa=[["進銷存報表"],[activeFrom+" ~ "+activeTo+"　分類："+activeMain+(activeSub!=="全部"?" / "+activeSub:"")],[],
-      ["貨號","商品名稱","大分類","小分類","期初庫存","進貨","銷售","其他增","其他減","期末庫存"]];
+      ["貨號","商品名稱","大分類","小分類","期初庫存","進貨","銷售","其他增","其他減","期末庫存","現在庫存","差額"]];
     rows.forEach(function(r){
-      aoa.push([r.sku,r.name,r.main,r.sub,r.startStock,r.purchaseIn,r.saleOut,r.otherIn,r.otherOut,r.endStock]);
+      aoa.push([r.sku,r.name,r.main,r.sub,r.startStock,r.purchaseIn,r.saleOut,r.otherIn,r.otherOut,r.endStock,r.curStock,r.gap||0]);
     });
-    aoa.push(["合計","","","",totalStart,totalPurchase,totalSale,"","",totalEnd]);
+    aoa.push(["合計","","","",totalStart,totalPurchase,totalSale,"","",totalEnd,"",""]);
     var wb=XLSX.utils.book_new();
     var ws=XLSX.utils.aoa_to_sheet(aoa);
-    ws["!cols"]=[{wch:12},{wch:24},{wch:12},{wch:12},{wch:9},{wch:8},{wch:8},{wch:8},{wch:8},{wch:9}];
+    ws["!cols"]=[{wch:12},{wch:24},{wch:12},{wch:12},{wch:9},{wch:8},{wch:8},{wch:8},{wch:8},{wch:9},{wch:9},{wch:7}];
     XLSX.utils.book_append_sheet(wb,ws,"進銷存");
     XLSX.writeFile(wb,"進銷存_"+activeFrom.split("-").join("")+"_"+activeTo.split("-").join("")+".xlsx");
   }
@@ -11419,6 +11472,22 @@ function StockFlowPanel(props) {
         <button onClick={doQuery} style={{padding:"7px 20px",background:"#b8910a",border:"none",borderRadius:8,color:"#ffffff",fontSize:13,fontWeight:700,cursor:"pointer"}}>查詢</button>
       </div>
 
+      {/* 本機異動明細只留近期，查更早的期間會算不出進貨 */}
+      {queried && (function(){
+        var dates = (stockLog||[]).map(function(l){ return l.date; }).filter(Boolean);
+        if (!dates.length) return null;
+        var earliest = dates.reduce(function(a,b){ return a<b?a:b; });
+        if (!activeFrom || activeFrom >= earliest) return null;
+        return (
+          <div style={{margin:"0 0 10px",padding:"9px 12px",background:"#fdf4e8",
+            border:"1px solid #e8c88a",borderRadius:8,fontSize:12,color:"#8a5a10"}}>
+            ⚠️ 這台裝置的異動明細只到 <b>{earliest}</b>，你查的是 {activeFrom} 開始，
+            更早的進貨記錄不在本機，<b>進貨欄會是 0、數字會被算進期初</b>。
+            請先到「庫存異動明細」按「載入完整記錄」再查一次。
+          </div>
+        );
+      })()}
+
       {/* 結果 */}
       {!queried ? (
         <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"#b0aca4",fontSize:13}}>
@@ -11441,6 +11510,7 @@ function StockFlowPanel(props) {
                 <th style={Object.assign({},th,{textAlign:"center",color:"#c06a1a"})}>銷售</th>
                 <th style={Object.assign({},th,{textAlign:"center"})}>其他±</th>
                 <th style={Object.assign({},th,{textAlign:"center",fontWeight:800})}>期末</th>
+                <th style={Object.assign({},th,{textAlign:"center",fontSize:10,color:"#9a968e"})}>現在庫存</th>
               </tr>
             </thead>
             <tbody>
@@ -11451,11 +11521,19 @@ function StockFlowPanel(props) {
                     <td style={Object.assign({},td,{textAlign:"left",fontFamily:"monospace",fontSize:11,color:"#9a968e"})}>{r.sku}</td>
                     <td style={Object.assign({},td,{textAlign:"left"})}>{r.name}</td>
                     <td style={Object.assign({},td,{textAlign:"left",fontSize:10,color:"#9a968e"})}>{r.main}{r.sub?" / "+r.sub:""}</td>
-                    <td style={Object.assign({},td,{textAlign:"center",color:"#7a7068"})}>{r.startStock}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",color:r.startIsGuess?"#b8910a":"#7a7068"})}
+                      title={r.startIsGuess?"查不到這個期間之前的異動記錄，期初是用現有庫存推的，不一定準":""}>
+                      {r.startStock}{r.startIsGuess?" *":""}
+                    </td>
                     <td style={Object.assign({},td,{textAlign:"center",color:r.purchaseIn>0?"#2a7a4a":"#d8d4cc",fontWeight:r.purchaseIn>0?700:400})}>{r.purchaseIn>0?"+"+r.purchaseIn:"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",color:r.saleOut>0?"#c06a1a":"#d8d4cc",fontWeight:r.saleOut>0?700:400})}>{r.saleOut>0?"−"+r.saleOut:"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",color:other!==0?(other>0?"#2a7a4a":"#c0302a"):"#d8d4cc",fontSize:11})}>{other!==0?(other>0?"+"+other:other):"—"}</td>
                     <td style={Object.assign({},td,{textAlign:"center",fontWeight:800,color:"#2a2520"})}>{r.endStock}</td>
+                    <td style={Object.assign({},td,{textAlign:"center",fontSize:11,
+                      color:r.gap?"#b3261e":"#9a968e",fontWeight:r.gap?700:400})}
+                      title={r.gap?("帳上算出來是 "+r.endStock+"，實際庫存 "+r.curStock+"，差 "+(r.gap>0?"+":"")+r.gap):""}>
+                      {r.curStock}{r.gap?(r.gap>0?" (+"+r.gap+")":" ("+r.gap+")"):""}
+                    </td>
                   </tr>
                 );
               })}
@@ -11468,6 +11546,7 @@ function StockFlowPanel(props) {
                 <td style={Object.assign({},td,{textAlign:"center",color:"#c06a1a"})}>−{totalSale}</td>
                 <td style={Object.assign({},td,{textAlign:"center"})}>—</td>
                 <td style={Object.assign({},td,{textAlign:"center",fontWeight:800})}>{totalEnd}</td>
+                <td style={Object.assign({},td,{textAlign:"center"})}>—</td>
               </tr>
             </tfoot>
           </table>
@@ -15147,9 +15226,40 @@ function POSSystem() {
             onClick={function(e){ if(e.target===e.currentTarget) setShowAudit(false); }}>
             <div style={{background:"#fff",borderRadius:16,width:640,maxWidth:"96vw",maxHeight:"88vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
               <div style={{padding:"16px 20px",borderBottom:"1px solid #f0ede8",flexShrink:0}}>
-                <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>🔍 庫存稽核</div>
-                <div style={{fontSize:12,color:"#9a968e",marginTop:3}}>
-                  比對 {myOrders.length} 張訂單與庫存異動明細，找出賣了卻沒扣到的
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+                  <div>
+                    <div style={{fontSize:15,fontWeight:700,color:"#2a2520"}}>🔍 庫存稽核</div>
+                    <div style={{fontSize:12,color:"#9a968e",marginTop:3}}>
+                      比對 {myOrders.length} 張訂單與庫存異動明細，找出賣了卻沒扣到的
+                    </div>
+                  </div>
+                  <button onClick={function(){
+                      if (!window.XLSX) { alert("匯出元件還沒載入，請稍候再試"); return; }
+                      var aoa = [["庫存稽核　" + localDate(new Date())],[],
+                        ["【庫存與異動記錄的對帳】"],
+                        ["貨號","品名","現在庫存","記錄推算","差額","說明"]];
+                      unbalanced.forEach(function(u){
+                        aoa.push([u.sku, u.name, u.cur, u.calc, u.diff, u.why]);
+                      });
+                      aoa.push([]); aoa.push(["【訂單與扣庫存的對帳】"]);
+                      aoa.push(["貨號","品名","少扣數量","相關訂單"]);
+                      rows.forEach(function(r){
+                        aoa.push([r.sku, r.name, r.qty, r.orders.join("、")]);
+                      });
+                      var wb = window.XLSX.utils.book_new();
+                      var ws = window.XLSX.utils.aoa_to_sheet(aoa);
+                      ws["!cols"] = [{wch:12},{wch:30},{wch:10},{wch:10},{wch:8},{wch:24}];
+                      window.XLSX.utils.book_append_sheet(wb, ws, "庫存稽核");
+                      window.XLSX.writeFile(wb, "庫存稽核_" + localDate(new Date()) + ".xlsx");
+                    }}
+                    style={{padding:"7px 13px",borderRadius:7,border:"none",background:"#2a7040",
+                      color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+                    ↓ 匯出 Excel
+                  </button>
+                </div>
+                <div style={{marginTop:9,fontSize:11,color:"#3a7a30",background:"#f0f6f1",
+                  borderRadius:7,padding:"8px 11px"}}>
+                  這個畫面只做比對，<b>不會自動更改任何庫存</b>。下方「一次補扣」要按了才會動。
                 </div>
               </div>
 
