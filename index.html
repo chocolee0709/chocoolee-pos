@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261124-2359 */window.__BUILD_VERSION="20261124-2359";</script>
+  <script>/* __BUILD_VERSION__:20261125-0007 */window.__BUILD_VERSION="20261125-0007";</script>
 </head>
 <body>
 
@@ -1554,6 +1554,15 @@ function expandForStock(line) {
 // 平常不會翻明細，會查都是數字出問題的時候，所以本機只留近期即可；
 // 要看更早的用「載入完整記錄」向雲端拿。600 筆約佔 0.2MB。
 var LOCAL_LOG_MAX = 600;
+
+// 組合商品排序：有貨號用貨號，沒有就用名稱；數字按數值比較，
+// 這樣「福袋2」會排在「福袋10」前面，而不是照字串排。
+function bundleSortKey(b) { return String((b && (b.sku || b.name)) || ""); }
+function sortBundles(arr) {
+  return (arr || []).slice().sort(function(a, z){
+    return bundleSortKey(a).localeCompare(bundleSortKey(z), "zh-TW", {numeric:true, sensitivity:"base"});
+  });
+}
 
 // 寄售毛利率：對方抽成後我們實收 售價×(1−抽成)，再扣成本。
 // 分母一樣用售價，才能跟店內毛利率直接比較。
@@ -3692,7 +3701,7 @@ function BundleManager(props) {
           </div>
         ) : (
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:10}}>
-            {bundles.map(function(b){
+            {sortBundles(bundles).map(function(b){
               var c = b.choice;
               var typeLabel = !c ? "固定組合"
                 : (c.allowance !== null && c.allowance !== undefined)
@@ -13700,6 +13709,7 @@ function POSSystem() {
       return true;
     });
   }, [bundles, search, currentStore, activeMain, activeSub]);
+  visibleBundles = sortBundles(visibleBundles);
 
   // 點組合：需要挑選就開視窗，固定組合直接進購物車
   function startBundle(b) {
