@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261124-2350 */window.__BUILD_VERSION="20261124-2350";</script>
+  <script>/* __BUILD_VERSION__:20261124-2359 */window.__BUILD_VERSION="20261124-2359";</script>
 </head>
 <body>
 
@@ -6235,7 +6235,8 @@ function PurchasePanel(props) {
                       </table>
                     )}
                     {/* 已結案但還有沒入庫的數量 → 可轉成待驗收單（限店長） */}
-                    {isManager && po.status === "completed" && !po.reopenedTo &&
+                    {isManager && !po.reopenedTo &&
+                      po.status !== "draft" && po.status !== "pending" &&
                       (po.items||[]).some(function(it){
                         return (Number(it.qty)||0) - (Number(it.stockedQty)||0) > 0;
                       }) && (
