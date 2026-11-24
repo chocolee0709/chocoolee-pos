@@ -35,7 +35,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script>/* __BUILD_VERSION__:20261125-0007 */window.__BUILD_VERSION="20261125-0007";</script>
+  <script>/* __BUILD_VERSION__:20261125-0016 */window.__BUILD_VERSION="20261125-0016";</script>
 </head>
 <body>
 
@@ -11241,15 +11241,23 @@ function StockFlowPanel(props) {
       o.cartSnapshot.forEach(function(it){
         if (it.main === "業外收入") return;
         var q = it.qty || 0;
-        if (it.id !== undefined && it.id !== null) orderSalesById[it.id] = (orderSalesById[it.id]||0) + q;
-        if (it.sku) orderSalesBySku[it.sku] = (orderSalesBySku[it.sku]||0) + q;
+        if (it.id !== undefined && it.id !== null) {
+          orderSalesById[it.id] = (orderSalesById[it.id]||0) + q;
+        } else if (it.sku) {
+          // 只有沒記到商品 id 的舊訂單才進貨號備援。
+          // 否則貨號被重複使用時，舊商品的銷售會算到新商品頭上。
+          orderSalesBySku[it.sku] = (orderSalesBySku[it.sku]||0) + q;
+        }
       });
     });
 
     targetProds.forEach(function(p){
       // 該商品全部異動（不限區間），依時間排序
       var allLogs = stockLog.filter(function(l){
-        return (String(l.productId)===String(p.id)||l.sku===p.sku);
+        if (l.productId !== undefined && l.productId !== null) {
+          return String(l.productId) === String(p.id);   // 有 id 就以 id 為準
+        }
+        return l.sku === p.sku;                          // 沒 id 的舊記錄才用貨號
       });
       allLogs.sort(function(a,b){ return (a.date+(a.time||""))>(b.date+(b.time||""))?1:-1; });
 
